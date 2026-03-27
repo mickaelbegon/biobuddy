@@ -27,6 +27,7 @@ dependencies = [
     "scipy", 
     "pandas",
     "graphviz",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
