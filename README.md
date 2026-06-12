@@ -364,7 +364,7 @@ launch it with:
 
 ```bash
 pip install biobuddy[gui]
-python -m biobuddy.gui
+python examples/launch_model_editor_gui.py
 ```
 If you are working from sources, you will need to install :
 ```bash
