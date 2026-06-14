@@ -12,6 +12,11 @@ from ...real.rigidbody.segment_coordinate_system_real import SegmentCoordinateSy
 from ....utils.aliases import Points, Point
 from ....utils.marker_data import MarkerData
 from ....utils.linear_algebra import RotoTransMatrixTimeSeries, RotoTransMatrix
+from ....model_modifiers.functional_frame_selection import (
+    FunctionalFrameSelectionOptions,
+    prepare_functional_rt_pair,
+    subset_points_by_frame,
+)
 from ....model_modifiers.joint_center_tool import Score, Sara
 
 
@@ -248,6 +253,10 @@ class SegmentCoordinateSystemUtils:
         child_marker_names: tuple[str, ...] | list[str],
         visualize: bool = False,
         average_parent_child_static_projection: bool = False,
+        use_diverse_functional_frames: bool = False,
+        max_functional_frames: int = 200,
+        min_functional_rotation_degrees: float = 2.0,
+        min_functional_translation: float = 0.005,
     ) -> Callable:
         """
         Compute the SCoRE (Symmetrical Center of Rotation Estimation) between two sets of markers
@@ -299,6 +308,16 @@ class SegmentCoordinateSystemUtils:
                 rt_child_func = SegmentCoordinateSystemUtils.rigidify(
                     functional_data=child_functional_marker_data,
                     static_data=child_static_marker_data,
+                )
+                rt_parent_func, rt_child_func, _ = prepare_functional_rt_pair(
+                    rt_parent_func,
+                    rt_child_func,
+                    FunctionalFrameSelectionOptions(
+                        enabled=use_diverse_functional_frames,
+                        max_frames=max_functional_frames,
+                        min_rotation_degrees=min_functional_rotation_degrees,
+                        min_translation=min_functional_translation,
+                    ),
                 )
 
                 # Compute the SCoRE point
@@ -377,6 +396,10 @@ class SegmentCoordinateSystemUtils:
         expected_rotation_axis_orientation: Axis | None = None,
         origin_positions_global: Callable | None = None,
         visualize: bool = False,
+        use_diverse_functional_frames: bool = False,
+        max_functional_frames: int = 200,
+        min_functional_rotation_degrees: float = 2.0,
+        min_functional_translation: float = 0.005,
     ) -> Axis:
         """
         Compute the SARA (Symmetrical Axis of Rotation Approach) between two sets of markers
@@ -430,6 +453,16 @@ class SegmentCoordinateSystemUtils:
                     functional_data=child_functional_marker_data,
                     static_data=child_static_marker_data,
                 )
+                rt_parent_func, rt_child_func, frame_selection_report = prepare_functional_rt_pair(
+                    rt_parent_func,
+                    rt_child_func,
+                    FunctionalFrameSelectionOptions(
+                        enabled=use_diverse_functional_frames,
+                        max_frames=max_functional_frames,
+                        min_rotation_degrees=min_functional_rotation_degrees,
+                        min_translation=min_functional_translation,
+                    ),
+                )
 
                 # Compute the SARA axis
                 if expected_rotation_axis_orientation is not None:
@@ -441,6 +474,10 @@ class SegmentCoordinateSystemUtils:
                 origin_positions_global_evaluated = (
                     origin_positions_global(functional_data, bio_model) if origin_positions_global is not None else None
                 )
+                if use_diverse_functional_frames and origin_positions_global_evaluated is not None:
+                    origin_positions_global_evaluated = subset_points_by_frame(
+                        origin_positions_global_evaluated, frame_selection_report.selected_indices
+                    )
                 _, aor_parent, _, _, cor_parent, _, _, _ = Sara.perform_algorithm(
                     rt_parent=rt_parent_func,
                     rt_child=rt_child_func,

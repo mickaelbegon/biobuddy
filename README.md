@@ -371,6 +371,18 @@ If you are working from sources, you will need to install :
 conda install -c conda-forge PySide6
 ```
 
+To open the C3D model workflow directly on the bundled lower-limb calibration example, use:
+
+```bash
+python examples/launch_model_editor_gui.py --lower-limbs-functional-example
+```
+
+To open the C3D workflow on the bundled full-body Model202 example, use:
+
+```bash
+python examples/launch_model_editor_gui.py --full-body-model202-example
+```
+
 The editor supports opening `.bioMod`, `.osim`, and `.urdf` files, browsing the segment hierarchy, editing segment
 parents, DoFs, joint ranges, segment inertia parameters, markers, muscle scalar parameters, and fixed via points, then
 saving the result as `.bioMod`. A synchronized 3D preview shows the kinematic chain, markers, and muscle paths while
@@ -395,7 +407,11 @@ personalized model is generated from the evaluated marker-defined frames. At the
 ingredients and generate the existing lower-limb template; fully converting an arbitrary template-free draft to a
 BioMod model still requires the remaining template-builder bridge.
 The lightweight C3D files in `examples/data/lower_limb_calibration` provide a ready-to-use lower-limb calibration
-folder for this preset.
+folder for this preset. The lightweight C3D files in `examples/data/full_body_model202` provide a ready-to-use
+full-body Model202 calibration folder; they are renamed to generic `Test_*` names, stripped from participant prefixes,
+filtered to frames where the markers required by the corresponding SCoRE/SARA/static role are valid, subsampled to one
+valid frame out of ten, and saved without analog channels. For this full-body preset, `Test_anato.c3d` is used as the
+main C3D so the model starts from the anatomical posture.
 ![model_graph](docs/images/model_graph.png)
 
 

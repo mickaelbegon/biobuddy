@@ -5,7 +5,22 @@ from pathlib import Path
 
 import numpy as np
 
-from .model_builder import MarkerAttachmentSpec
+from ..components.generic.rigidbody.axis import Axis
+from ..components.generic.rigidbody.inertia_parameters import InertiaParameters
+from ..utils.enums import Rotations, Translations
+from .model_builder import (
+    AxisSpec,
+    FunctionalAxisProjectionPointSpec,
+    FunctionalAxisSpec,
+    FunctionalCenterSpec,
+    FunctionalMethod,
+    FunctionalTrialSpec,
+    LocalFrameSpec,
+    MarkerAttachmentSpec,
+    MarkerEndpointSpec,
+    ModelTemplate,
+    SegmentSpec,
+)
 
 
 @dataclass(frozen=True)
@@ -81,6 +96,67 @@ def bela_segment_specs() -> tuple[BelaSegmentSpec, ...]:
     Return the full-body BeLa chain extracted from the Matlab configuration.
     """
     return BELA_SEGMENTS
+
+
+def full_body_bela_template(use_functional: bool = True) -> ModelTemplate:
+    """
+    Return the full-body Model202/BeLa template from the Matlab configuration.
+
+    The Matlab model appends functional points to each segment after its raw C3D
+    markers: first the proximal joint center, then optional functional axis data
+    for AOR joints, then distal child joint centers. The Python template resolves
+    these local indices to SCoRE centers or SARA axes so the GUI can reconstruct
+    the same kinematic-chain ingredients from the functional C3D trials.
+    """
+    return ModelTemplate(
+        name="Full body Model202 from calibration C3D",
+        segments=tuple(_segment_to_template(segment, use_functional=use_functional) for segment in BELA_SEGMENTS),
+        marker_attachments=bela_marker_attachments(),
+        required_static_markers=tuple(sorted(bela_marker_names())),
+        functional_trials=full_body_bela_functional_trials() if use_functional else (),
+        root_segment_name="Pelvis",
+        inertia_parameters_factory=lambda data: _generic_inertia_parameters_by_segment(bela_inertia_by_segment()),
+    )
+
+
+def full_body_bela_functional_trials() -> tuple[FunctionalTrialSpec, ...]:
+    """
+    Return the functional C3D trials expected by the full-body Model202 template.
+    """
+    trials = []
+    for segment in BELA_SEGMENTS:
+        if segment.parent_name in {"", "base", "root"}:
+            continue
+        parent = _segment_by_name(segment.parent_name)
+        method = FunctionalMethod.SARA if segment.joint == "aor" else FunctionalMethod.SCORE
+        required_markers = list(parent.marker_names)
+        required_markers.extend(segment.marker_names)
+        if segment.joint == "aor":
+            required_markers.extend(_aor_expected_axis_markers(segment))
+        trials.append(
+            FunctionalTrialSpec(
+                name=_functional_trial_name(segment),
+                file_pattern=_functional_c3d_filename(segment),
+                required_markers=tuple(dict.fromkeys(required_markers)),
+                method=method,
+            )
+        )
+    return tuple(trials)
+
+
+def full_body_bela_functional_c3d_filenames() -> dict[str, str]:
+    """
+    Return the generic functional C3D names used by the Model202 example data.
+    """
+    return {
+        "main": "Test_anato.c3d",
+        "anatomical": "Test_anato.c3d",
+        **{
+            _functional_trial_name(segment): _functional_c3d_filename(segment)
+            for segment in BELA_SEGMENTS
+            if segment.parent_name not in {"", "base", "root"}
+        },
+    }
 
 
 def rotations_from_matlab_dof(segment: BelaSegmentSpec) -> str | None:
@@ -163,18 +239,12 @@ def bela_virtual_marker_reference_map() -> dict[tuple[str, int], tuple[str, str,
     for segment in BELA_SEGMENTS:
         if segment.parent_name in {"", "base", "root"} or segment.parent_name not in segment_by_name:
             continue
-        prefix = "AoR" if segment.joint == "aor" else "CoR"
-        method = "sara" if segment.joint == "aor" else "score"
         parent_name = segment.parent_name
         child_index = len(segment.marker_names) + 1
-        reference_map[(segment.name, child_index)] = (
-            f"{prefix}_{segment.name}_in_{segment.name}",
-            method,
-            f"{prefix} from functional {method.upper()} trial, expressed in child segment {segment.name}.",
-        )
+        reference_map[(segment.name, child_index)] = _virtual_feature_reference(segment, parent_name, "child")
         if segment.joint_determination_type == "functional" and len(segment.functional_axis_indices) != 0:
-            reference_map[(segment.name, max(segment.functional_axis_indices))] = (
-                f"AoR_{segment.name}_direction_in_{segment.name}",
+            reference_map[(segment.name, child_index + 1)] = (
+                _aor_axis_name(segment),
                 "sara",
                 f"SARA axis direction for {segment.name}, oriented with anatomical landmarks.",
             )
@@ -183,15 +253,25 @@ def bela_virtual_marker_reference_map() -> dict[tuple[str, int], tuple[str, str,
         first_child_index = len(parent.marker_names) + 1
         if parent.parent_name not in {"", "base", "root"}:
             first_child_index += 1
+        if parent.joint == "aor":
+            first_child_index += 1
         for child_index, child in enumerate(children, start=first_child_index):
-            prefix = "AoR" if child.joint == "aor" else "CoR"
-            method = "sara" if child.joint == "aor" else "score"
-            reference_map[(parent_name, child_index)] = (
-                f"{prefix}_{child.name}_in_{parent_name}",
-                method,
-                f"{prefix} from functional {method.upper()} trial, expressed in parent segment {parent_name}.",
-            )
+            reference_map[(parent_name, child_index)] = _virtual_feature_reference(child, parent_name, "parent")
     return reference_map
+
+
+def _virtual_feature_reference(segment: BelaSegmentSpec, parent_name: str, frame_role: str) -> tuple[str, str, str]:
+    if segment.joint == "aor":
+        return (
+            _joint_center_name(segment),
+            "axis_projection",
+            f"Joint center from SARA knee axis projection, referenced from {frame_role} segment.",
+        )
+    return (
+        _joint_center_name(segment),
+        "score",
+        f"CoR from functional SCORE trial, referenced from {frame_role} segment.",
+    )
 
 
 def signed_marker_groups(
@@ -224,11 +304,340 @@ def signed_marker_groups(
     return tuple(negative_group), tuple(positive_group)
 
 
+def _segment_to_template(segment: BelaSegmentSpec, use_functional: bool) -> SegmentSpec:
+    return SegmentSpec(
+        name=segment.name,
+        parent_name="root" if segment.parent_name == "base" else segment.parent_name,
+        translations=_translations_from_string(translations_from_matlab_dof(segment)),
+        rotations=_rotations_from_string(rotations_from_matlab_dof(segment)),
+        frame=LocalFrameSpec(
+            origin=_endpoint_from_indices(
+                segment, segment.origin_indices, role="origin", use_functional=use_functional
+            ),
+            first_axis=_axis_from_indices(
+                segment,
+                segment.u_indices,
+                role="u_axis",
+                axis_name=_u_axis_name(segment),
+                use_functional=use_functional,
+            ),
+            second_axis=_second_axis_from_indices(segment, use_functional=use_functional),
+            axis_to_keep=_axis_name_from_label(segment.axis_label),
+        ),
+        mesh_points=tuple(MarkerEndpointSpec((marker_name,)) for marker_name in segment.marker_names),
+    )
+
+
+def _second_axis_from_indices(segment: BelaSegmentSpec, use_functional: bool) -> AxisSpec | FunctionalAxisSpec:
+    axis_name = _v_axis_name(segment)
+    if use_functional and segment.joint == "aor":
+        return _aor_axis_spec(segment, axis_name=axis_name)
+    return _axis_from_indices(
+        segment,
+        segment.v_indices,
+        role="v_axis",
+        axis_name=axis_name,
+        use_functional=use_functional,
+    )
+
+
+def _endpoint_from_indices(
+    segment: BelaSegmentSpec,
+    signed_indices: tuple[int, ...],
+    role: str,
+    use_functional: bool,
+) -> MarkerEndpointSpec | FunctionalCenterSpec | FunctionalAxisProjectionPointSpec:
+    if len(signed_indices) == 0:
+        return MarkerEndpointSpec((f"{segment.name}_{role}_virtual_0",))
+    endpoint_names = [_marker_or_virtual_point_name(segment, abs(index), use_functional) for index in signed_indices]
+    first_endpoint = endpoint_names[0]
+    if all(endpoint == first_endpoint for endpoint in endpoint_names) and not isinstance(first_endpoint, str):
+        return first_endpoint
+    if all(isinstance(endpoint, str) for endpoint in endpoint_names):
+        return MarkerEndpointSpec(tuple(endpoint_names))
+    return MarkerEndpointSpec(tuple(_endpoint_display_name(endpoint) for endpoint in endpoint_names))
+
+
+def _axis_from_indices(
+    segment: BelaSegmentSpec,
+    signed_indices: tuple[int, ...],
+    role: str,
+    axis_name: Axis.Name,
+    use_functional: bool,
+) -> AxisSpec:
+    start_indices = tuple(abs(index) for index in signed_indices if index < 0)
+    end_indices = tuple(abs(index) for index in signed_indices if index > 0)
+    if len(start_indices) == 0 and len(end_indices) == 0:
+        start_name, end_name = f"{segment.name}_{role}_start", f"{segment.name}_{role}_end"
+        return AxisSpec.from_markers(axis_name, start_name, end_name)
+    if len(start_indices) == 0:
+        start_names = _endpoint_from_indices(
+            segment,
+            segment.origin_indices,
+            role="axis_start",
+            use_functional=use_functional,
+        )
+        end_names = _endpoint_from_indices(segment, end_indices, role="axis_end", use_functional=use_functional)
+    elif len(end_indices) == 0:
+        start_names = _endpoint_from_indices(segment, start_indices, role="axis_start", use_functional=use_functional)
+        end_names = _endpoint_from_indices(
+            segment,
+            segment.origin_indices,
+            role="axis_end",
+            use_functional=use_functional,
+        )
+    else:
+        start_names, end_names = _signed_index_groups(segment, signed_indices, use_functional=use_functional)
+    return AxisSpec(name=axis_name, start=start_names, end=end_names)
+
+
+def _signed_index_groups(
+    segment: BelaSegmentSpec,
+    signed_indices: tuple[int, ...],
+    use_functional: bool,
+) -> tuple[
+    MarkerEndpointSpec | FunctionalCenterSpec | FunctionalAxisProjectionPointSpec,
+    MarkerEndpointSpec | FunctionalCenterSpec | FunctionalAxisProjectionPointSpec,
+]:
+    start_indices = tuple(abs(index) for index in signed_indices if index < 0)
+    end_indices = tuple(abs(index) for index in signed_indices if index > 0)
+    return (
+        _endpoint_from_indices(segment, start_indices, role="axis_start", use_functional=use_functional),
+        _endpoint_from_indices(segment, end_indices, role="axis_end", use_functional=use_functional),
+    )
+
+
+def _marker_or_virtual_point_name(
+    segment: BelaSegmentSpec,
+    matlab_index: int,
+    use_functional: bool,
+) -> str | FunctionalCenterSpec | FunctionalAxisProjectionPointSpec:
+    if matlab_index <= len(segment.marker_names):
+        return segment.marker_names[matlab_index - 1]
+    if not use_functional:
+        return _virtual_marker_name_from_index(segment, matlab_index)
+    return _virtual_endpoint_from_index(segment, matlab_index)
+
+
+def _virtual_endpoint_from_index(
+    segment: BelaSegmentSpec,
+    matlab_index: int,
+) -> FunctionalCenterSpec | FunctionalAxisProjectionPointSpec:
+    if _is_aor_axis_index(segment, matlab_index):
+        return _aor_projection_spec(segment)
+    child = _child_from_parent_local_index(segment, matlab_index)
+    if child is not None:
+        return _aor_projection_spec(child) if child.joint == "aor" else _joint_center_spec(child)
+    if segment.parent_name not in {"", "base", "root"} and matlab_index == len(segment.marker_names) + 1:
+        return _aor_projection_spec(segment) if segment.joint == "aor" else _joint_center_spec(segment)
+    return MarkerEndpointSpec((_virtual_marker_name_from_index(segment, matlab_index),))
+
+
+def _joint_center_spec(segment: BelaSegmentSpec) -> FunctionalCenterSpec:
+    parent = _segment_by_name(segment.parent_name)
+    return FunctionalCenterSpec(
+        method=FunctionalMethod.SCORE,
+        trial_name=_functional_trial_name(segment),
+        parent_marker_names=parent.marker_names,
+        child_marker_names=segment.marker_names,
+        fallback=MarkerEndpointSpec(segment.marker_names),
+    )
+
+
+def _aor_projection_spec(segment: BelaSegmentSpec) -> FunctionalAxisProjectionPointSpec:
+    parent = _segment_by_name(segment.parent_name)
+    expected_axis = _aor_expected_axis_spec(segment)
+    expected_markers = _aor_expected_axis_markers(segment)
+    return FunctionalAxisProjectionPointSpec(
+        method=FunctionalMethod.SARA,
+        trial_name=_functional_trial_name(segment),
+        parent_marker_names=parent.marker_names,
+        child_marker_names=segment.marker_names,
+        expected_axis=expected_axis,
+        origin_marker_names=expected_markers,
+        point_marker_names=expected_markers,
+        fallback=MarkerEndpointSpec(expected_markers),
+    )
+
+
+def _aor_axis_spec(segment: BelaSegmentSpec, axis_name: Axis.Name) -> FunctionalAxisSpec:
+    parent = _segment_by_name(segment.parent_name)
+    expected_axis = _aor_expected_axis_spec(segment)
+    return FunctionalAxisSpec(
+        method=FunctionalMethod.SARA,
+        trial_name=_functional_trial_name(segment),
+        fallback=AxisSpec.from_markers(axis_name, expected_axis.start.marker_names, expected_axis.end.marker_names),
+        parent_marker_names=parent.marker_names,
+        child_marker_names=segment.marker_names,
+        expected_axis=expected_axis,
+        origin_marker_names=_aor_expected_axis_markers(segment),
+    )
+
+
+def _aor_expected_axis_spec(segment: BelaSegmentSpec) -> AxisSpec:
+    start_marker, end_marker = _aor_expected_axis_markers(segment)
+    return AxisSpec.from_markers(_axis_name_from_label(segment.axis_label), start_marker, end_marker)
+
+
+def _aor_expected_axis_markers(segment: BelaSegmentSpec) -> tuple[str, str]:
+    if segment.name == "JambeD":
+        return "CONDEXTD", "CONDINTD"
+    if segment.name == "JambeG":
+        return "CONDINTG", "CONEXTG"
+    if len(segment.functional_axis_indices) >= 2:
+        parent = _segment_by_name(segment.parent_name)
+        return (
+            parent.marker_names[segment.functional_axis_indices[0] - 1],
+            parent.marker_names[segment.functional_axis_indices[1] - 1],
+        )
+    raise ValueError(f"Segment '{segment.name}' does not define a functional AOR orientation.")
+
+
+def _child_from_parent_local_index(parent: BelaSegmentSpec, matlab_index: int) -> BelaSegmentSpec | None:
+    child_index = len(parent.marker_names) + 1
+    if parent.parent_name not in {"", "base", "root"}:
+        child_index += 1
+    if parent.joint == "aor":
+        child_index += 1
+    for child in _children_by_parent_name(parent.name):
+        if matlab_index == child_index:
+            return child
+        child_index += 1
+    return None
+
+
+def _is_aor_axis_index(segment: BelaSegmentSpec, matlab_index: int) -> bool:
+    if segment.joint != "aor":
+        return False
+    return segment.parent_name not in {"", "base", "root"} and matlab_index == len(segment.marker_names) + 2
+
+
+def _virtual_marker_name_from_index(segment: BelaSegmentSpec, matlab_index: int) -> str:
+    name, _, _ = bela_virtual_marker_reference_map().get(
+        (segment.name, matlab_index),
+        (f"{segment.name}_virtual_{matlab_index}", "", ""),
+    )
+    return name
+
+
+def _endpoint_display_name(endpoint: str | FunctionalCenterSpec | FunctionalAxisProjectionPointSpec) -> str:
+    if isinstance(endpoint, str):
+        return endpoint
+    if isinstance(endpoint, FunctionalCenterSpec):
+        return _joint_center_name(_segment_by_trial_name(endpoint.trial_name))
+    if isinstance(endpoint, FunctionalAxisProjectionPointSpec):
+        return _joint_center_name(_segment_by_trial_name(endpoint.trial_name))
+    return str(endpoint)
+
+
+def _joint_center_name(segment: BelaSegmentSpec) -> str:
+    return f"CoR_{segment.name}_wrt_{segment.parent_name}"
+
+
+def _aor_axis_name(segment: BelaSegmentSpec) -> str:
+    return f"Axis_{segment.name}_SARA"
+
+
+def _functional_trial_name(segment: BelaSegmentSpec) -> str:
+    method_suffix = "sara" if segment.joint == "aor" else "score"
+    return f"{segment.name.lower()}_{segment.parent_name.lower()}_{method_suffix}"
+
+
+def _functional_c3d_filename(segment: BelaSegmentSpec) -> str:
+    return f"Test_func_{_english_segment_label(segment.name)}_{_english_segment_label(segment.parent_name)}.c3d"
+
+
+def _english_segment_label(segment_name: str) -> str:
+    labels = {
+        "Tete": "head",
+        "EpauleD": "right_shoulder",
+        "BrasD": "right_arm",
+        "ABrasD": "right_forearm",
+        "MainD": "right_hand",
+        "EpauleG": "left_shoulder",
+        "BrasG": "left_arm",
+        "ABrasG": "left_forearm",
+        "MainG": "left_hand",
+        "CuisseD": "right_thigh",
+        "JambeD": "right_shank",
+        "PiedD": "right_foot",
+        "CuisseG": "left_thigh",
+        "JambeG": "left_shank",
+        "PiedG": "left_foot",
+    }
+    return labels.get(segment_name, segment_name.lower())
+
+
+def _u_axis_name(segment: BelaSegmentSpec) -> Axis.Name:
+    kept_axis_name = _axis_name_from_label(segment.axis_label)
+    return kept_axis_name if segment.keep_axis_index == 1 else _complementary_axis_name(kept_axis_name)
+
+
+def _v_axis_name(segment: BelaSegmentSpec) -> Axis.Name:
+    kept_axis_name = _axis_name_from_label(segment.axis_label)
+    return kept_axis_name if segment.keep_axis_index == 2 else _complementary_axis_name(kept_axis_name)
+
+
+def _axis_name_from_label(axis_label: str) -> Axis.Name:
+    axis_names = {"x": Axis.Name.X, "y": Axis.Name.Y, "z": Axis.Name.Z}
+    return axis_names[axis_label.lower()]
+
+
+def _complementary_axis_name(axis_name: Axis.Name) -> Axis.Name:
+    if axis_name == Axis.Name.X:
+        return Axis.Name.Y
+    if axis_name == Axis.Name.Y:
+        return Axis.Name.Z
+    if axis_name == Axis.Name.Z:
+        return Axis.Name.X
+    raise ValueError(f"Unsupported axis name: {axis_name}.")
+
+
+def _rotations_from_string(rotations: str | None) -> Rotations:
+    return Rotations.NONE if rotations is None else Rotations(rotations)
+
+
+def _translations_from_string(translations: str | None) -> Translations:
+    return Translations.NONE if translations is None else Translations(translations)
+
+
+def _segment_by_name(segment_name: str) -> BelaSegmentSpec:
+    return next(segment for segment in BELA_SEGMENTS if segment.name == segment_name)
+
+
+def _segment_by_trial_name(trial_name: str) -> BelaSegmentSpec:
+    return next(segment for segment in BELA_SEGMENTS if _functional_trial_name(segment) == trial_name)
+
+
+def _children_by_parent_name(parent_name: str) -> tuple[BelaSegmentSpec, ...]:
+    return tuple(segment for segment in BELA_SEGMENTS if segment.parent_name == parent_name)
+
+
 def bela_inertia_by_segment() -> dict[str, dict[str, np.ndarray | float]]:
     """
     Return BeLa inertial parameters in a convenient dictionary.
     """
     return _inertia_by_segment(BELA_INERTIAL_PARAMETERS)
+
+
+def _generic_inertia_parameters_by_segment(
+    inertia_by_segment: dict[str, dict[str, np.ndarray | float]],
+) -> dict[str, InertiaParameters]:
+    """
+    Wrap historical numeric inertial parameters into generic constants.
+    """
+    generic_parameters = {}
+    for segment_name, parameters in inertia_by_segment.items():
+        mass = float(parameters["mass"])
+        center_of_mass = np.asarray(parameters["center_of_mass"], dtype=float)
+        inertia = np.asarray(parameters["inertia"], dtype=float)
+        generic_parameters[segment_name] = InertiaParameters(
+            mass=lambda data, model, value=mass: value,
+            center_of_mass=lambda data, model, value=center_of_mass: value,
+            inertia=lambda data, model, value=inertia: value,
+            is_local=True,
+        )
+    return generic_parameters
 
 
 def guse_inertia_by_segment() -> dict[str, dict[str, np.ndarray | float]]:

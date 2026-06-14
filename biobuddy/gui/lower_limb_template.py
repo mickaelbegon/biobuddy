@@ -230,7 +230,7 @@ def _knee_sara_axis_spec(
     side: str,
     knee_axis_start: tuple[str, str],
     use_functional: bool,
-    axis_name=Axis.Name.Y,
+    axis_name=Axis.Name.X,
 ):
     fallback_axis = AxisSpec.from_markers(axis_name, knee_axis_start[0], knee_axis_start[1])
     if not use_functional:
@@ -283,9 +283,9 @@ def _thigh_segment(side: str, hip_fallback: str, knee_axis_start: tuple[str, str
         inertia_name=SegmentName.THIGH,
         frame=LocalFrameSpec(
             origin=origin,
-            first_axis=AxisSpec(Axis.Name.X, knee_projection, origin),
+            first_axis=AxisSpec(Axis.Name.Z, knee_projection, origin),
             second_axis=knee_axis,
-            axis_to_keep=Axis.Name.Y,
+            axis_to_keep=Axis.Name.Z,
         ),
         mesh_points=(
             _p(hip_fallback),
@@ -319,9 +319,9 @@ def _shank_segment(
         inertia_name=SegmentName.SHANK,
         frame=LocalFrameSpec(
             origin=knee_projection,
-            first_axis=AxisSpec(Axis.Name.X, ankle_center, knee_projection),
+            first_axis=AxisSpec(Axis.Name.Z, ankle_center, knee_projection),
             second_axis=second_axis,
-            axis_to_keep=Axis.Name.Y,
+            axis_to_keep=Axis.Name.X,
         ),
         mesh_points=(
             _p(f"{side}TIBD"),
@@ -349,9 +349,9 @@ def _foot_segment(
         inertia_name=SegmentName.FOOT,
         frame=LocalFrameSpec(
             origin=origin,
-            first_axis=AxisSpec.from_markers(Axis.Name.X, f"{side}HEE", (f"{side}TOE", f"{side}TOE5")),
-            second_axis=AxisSpec.from_markers(Axis.Name.Z, ankle_axis[0], ankle_axis[1]),
-            axis_to_keep=Axis.Name.X,
+            first_axis=AxisSpec.from_markers(Axis.Name.Y, f"{side}HEE", (f"{side}TOE", f"{side}TOE5")),
+            second_axis=AxisSpec.from_markers(Axis.Name.X, ankle_axis[0], ankle_axis[1]),
+            axis_to_keep=Axis.Name.Y,
         ),
         mesh_points=(
             _p(f"{side}HEE"),

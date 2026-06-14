@@ -636,7 +636,7 @@ def load_functional_c3d_trials(template: ModelTemplate, calibration_folder: Path
 def build_real_model_from_c3d_folder(
     template: ModelTemplate,
     calibration_folder: Path,
-    static_patterns: tuple[str, ...] = ("*static*.c3d", "*func_anat.c3d"),
+    static_patterns: tuple[str, ...] = ("Test_anato.c3d", "Test_main.c3d", "*static*.c3d", "*func_anat.c3d"),
 ) -> BiomechanicalModelReal:
     """
     Generate a real model from a calibration folder.

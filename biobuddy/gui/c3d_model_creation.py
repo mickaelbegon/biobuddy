@@ -6,7 +6,10 @@ from pathlib import Path
 
 from ..components.real.biomechanical_model_real import BiomechanicalModelReal
 from ..utils.marker_data import C3dData, MarkerData
-from .full_body_bela_template import bela_unresolved_marker_references, bela_virtual_marker_reference_map
+from .full_body_bela_template import (
+    bela_segment_specs,
+    full_body_bela_template,
+)
 from .lower_limb_template import lower_limb_template
 from .upper_limb_template import upper_limb_template, upper_limb_virtual_feature_requirements
 from .model_builder import (
@@ -114,25 +117,7 @@ def c3d_model_preset_virtual_features(preset: C3dModelPreset) -> tuple[C3dPreset
             for requirement in upper_limb_virtual_feature_requirements()
         )
     if preset == C3dModelPreset.FULL_BODY:
-        features = []
-        virtual_reference_map = bela_virtual_marker_reference_map()
-        for segment_name, indices in bela_unresolved_marker_references().items():
-            for index in indices:
-                default_name = f"{segment_name}_virtual_{index}"
-                name, method, description = virtual_reference_map.get(
-                    (segment_name, index),
-                    (default_name, "legacy_matlab_reference", f"BeLa Matlab local index {index}"),
-                )
-                features.append(
-                    C3dPresetVirtualFeature(
-                        name=name,
-                        feature_type="axis" if method == "sara" and "direction" in name else "point",
-                        segment_name=segment_name,
-                        role=method,
-                        description=description,
-                    )
-                )
-        return tuple(features)
+        return _full_body_score_sara_virtual_features()
     raise ValueError(f"Unsupported C3D model preset: {preset}.")
 
 
@@ -241,6 +226,83 @@ def _lower_limb_score_virtual_features() -> tuple[C3dPresetVirtualFeature, ...]:
     return score_features + projected_knee_features + sara_features
 
 
+def _full_body_score_sara_virtual_features() -> tuple[C3dPresetVirtualFeature, ...]:
+    """
+    Return full-body Model202 functional centers and axes reconstructed from generic C3D trials.
+    """
+    features: list[C3dPresetVirtualFeature] = []
+    segments_by_name = {segment.name: segment for segment in bela_segment_specs()}
+    for segment in bela_segment_specs():
+        if segment.parent_name in {"", "base", "root"}:
+            continue
+        parent = segments_by_name[segment.parent_name]
+        trial_name = _full_body_trial_name(segment)
+        if segment.joint == "aor":
+            expected_axis = _full_body_aor_expected_axis(segment)
+            axis_name = _full_body_axis_name(segment)
+            features.append(
+                C3dPresetVirtualFeature(
+                    name=axis_name,
+                    feature_type="axis",
+                    segment_name=segment.name,
+                    role="sara_axis",
+                    description=(
+                        f"trial={trial_name}; parent markers={','.join(parent.marker_names)}; "
+                        f"child markers={','.join(segment.marker_names)}; expected axis={','.join(expected_axis)}; "
+                        f"origin markers={','.join(expected_axis)}"
+                    ),
+                )
+            )
+            features.append(
+                C3dPresetVirtualFeature(
+                    name=_full_body_joint_center_name(segment),
+                    feature_type="point",
+                    segment_name=segment.name,
+                    role="axis_projection",
+                    description=f"point={','.join(expected_axis)}; axis={axis_name}; trial={trial_name}",
+                )
+            )
+        else:
+            features.append(
+                C3dPresetVirtualFeature(
+                    name=_full_body_joint_center_name(segment),
+                    feature_type="point",
+                    segment_name=segment.name,
+                    role="score",
+                    description=(
+                        f"trial={trial_name}; parent markers={','.join(parent.marker_names)}; "
+                        f"child markers={','.join(segment.marker_names)}"
+                    ),
+                )
+            )
+    return tuple(features)
+
+
+def _full_body_trial_name(segment) -> str:
+    method_suffix = "sara" if segment.joint == "aor" else "score"
+    return f"{segment.name.lower()}_{segment.parent_name.lower()}_{method_suffix}"
+
+
+def _full_body_joint_center_name(segment) -> str:
+    return f"CoR_{segment.name}_wrt_{segment.parent_name}"
+
+
+def _full_body_axis_name(segment) -> str:
+    return f"Axis_{segment.name}_SARA"
+
+
+def _full_body_aor_expected_axis(segment) -> tuple[str, str]:
+    if segment.name == "JambeD":
+        return "CONDEXTD", "CONDINTD"
+    if segment.name == "JambeG":
+        return "CONDINTG", "CONEXTG"
+    parent = next(candidate for candidate in bela_segment_specs() if candidate.name == segment.parent_name)
+    return (
+        parent.marker_names[segment.functional_axis_indices[0] - 1],
+        parent.marker_names[segment.functional_axis_indices[1] - 1],
+    )
+
+
 def template_for_c3d_model_preset(preset: C3dModelPreset) -> ModelTemplate:
     """
     Return the model template associated with a C3D creation preset.
@@ -255,10 +317,7 @@ def template_for_c3d_model_preset(preset: C3dModelPreset) -> ModelTemplate:
             "DoFs, and virtual markers in the GUI, then export a reusable template before generating a BioMod model."
         )
     if preset == C3dModelPreset.FULL_BODY:
-        raise NotImplementedError(
-            "Full-body C3D model creation still needs CoR/SARA virtual-point reconstruction before it can generate "
-            "a BioMod model."
-        )
+        return full_body_bela_template(use_functional=True)
     if preset == C3dModelPreset.UPPER_LIMB:
         return upper_limb_template()
     raise ValueError(f"Unsupported C3D model preset: {preset}.")
@@ -267,7 +326,14 @@ def template_for_c3d_model_preset(preset: C3dModelPreset) -> ModelTemplate:
 def create_model_from_c3d_folder(
     calibration_folder: Path,
     preset: C3dModelPreset = C3dModelPreset.LOWER_LIMBS,
-    static_patterns: tuple[str, ...] = ("main_markers.c3d", "*static*.c3d", "*func_anat.c3d", "anatomical_posture.c3d"),
+    static_patterns: tuple[str, ...] = (
+        "Test_anato.c3d",
+        "Test_main.c3d",
+        "main_markers.c3d",
+        "*static*.c3d",
+        "*func_anat.c3d",
+        "anatomical_posture.c3d",
+    ),
     static_virtual_points: tuple[VirtualPointDefinition, ...] = (),
     static_virtual_axes: tuple[VirtualAxisDefinition, ...] = (),
     functional_virtual_points: dict[str, tuple[VirtualPointDefinition, ...]] | None = None,
@@ -294,7 +360,14 @@ def create_model_from_c3d_folder(
 
 def create_lower_limb_model_variants_from_c3d_folder(
     calibration_folder: Path,
-    static_patterns: tuple[str, ...] = ("main_markers.c3d", "*static*.c3d", "*func_anat.c3d", "anatomical_posture.c3d"),
+    static_patterns: tuple[str, ...] = (
+        "Test_anato.c3d",
+        "Test_main.c3d",
+        "main_markers.c3d",
+        "*static*.c3d",
+        "*func_anat.c3d",
+        "anatomical_posture.c3d",
+    ),
 ) -> C3dModelCreationVariantResults:
     """
     Create lower-limb models with functional SCoRE/SARA enabled and disabled from a C3D folder.
@@ -382,7 +455,14 @@ def create_model_from_marker_data(
 
 def find_static_c3d_file(
     calibration_folder: Path,
-    static_patterns: tuple[str, ...] = ("main_markers.c3d", "*static*.c3d", "*func_anat.c3d", "anatomical_posture.c3d"),
+    static_patterns: tuple[str, ...] = (
+        "Test_anato.c3d",
+        "Test_main.c3d",
+        "main_markers.c3d",
+        "*static*.c3d",
+        "*func_anat.c3d",
+        "anatomical_posture.c3d",
+    ),
 ) -> Path:
     """
     Find the static/anatomical C3D used to instantiate marker-defined frames.

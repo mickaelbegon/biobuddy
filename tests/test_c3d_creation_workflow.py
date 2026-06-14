@@ -69,7 +69,11 @@ def test_c3d_file_roles_use_generic_names_for_three_presets():
     assert "*func_lknee.c3d" in lower_limb_names
     assert lower_limb_anatomical_names == {"main_markers.c3d"}
     assert "pointing_virtual_markers.c3d" in upper_limb_names
-    assert "functional_upper_limb_score_sara.c3d" in full_body_names
+    assert "Test_anato.c3d" in full_body_names
+    assert "Test_main.c3d" not in full_body_names
+    assert "Test_func_thorax_pelvis.c3d" in full_body_names
+    assert "Test_func_head_thorax.c3d" in full_body_names
+    assert "Test_func_right_shank_right_thigh.c3d" in full_body_names
 
 
 def test_c3d_segment_marker_groups_cover_three_models():
@@ -144,20 +148,20 @@ def test_lower_limb_functional_draft_exposes_sara_knee_axes():
     assert left_knee_axis.start_markers == ("LKNE",)
     assert left_knee_axis.end_markers == ("LKNEM",)
     assert left_knee_axis.origin_markers == ("LKNE", "LKNEM")
-    assert left_thigh_first_axis.axis == "x"
+    assert left_thigh_first_axis.axis == "z"
     assert left_thigh_first_axis.start_markers == ("Proj_LKnee_on_Axis_LKnee_SARA",)
     assert left_thigh_first_axis.end_markers == ("CoR_LThigh_wrt_Pelvis",)
     assert left_thigh_first_axis.origin_markers == ("CoR_LThigh_wrt_Pelvis",)
-    assert left_thigh_second_axis.axis == "y"
+    assert left_thigh_second_axis.axis == "x"
     assert left_thigh_second_axis.method == "sara"
     assert left_thigh_second_axis.start_markers == ("Axis_LKnee_SARA",)
     assert left_thigh_second_axis.end_markers == ()
-    assert left_thigh_second_axis.keep_vector is True
-    assert left_shank_first_axis.axis == "x"
+    assert left_thigh_second_axis.keep_vector is False
+    assert left_shank_first_axis.axis == "z"
     assert left_shank_first_axis.start_markers == ("CoR_LFoot_wrt_LShank",)
     assert left_shank_first_axis.end_markers == ("Proj_LKnee_on_Axis_LKnee_SARA",)
     assert left_shank_first_axis.origin_markers == ("Proj_LKnee_on_Axis_LKnee_SARA",)
-    assert left_shank_second_axis.axis == "y"
+    assert left_shank_second_axis.axis == "x"
     assert left_shank_second_axis.method == "sara"
     assert left_shank_second_axis.start_markers == ("Axis_LKnee_SARA",)
     assert left_shank_second_axis.end_markers == ()

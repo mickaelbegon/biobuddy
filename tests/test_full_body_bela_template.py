@@ -10,12 +10,16 @@ from biobuddy.gui.full_body_bela_template import (
     bela_segment_specs,
     bela_unresolved_marker_references,
     guse_inertia_by_segment,
+    full_body_bela_functional_c3d_filenames,
+    full_body_bela_functional_trials,
+    full_body_bela_template,
     parse_s2m_model,
     rotations_from_matlab_dof,
     signed_marker_groups,
     subject_inertia_by_segment,
     translations_from_matlab_dof,
 )
+from biobuddy.gui.model_builder import build_generic_model, required_functional_markers
 
 
 def test_bela_template_contains_expected_full_body_chain():
@@ -58,6 +62,33 @@ def test_bela_inertial_parameters_are_available_by_segment_name():
         inertia["MainG"]["center_of_mass"], np.array([-0.0264342737, -0.0469823183, -0.0252076569])
     )
     np.testing.assert_allclose(np.diag(inertia["PiedG"]["inertia"]), np.array([0.0068, 0.0066, 0.0012]))
+
+
+def test_full_body_bela_template_builds_functional_model202_template():
+    template = full_body_bela_template(use_functional=True)
+    model = build_generic_model(template)
+    functional_markers = required_functional_markers(template)
+    filenames = full_body_bela_functional_c3d_filenames()
+
+    assert template.root_segment_name == "Pelvis"
+    assert model.segment_names[1:4] == ["Pelvis", "Thorax", "Tete"]
+    assert len(template.functional_trials) == 16
+    assert "thorax_pelvis_score" in functional_markers
+    assert "jambed_cuissed_sara" in functional_markers
+    assert filenames["main"] == "Test_anato.c3d"
+    assert filenames["thorax_pelvis_score"] == "Test_func_thorax_pelvis.c3d"
+    assert filenames["tete_thorax_score"] == "Test_func_head_thorax.c3d"
+    assert filenames["jambed_cuissed_sara"] == "Test_func_right_shank_right_thigh.c3d"
+
+
+def test_full_body_bela_functional_trials_expose_score_and_sara_requirements():
+    trials = {trial.name: trial for trial in full_body_bela_functional_trials()}
+
+    assert trials["thorax_pelvis_score"].file_pattern == "Test_func_thorax_pelvis.c3d"
+    assert trials["thorax_pelvis_score"].method.value == "score"
+    assert set(("EIASD", "EIASG", "MANU", "D10")).issubset(trials["thorax_pelvis_score"].required_markers)
+    assert trials["jambed_cuissed_sara"].method.value == "sara"
+    assert set(("CONDEXTD", "CONDINTD", "CRETED", "MALINTD")).issubset(trials["jambed_cuissed_sara"].required_markers)
 
 
 def test_matlab_dof_signs_do_not_change_model_axes():

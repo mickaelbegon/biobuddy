@@ -4,6 +4,7 @@ from biobuddy import (
     BiomechanicalModelReal,
     DictData,
 )
+from biobuddy.components.generic.rigidbody.axis import Axis
 from biobuddy.gui.c3d_creation_workflow import (
     add_axis_to_draft,
     add_segment_to_draft,
@@ -13,6 +14,7 @@ from biobuddy.gui.c3d_creation_workflow import (
 )
 from biobuddy.gui.c3d_model_creation import C3dModelPreset
 from biobuddy.gui.model_editor import (
+    _complete_marker_frame_count,
     _c3d_file_names_from_folder,
     _c3d_generation_log,
     _export_model_to_path,
@@ -40,8 +42,15 @@ from biobuddy.gui.model_editor import (
     _c3d_source_name_from_virtual_feature_source,
     _trial_name_from_virtual_feature_source,
     _virtual_axis_name_from_feature_list_text,
+    _virtual_feature_list_labels,
+)
+from biobuddy.gui.lower_limb_template import lower_limb_template
+from biobuddy.model_modifiers.functional_frame_selection import (
+    FunctionalFrameSelectionOptions,
+    functional_frame_selection_report,
 )
 from biobuddy.gui.segment_editor import load_model
+from biobuddy.utils.linear_algebra import RotoTransMatrixTimeSeries
 
 
 def test_load_model_supports_bvh(tmp_path):
@@ -134,6 +143,31 @@ def test_virtual_marker_editor_suggests_joint_names_from_segment_pairs():
     assert _joint_name_from_segments("LThigh", "LShank") == "Left_Knee"
 
 
+def test_lower_limb_functional_template_uses_correct_anatomical_axes():
+    """
+    Keep the lower-limb functional template aligned with the intended anatomical frame definitions.
+    """
+    template = lower_limb_template(use_functional=True)
+    segments = {segment.name: segment for segment in template.segments}
+
+    for side in ("L", "R"):
+        thigh_frame = segments[f"{side}Thigh"].frame
+        shank_frame = segments[f"{side}Shank"].frame
+        foot_frame = segments[f"{side}Foot"].frame
+
+        assert thigh_frame.first_axis.name == Axis.Name.Z
+        assert thigh_frame.second_axis.fallback.name == Axis.Name.X
+        assert thigh_frame.axis_to_keep == Axis.Name.Z
+
+        assert shank_frame.first_axis.name == Axis.Name.Z
+        assert shank_frame.second_axis.fallback.name == Axis.Name.X
+        assert shank_frame.axis_to_keep == Axis.Name.X
+
+        assert foot_frame.first_axis.name == Axis.Name.Y
+        assert foot_frame.second_axis.name == Axis.Name.X
+        assert foot_frame.axis_to_keep == Axis.Name.Y
+
+
 def test_virtual_marker_axis_list_text_can_remove_axis_from_draft():
     draft = c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS)
     axis_list_text = "[axis] Axis_LKnee_SARA | LShank | sara | trial=left_knee_sara"
@@ -154,6 +188,15 @@ def test_virtual_marker_list_shows_only_named_sara_virtual_axes():
 
     assert _is_virtual_feature_axis(named_sara_axis)
     assert not _is_virtual_feature_axis(anatomical_sara_axis)
+
+
+def test_virtual_feature_list_shows_sara_axes_first():
+    draft = c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS)
+    labels = _virtual_feature_list_labels(draft)
+
+    assert labels[0].startswith("[axis] Axis_LKnee_SARA")
+    assert labels[1].startswith("[axis] Axis_RKnee_SARA")
+    assert any(label.startswith("Proj_LKnee_on_Axis_LKnee_SARA") for label in labels)
 
 
 def test_lower_limb_functional_sara_axes_do_not_trigger_missing_xyz_warning():
@@ -312,6 +355,47 @@ def test_marker_frame_position_reads_selected_frame():
             return values
 
     assert _marker_frame_position(FakeC3dData(), "LASI", 1) == (4.0, 5.0, 6.0)
+
+
+def test_complete_marker_frame_count_requires_all_marker_coordinates():
+    class FakeC3dData:
+        marker_names = ["A", "B"]
+
+        def get_position(self, marker_names):
+            values = np.ones((4, len(marker_names), 3))
+            values[:3, 1, 1] = np.nan
+            return values
+
+    assert _complete_marker_frame_count(FakeC3dData(), ("A", "B")) == 2
+    assert _complete_marker_frame_count(FakeC3dData(), ("A", "Missing")) == 0
+
+
+def test_functional_frame_selection_keeps_diverse_relative_rotations():
+    rotations = np.zeros((3, 3, 4))
+    translations = np.zeros((3, 4))
+    parent = RotoTransMatrixTimeSeries.from_rotation_matrix_and_translation(
+        np.repeat(np.eye(3)[:, :, None], 4, axis=2), translations
+    )
+    for index, angle in enumerate((0.0, 0.001, 0.002, 0.5)):
+        rotations[:, :, index] = np.array(
+            [
+                [np.cos(angle), -np.sin(angle), 0.0],
+                [np.sin(angle), np.cos(angle), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+    child = RotoTransMatrixTimeSeries.from_rotation_matrix_and_translation(rotations, translations)
+
+    report = functional_frame_selection_report(
+        parent,
+        child,
+        FunctionalFrameSelectionOptions(enabled=True, max_frames=10, min_rotation_degrees=2.0),
+    )
+
+    assert report.total_frames == 4
+    assert report.valid_rt_frames == 4
+    assert report.selected_indices == (0, 3)
+    assert report.rotation_range_degrees > 25
 
 
 def test_c3d_generation_log_reports_virtual_marker_local_offset_context():

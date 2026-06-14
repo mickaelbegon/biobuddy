@@ -9,7 +9,13 @@ import numpy as np
 
 from ..utils.marker_data import C3dData, MarkerData
 from .c3d_model_creation import C3dModelPreset, c3d_model_preset_virtual_features
-from .full_body_bela_template import bela_segment_specs, rotations_from_matlab_dof, translations_from_matlab_dof
+from .full_body_bela_template import (
+    bela_segment_specs,
+    full_body_bela_functional_c3d_filenames,
+    full_body_bela_template,
+    rotations_from_matlab_dof,
+    translations_from_matlab_dof,
+)
 from .lower_limb_template import LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES, lower_limb_template
 from .model_builder import (
     AxisSpec,
@@ -355,6 +361,8 @@ def _template_for_axis_prefill(preset: C3dModelPreset) -> ModelTemplate | None:
         return lower_limb_template(use_functional=False)
     if preset == C3dModelPreset.UPPER_LIMB:
         return upper_limb_template()
+    if preset == C3dModelPreset.FULL_BODY:
+        return full_body_bela_template(use_functional=True)
     return None
 
 
@@ -427,6 +435,9 @@ def _functional_center_virtual_marker_name(spec: FunctionalCenterSpec) -> str:
     """
     Return the virtual marker name exposed in the GUI for one SCoRE center.
     """
+    full_body_name = _full_body_virtual_center_name_from_trial(spec.trial_name)
+    if full_body_name is not None:
+        return full_body_name
     names_by_trial = {
         "trunk_score": "CoR_Trunk_wrt_Pelvis",
         "left_hip_score": "CoR_LThigh_wrt_Pelvis",
@@ -441,6 +452,9 @@ def _functional_projection_virtual_marker_name(spec: FunctionalAxisProjectionPoi
     """
     Return the virtual marker name exposed in the GUI for one projected point.
     """
+    full_body_name = _full_body_virtual_center_name_from_trial(spec.trial_name)
+    if full_body_name is not None:
+        return full_body_name
     names_by_trial = {
         "left_knee_sara": "Proj_LKnee_on_Axis_LKnee_SARA",
         "right_knee_sara": "Proj_RKnee_on_Axis_RKnee_SARA",
@@ -452,11 +466,31 @@ def _functional_axis_virtual_axis_name(spec: FunctionalAxisSpec) -> str:
     """
     Return the virtual axis name exposed in the GUI for one SARA axis.
     """
+    full_body_axis_name = _full_body_virtual_axis_name_from_trial(spec.trial_name)
+    if full_body_axis_name is not None:
+        return full_body_axis_name
     names_by_trial = {
         "left_knee_sara": "Axis_LKnee_SARA",
         "right_knee_sara": "Axis_RKnee_SARA",
     }
     return names_by_trial.get(spec.trial_name, f"Axis_{spec.trial_name}")
+
+
+def _full_body_virtual_center_name_from_trial(trial_name: str) -> str | None:
+    for segment in bela_segment_specs():
+        score_trial = f"{segment.name.lower()}_{segment.parent_name.lower()}_score"
+        sara_trial = f"{segment.name.lower()}_{segment.parent_name.lower()}_sara"
+        if trial_name in {score_trial, sara_trial} and segment.parent_name not in {"", "base", "root"}:
+            return f"CoR_{segment.name}_wrt_{segment.parent_name}"
+    return None
+
+
+def _full_body_virtual_axis_name_from_trial(trial_name: str) -> str | None:
+    for segment in bela_segment_specs():
+        sara_trial = f"{segment.name.lower()}_{segment.parent_name.lower()}_sara"
+        if trial_name == sara_trial and segment.parent_name not in {"", "base", "root"}:
+            return f"Axis_{segment.name}_SARA"
+    return None
 
 
 def _axis_draft_from_axis_spec(
@@ -1464,13 +1498,20 @@ def c3d_file_roles_for_preset(preset: C3dModelPreset) -> tuple[C3dFileRole, ...]
             C3dFileRole("wrist_score", "functional_wrist_score.c3d", "Wrist center functional trial."),
         )
     if preset == C3dModelPreset.FULL_BODY:
-        return (
-            C3dFileRole("main", "main_markers.c3d", "C3D containing all visible markers.", required=True),
-            C3dFileRole("pointing", "pointing_virtual_markers.c3d", "Pointing trial for virtual joint centers."),
-            C3dFileRole("lower_limb_score_sara", "functional_lower_limb_score_sara.c3d", "Lower-limb CoR and axes."),
-            C3dFileRole("upper_limb_score_sara", "functional_upper_limb_score_sara.c3d", "Upper-limb CoR and axes."),
-            C3dFileRole("spine_head", "functional_spine_head.c3d", "Thorax, head, and trunk virtual points."),
+        filenames = full_body_bela_functional_c3d_filenames()
+        roles = [
+            C3dFileRole("main", filenames["main"], "C3D containing all visible full-body markers.", required=True),
+        ]
+        roles.extend(
+            C3dFileRole(
+                role,
+                filename,
+                "Functional SCoRE/SARA trial for the Model202 child-parent segment pair.",
+            )
+            for role, filename in filenames.items()
+            if role not in {"main", "anatomical"}
         )
+        return tuple(roles)
     raise ValueError(f"Unsupported C3D model preset: {preset}.")
 
 
@@ -1588,7 +1629,8 @@ def _expected_marker_names_for_preset(preset: C3dModelPreset) -> set[str]:
     if preset == C3dModelPreset.UPPER_LIMB:
         return set(required_static_markers(upper_limb_template()))
     if preset == C3dModelPreset.FULL_BODY:
-        return {marker_name for segment in bela_segment_specs() for marker_name in segment.marker_names}
+        template = full_body_bela_template(use_functional=True)
+        return set(required_static_markers(template)) | set().union(*required_functional_markers(template).values())
     if preset == C3dModelPreset.FROM_SCRATCH:
         return set()
     raise ValueError(f"Unsupported C3D model preset: {preset}.")

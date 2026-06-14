@@ -95,17 +95,17 @@ def test_lower_limb_functional_origins_use_expected_virtual_points():
     assert segments["Trunk"].frame.origin.child_marker_names == ("T10", "T6", "C7", "C2", "CLAV", "STRN")
     assert isinstance(segments["LThigh"].frame.origin, FunctionalCenterSpec)
     assert segments["LThigh"].frame.origin.trial_name == "left_hip_score"
-    assert segments["LThigh"].frame.first_axis.name == Axis.Name.X
-    assert segments["LThigh"].frame.second_axis.fallback.name == Axis.Name.Y
-    assert segments["LThigh"].frame.axis_to_keep == Axis.Name.Y
+    assert segments["LThigh"].frame.first_axis.name == Axis.Name.Z
+    assert segments["LThigh"].frame.second_axis.fallback.name == Axis.Name.X
+    assert segments["LThigh"].frame.axis_to_keep == Axis.Name.Z
     assert isinstance(segments["LShank"].frame.origin, FunctionalAxisProjectionPointSpec)
     assert segments["LShank"].frame.origin.point_marker_names == ("LKNE", "LKNEM")
-    assert segments["LShank"].frame.first_axis.name == Axis.Name.X
-    assert segments["LShank"].frame.second_axis.fallback.name == Axis.Name.Y
-    assert segments["LShank"].frame.axis_to_keep == Axis.Name.Y
+    assert segments["LShank"].frame.first_axis.name == Axis.Name.Z
+    assert segments["LShank"].frame.second_axis.fallback.name == Axis.Name.X
+    assert segments["LShank"].frame.axis_to_keep == Axis.Name.X
     assert isinstance(segments["LFoot"].frame.origin, FunctionalCenterSpec)
     assert segments["LFoot"].frame.origin.trial_name == "left_ankle_score"
-    assert segments["LFoot"].frame.first_axis.name == Axis.Name.X
+    assert segments["LFoot"].frame.first_axis.name == Axis.Name.Y
     assert segments["LFoot"].frame.first_axis.start.marker_names == ("LHEE",)
     assert segments["LFoot"].frame.first_axis.end.marker_names == ("LTOE", "LTOE5")
     assert anatomical_segments["Trunk"].frame.origin.marker_names == ("CLAV",)
@@ -189,8 +189,9 @@ def test_c3d_model_creation_presets_are_explicit_about_supported_generation():
     assert required_functional_markers(template_for_c3d_model_preset(C3dModelPreset.LOWER_LIMBS)) != {}
     assert required_functional_markers(template_for_c3d_model_preset(C3dModelPreset.LOWER_LIMBS_ANATOMICAL)) == {}
     assert template_for_c3d_model_preset(C3dModelPreset.UPPER_LIMB).name == "Upper-limb from calibration C3D"
-    with pytest.raises(NotImplementedError, match="Full-body C3D model creation"):
-        template_for_c3d_model_preset(C3dModelPreset.FULL_BODY)
+    full_body_template = template_for_c3d_model_preset(C3dModelPreset.FULL_BODY)
+    assert full_body_template.name == "Full body Model202 from calibration C3D"
+    assert required_functional_markers(full_body_template) != {}
     with pytest.raises(NotImplementedError, match="Template-free"):
         template_for_c3d_model_preset(C3dModelPreset.FROM_SCRATCH)
 
@@ -228,7 +229,11 @@ def test_c3d_model_presets_report_virtual_features_to_reconstruct():
     assert c3d_model_preset_virtual_features(C3dModelPreset.FROM_SCRATCH) == ()
     assert any(feature.name == "Thorax_virtual_7" for feature in upper_limb_features)
     assert any(feature.feature_type == "axis" and feature.name == "Clavicule_u_axis" for feature in upper_limb_features)
-    assert any(feature.name == "CoR_Thorax_in_Thorax" and feature.role == "score" for feature in full_body_features)
+    assert any(feature.name == "CoR_Thorax_wrt_Pelvis" and feature.role == "score" for feature in full_body_features)
+    assert any(feature.name == "Axis_JambeD_SARA" and feature.feature_type == "axis" for feature in full_body_features)
+    assert any(
+        feature.name == "CoR_JambeD_wrt_CuisseD" and feature.role == "axis_projection" for feature in full_body_features
+    )
 
 
 def test_find_static_c3d_file_uses_expected_patterns(tmp_path):
@@ -240,6 +245,15 @@ def test_find_static_c3d_file_uses_expected_patterns(tmp_path):
     (tmp_path / "another_static.c3d").touch()
     with pytest.raises(RuntimeError, match="Expected one static trial"):
         find_static_c3d_file(tmp_path)
+
+
+def test_find_static_c3d_file_prefers_anatomical_trial(tmp_path):
+    main_file = tmp_path / "Test_main.c3d"
+    anatomical_file = tmp_path / "Test_anato.c3d"
+    main_file.touch()
+    anatomical_file.touch()
+
+    assert find_static_c3d_file(tmp_path) == anatomical_file
 
 
 def test_lower_limb_template_builds_expected_generic_model():
