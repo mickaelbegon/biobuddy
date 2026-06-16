@@ -102,12 +102,7 @@ PREVIEW_NEUTRAL_COLOR = "#6b7280"
 VIRTUAL_MARKER_METHOD_DISPLAY_LABELS = {"axis_projection": "projection on axis"}
 
 
-def launch_model_editor(
-    *,
-    open_new_from_c3d: bool = False,
-    c3d_preset: str | C3dModelPreset | None = None,
-    c3d_folder: str | Path | None = None,
-) -> None:
+def launch_model_editor() -> None:
     """
     Launch the Qt desktop model editor.
     """
@@ -2213,13 +2208,8 @@ def launch_model_editor(
         Dialog for the C3D-driven model creation workflow.
         """
 
-        def __init__(
-            self,
-            parent=None,
-            initial_preset: C3dModelPreset | None = None,
-            initial_c3d_folder: str | Path | None = None,
-        ):
-            super().__init__(parent)
+        def __init__(self):
+            super().__init__()
             self.setWindowTitle("New model from C3D")
             self.presets = supported_c3d_model_presets()
             self.c3d_data = None
@@ -2600,7 +2590,6 @@ def launch_model_editor(
             _resize_window_to_available_screen(self, QApplication, 1440, 820)
             self._update_preset_details()
             self._sync_workflow_preview_panel(self.workflow_tabs.currentIndex())
-            self._apply_initial_context(initial_preset, initial_c3d_folder)
 
         def selected_preset(self) -> C3dModelPreset:
             """
@@ -2614,27 +2603,6 @@ def launch_model_editor(
             """
             text = self.c3d_path.text().strip()
             return None if text == "" else Path(text)
-
-        def _apply_initial_context(
-            self,
-            initial_preset: C3dModelPreset | None,
-            initial_c3d_folder: str | Path | None,
-        ) -> None:
-            """
-            Preload the C3D workflow when it is launched from a CLI shortcut.
-            """
-            if initial_preset is not None:
-                preset_index = self.presets.index(initial_preset)
-                self.preset_combo.setCurrentIndex(preset_index)
-            if initial_c3d_folder is not None:
-                folder = str(Path(initial_c3d_folder).expanduser().resolve())
-                self.c3d_folder_path = folder
-                self.c3d_folder_edit.setText(folder)
-                self._auto_assign_c3d_files_from_folder()
-                self._sync_virtual_marker_c3d_files()
-                self._sync_initial_rotation_c3d_files()
-                self._update_preset_details()
-                self._update_generation_log()
 
         def _pipeline_workflow_tab(self):
             widget = QWidget()
@@ -5021,16 +4989,8 @@ def launch_model_editor(
         Minimal desktop editor for inspecting and editing segment properties.
         """
 
-        def __init__(
-            self,
-            startup_new_from_c3d: bool = False,
-            startup_c3d_preset: C3dModelPreset | None = None,
-            startup_c3d_folder: str | Path | None = None,
-        ):
+        def __init__(self):
             super().__init__()
-            self.startup_new_from_c3d = startup_new_from_c3d
-            self.startup_c3d_preset = startup_c3d_preset
-            self.startup_c3d_folder = startup_c3d_folder
             self.setWindowTitle("BioBuddy Model Editor")
             self._resize_to_available_screen(QApplication)
             self.model = None
@@ -5311,16 +5271,8 @@ def launch_model_editor(
             except Exception as error:
                 QMessageBox.critical(self, "Unable to open model", str(error))
 
-        def _new_model_from_c3d(
-            self,
-            initial_preset: C3dModelPreset | None = None,
-            initial_c3d_folder: str | Path | None = None,
-        ) -> None:
-            dialog = C3dModelCreationDialog(
-                self,
-                initial_preset=initial_preset,
-                initial_c3d_folder=initial_c3d_folder,
-            )
+        def _new_model_from_c3d(self) -> None:
+            dialog = C3dModelCreationDialog()
             if _exec_dialog(dialog) != _dialog_accepted_value():
                 return
             if dialog.selected_preset() == C3dModelPreset.FROM_SCRATCH:
@@ -5795,27 +5747,10 @@ def launch_model_editor(
             except Exception as error:
                 QMessageBox.critical(self, "Invalid segment values", str(error))
 
-        def open_startup_workflow(self) -> None:
-            """
-            Open the requested startup workflow after the main window is visible.
-            """
-            if self.startup_new_from_c3d:
-                self._new_model_from_c3d(
-                    initial_preset=self.startup_c3d_preset,
-                    initial_c3d_folder=self.startup_c3d_folder,
-                )
-
     app = QApplication.instance() or QApplication([])
     apply_biobuddy_gui_style(app)
-    startup_preset = _c3d_model_preset_from_cli_value(c3d_preset)
-    window = ModelEditorWindow(
-        startup_new_from_c3d=open_new_from_c3d,
-        startup_c3d_preset=startup_preset,
-        startup_c3d_folder=c3d_folder,
-    )
+    window = ModelEditorWindow()
     window.show()
-    if open_new_from_c3d:
-        QTimer.singleShot(0, window.open_startup_workflow)
     app.exec()
 
 
