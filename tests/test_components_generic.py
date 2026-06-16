@@ -1680,13 +1680,13 @@ def test_sara():
         result_aor.end_point.position.reshape(
             4,
         ),
-        np.array([0.54143488, 0.79048037, 1.08662582, 1.0]),
+        np.array([0.63204427, 0.95401141, 1.31269077, 1.0]),
     )
     npt.assert_almost_equal(
         result_aor.axis().reshape(
             4,
         ),
-        np.array([0.3032919, 0.38028092, 0.51495484, 1.0]),
+        np.array([0.3939013, 0.54381196, 0.74101978, 1.0]),
     )
 
     # Test that calling twice returns the same result (caching)
@@ -1719,11 +1719,11 @@ def test_sara():
     )
     npt.assert_almost_equal(
         result_aor.end_point.position.reshape(4),
-        np.array([0.54143488, 0.79048037, 1.08662582, 1.0]),
+        np.array([0.58462276, 0.88854226, 1.2234799, 1.0]),
     )
     npt.assert_almost_equal(
         result_aor.axis().reshape(4),
-        np.array([0.35071341, 0.44575007, 0.6041657, 1.0]),
+        np.array([0.3939013, 0.54381196, 0.74101978, 1.0]),
     )
 
     # Test that calling twice returns the same result (caching)

@@ -14,7 +14,7 @@ EXPECTED_FUNCTIONAL_C3D_FILES = tuple(
 EXPECTED_C3D_FILES = (
     "Test_func_anat.c3d",
     "anatomical_posture.c3d",
-    "functional_trunk.c3d",
+    "Test_func_trunk.c3d",
     *EXPECTED_FUNCTIONAL_C3D_FILES,
 )
 

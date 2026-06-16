@@ -166,9 +166,9 @@ def test_score_and_sara_without_ghost_segments(initialize_whole_trial_reconstruc
             # Both rotation and translation parts were modified
             np.array(
                 [
-                    [-0.99777445, 0.06656196, 0.00395634],
-                    [0.06658717, 0.9915182, 0.11161452],
-                    [0.0035065, 0.11162956, -0.9937437],
+                    [-0.99777445, 0.06657082, 0.00389257],
+                    [0.06658717, 0.99150906, 0.11169577],
+                    [0.00357613, 0.11170635, -0.9937342],
                 ]
             ),
             decimal=5,
@@ -185,9 +185,9 @@ def test_score_and_sara_without_ghost_segments(initialize_whole_trial_reconstruc
             score_model.segments["tibia_r"].segment_coordinate_system.scs.rotation_matrix.rotation_matrix,
             np.array(
                 [
-                    [-0.99777, 0.06547, 0.01259],
-                    [0.06644, 0.9922, 0.10545],
-                    [-0.00559, 0.10605, -0.99435],
+                    [-0.99777, 0.06546, 0.01267],
+                    [0.06644, 0.9922, 0.10551],
+                    [-0.00566, 0.10612, -0.99434],
                 ]
             ),
             decimal=5,

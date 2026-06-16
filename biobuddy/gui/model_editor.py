@@ -440,6 +440,119 @@ def launch_model_editor(
         scroll_area.setWidgetResizable(True)
         return scroll_area
 
+    def _resize_window_to_available_screen(window, application, preferred_width: int, preferred_height: int) -> None:
+        """
+        Resize a top-level window so it fits inside the usable area of the screen where it is displayed.
+        """
+        screen = window.screen() or application.primaryScreen()
+        if screen is None:
+            window.resize(preferred_width, preferred_height)
+            return
+        available_geometry = screen.availableGeometry()
+        width = min(preferred_width, max(900, int(available_geometry.width() * 0.94)))
+        height = min(preferred_height, max(650, int(available_geometry.height() * 0.9)))
+        window.resize(width, height)
+        window.move(
+            available_geometry.x() + max((available_geometry.width() - width) // 2, 0),
+            available_geometry.y() + max((available_geometry.height() - height) // 2, 0),
+        )
+
+    class _CallbackSignal:
+        """
+        Minimal signal-like helper used by small composite widgets.
+        """
+
+        def __init__(self):
+            self._callbacks = []
+
+        def connect(self, callback) -> None:
+            self._callbacks.append(callback)
+
+        def emit(self, value: str) -> None:
+            for callback in self._callbacks:
+                callback(value)
+
+    class _AxisSequencePicker(QWidget):
+        """
+        Three popup menus that produce a compact axis sequence such as ``xyz`` or ``x``.
+        """
+
+        _axes = ("x", "y", "z")
+        _empty_label = "-"
+
+        def __init__(self, *, allow_first_third_repeat: bool = False):
+            super().__init__()
+            self.allow_first_third_repeat = allow_first_third_repeat
+            self.textChanged = _CallbackSignal()
+            self._syncing = False
+            self._combos = [QComboBox(), QComboBox(), QComboBox()]
+            layout = QHBoxLayout(self)
+            _configure_panel_layout(layout, margin=0, spacing=4)
+            for combo in self._combos:
+                combo.setMinimumWidth(54)
+                combo.setMaximumWidth(64)
+                combo.currentTextChanged.connect(self._on_combo_changed)
+                layout.addWidget(combo)
+            layout.addStretch()
+            self.setText("")
+
+        def text(self) -> str:
+            sequence = "".join(
+                combo.currentText().lower() for combo in self._combos if combo.currentText().lower() in self._axes
+            )
+            return sequence
+
+        def setText(self, value: str) -> None:
+            sequence = [axis for axis in str(value).lower() if axis in self._axes]
+            if not self.allow_first_third_repeat:
+                deduplicated = []
+                for axis in sequence:
+                    if axis not in deduplicated:
+                        deduplicated.append(axis)
+                sequence = deduplicated
+            sequence = sequence[:3]
+            self._syncing = True
+            for index, combo in enumerate(self._combos):
+                current = sequence[index] if index < len(sequence) else self._empty_label
+                self._set_combo_items(combo, self._items_for_index(index, sequence), current)
+            self._syncing = False
+            self._refresh_items()
+            self.textChanged.emit(self.text())
+
+        def _on_combo_changed(self, _value: str) -> None:
+            if self._syncing:
+                return
+            self._refresh_items()
+            self.textChanged.emit(self.text())
+
+        def _refresh_items(self) -> None:
+            values = [combo.currentText().lower() for combo in self._combos]
+            self._syncing = True
+            for index, combo in enumerate(self._combos):
+                current = values[index] if values[index] in self._axes else self._empty_label
+                self._set_combo_items(combo, self._items_for_index(index, values), current)
+            self._syncing = False
+
+        def _items_for_index(self, index: int, values: list[str]) -> list[str]:
+            if self.allow_first_third_repeat:
+                blocked = {values[1]} if index in {0, 2} and values[1] in self._axes else set()
+                if index == 1:
+                    blocked = {axis for axis in (values[0], values[2]) if axis in self._axes}
+            else:
+                blocked = {axis for i, axis in enumerate(values) if i != index and axis in self._axes}
+            current = values[index] if index < len(values) and values[index] in self._axes else None
+            items = [self._empty_label]
+            items.extend(axis for axis in self._axes if axis == current or axis not in blocked)
+            return items
+
+        @staticmethod
+        def _set_combo_items(combo, items: list[str], current: str) -> None:
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(items)
+            combo.setCurrentText(current if current in items else "-")
+            combo.blockSignals(False)
+
     def _dialog_accepted_value() -> int:
         """
         Return the Qt accepted dialog value for PySide6 and PyQt5.
@@ -2313,12 +2426,14 @@ def launch_model_editor(
             self.segment_settings_frame_slider.setEnabled(False)
             self.segment_settings_frame_slider.valueChanged.connect(self._update_segment_settings_preview)
             self.segment_settings_frame_label = QLabel("Frame 1/1")
-            self.settings_translations_edit = QLineEdit()
-            self.settings_translations_edit.setMaximumWidth(120)
-            self.settings_translations_edit.setToolTip("Use x, y and z axes, for example xyz or -.")
-            self.settings_rotations_edit = QLineEdit()
-            self.settings_rotations_edit.setMaximumWidth(120)
-            self.settings_rotations_edit.setToolTip("Use x, y and z axes, for example xyz or x.")
+            self.settings_translations_edit = _AxisSequencePicker(allow_first_third_repeat=False)
+            self.settings_translations_edit.setMaximumWidth(220)
+            self.settings_translations_edit.setToolTip("Choose translation axes. Each axis can be selected only once.")
+            self.settings_rotations_edit = _AxisSequencePicker(allow_first_third_repeat=True)
+            self.settings_rotations_edit.setMaximumWidth(220)
+            self.settings_rotations_edit.setToolTip(
+                "Choose rotation axes. The middle axis cannot be the same as the first or third axis."
+            )
             self.settings_q_min_edit = QLineEdit()
             self.settings_q_min_edit.setMaximumWidth(120)
             self.settings_q_min_edit.setToolTip("Leave empty, or enter one q min value per translation/rotation DoF.")
@@ -2482,7 +2597,7 @@ def launch_model_editor(
             self.workflow_tabs.currentChanged.connect(self._sync_workflow_preview_panel)
             layout.addWidget(workflow_splitter, 1)
             layout.addWidget(buttons)
-            self.resize(1440, 760)
+            _resize_window_to_available_screen(self, QApplication, 1440, 820)
             self._update_preset_details()
             self._sync_workflow_preview_panel(self.workflow_tabs.currentIndex())
             self._apply_initial_context(initial_preset, initial_c3d_folder)

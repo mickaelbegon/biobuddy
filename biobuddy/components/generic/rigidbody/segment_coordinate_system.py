@@ -503,8 +503,9 @@ class SegmentCoordinateSystemUtils:
             start_aor_static = np.ones((4, frame_count_static))
             for i_frame in range(frame_count_static):
                 start_aor_static[:, i_frame] = (rt_parent_static[i_frame] @ np.hstack((cor_parent, 1.0))).reshape(4)
-                direction_global = (rt_parent_static[i_frame] @ np.hstack((aor_parent, 0.0))).reshape(4)
-                end_aor_static[:, i_frame] = start_aor_static[:, i_frame] + direction_global
+                direction_global = rt_parent_static[i_frame].rotation_matrix.rotation_matrix @ aor_parent
+                end_aor_static[:3, i_frame] = start_aor_static[:3, i_frame] + direction_global
+                end_aor_static[3, i_frame] = 1.0
 
             if visualize and not is_in_cache:  # Do not show twice the same visualization
                 child_static_marker_data = static_markers.get_partial_dict_data(child_marker_names)
@@ -523,8 +524,9 @@ class SegmentCoordinateSystemUtils:
                 start_aor_func = np.zeros((4, frame_count_func))
                 for i_frame in range(frame_count_func):
                     start_aor_func[:, i_frame] = (rt_parent_func[i_frame] @ np.hstack((cor_parent, 1.0))).reshape(4)
-                    direction_global = (rt_parent_func[i_frame] @ np.hstack((aor_parent, 0.0))).reshape(4)
-                    end_aor_func[:, i_frame] = start_aor_func[:, i_frame] + direction_global
+                    direction_global = rt_parent_func[i_frame].rotation_matrix.rotation_matrix @ aor_parent
+                    end_aor_func[:3, i_frame] = start_aor_func[:3, i_frame] + direction_global
+                    end_aor_func[3, i_frame] = 1.0
                 fig = _visualize_score(functional_data, rt_parent_func, rt_child_func, [start_aor_func, end_aor_func])
                 fig.show(renderer="browser")
 
