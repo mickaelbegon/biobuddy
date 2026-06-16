@@ -1,5 +1,7 @@
 """
-This example shows how to launch the model editor GUI.
+This example shows how to launch the model editor GUI. The GUI allows to:
+1) Edit an existing model by loading it with the "Open Model" button.
+2) Create a new model using the experimental marker position from a static trial.
 """
 
 from argparse import ArgumentParser, ArgumentTypeError
