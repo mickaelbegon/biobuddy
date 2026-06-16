@@ -4951,7 +4951,9 @@ def launch_model_editor() -> None:
             y += line_gap
             _draw_legend_line(painter, QColor(PREVIEW_AXIS_COLORS["y"]), 1, x, y - 4, "y axis", x + 36, y)
             y += line_gap
-            _draw_legend_line(painter, QColor(PREVIEW_AXIS_COLORS["z"]), 4, x, y - 4, "Rotational axis", x + 36, y)
+            _draw_legend_line(painter, QColor("#2563eb"), 1, x, y - 4, "z axis", x + 36, y)
+            y += line_gap
+            _draw_legend_line(painter, QColor("#6b7280"), 4, x, y - 4, "Rotational axis", x + 36, y)
 
         def mousePressEvent(self, event) -> None:
             self._press_mouse_position = get_event_position(event)
