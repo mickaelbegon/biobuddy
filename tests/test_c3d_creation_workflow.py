@@ -62,6 +62,7 @@ def test_c3d_file_roles_use_generic_names_for_three_presets():
     }
     upper_limb_names = {role.generic_name for role in c3d_file_roles_for_preset(C3dModelPreset.UPPER_LIMB)}
     full_body_names = {role.generic_name for role in c3d_file_roles_for_preset(C3dModelPreset.FULL_BODY)}
+    motive_names = {role.generic_name for role in c3d_file_roles_for_preset(C3dModelPreset.MOTIVE_57)}
 
     assert from_scratch_names == {"main_markers.c3d"}
     assert "Test_func_anat.c3d" in lower_limb_names
@@ -72,6 +73,8 @@ def test_c3d_file_roles_use_generic_names_for_three_presets():
     assert "Test_anato.c3d" in full_body_names
     assert "Test_main.c3d" not in full_body_names
     assert "Test_func_thorax_pelvis.c3d" in full_body_names
+    assert "Static.c3d" in motive_names
+    assert "P5_Calib_Static.c3d" not in motive_names
     assert "Test_func_head_thorax.c3d" in full_body_names
     assert "Test_func_right_shank_right_thigh.c3d" in full_body_names
 

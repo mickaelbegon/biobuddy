@@ -50,11 +50,24 @@ def test_motive_57_template_contains_expected_chain_and_markers():
     assert marker_segments["RFM5"] == ("RFoot",)
     assert marker_segments["RFM1"] == ("RFoot",)
     assert marker_segments["RUA"] == ("RUpperArm",)
-    assert len(attachments) == 51
+    assert len(attachments) == 55
+    assert marker_segments["LFLE"] == ("LThigh", "LShank")
+    assert marker_segments["LFME"] == ("LThigh", "LShank")
+    assert marker_segments["RFLE"] == ("RThigh", "RShank")
+    assert marker_segments["RFME"] == ("RThigh", "RShank")
     assert model.segments["Pelvis"].translations == Translations.XYZ
     assert model.segments["Pelvis"].rotations == Rotations.ZXY
     assert model.segments["RShank"].rotations == Rotations.Z
     assert model.segments["RFoot"].rotations == Rotations.ZX
+    for side in ("L", "R"):
+        thigh = model.segments[f"{side}Thigh"]
+        shank = model.segments[f"{side}Shank"]
+        assert all(
+            thigh.markers[marker_name].is_technical
+            for marker_name in (f"{side}FTC", f"{side}TH", f"{side}FLE", f"{side}FME")
+        )
+        assert not shank.markers[f"{side}FLE"].is_technical
+        assert not shank.markers[f"{side}FME"].is_technical
 
 
 def test_motive_57_template_uses_correct_anatomical_frames():

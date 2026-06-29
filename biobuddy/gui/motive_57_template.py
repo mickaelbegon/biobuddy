@@ -215,6 +215,10 @@ def motive_57_marker_attachments() -> tuple[MarkerAttachmentSpec, ...]:
                 _marker(
                     f"{side}FLE",
                     f"{side}Thigh",
+                    anatomical=True,
+                ),
+                _marker(
+                    f"{side}FLE",
                     f"{side}Shank",
                     technical=False,
                     anatomical=True,
@@ -222,6 +226,10 @@ def motive_57_marker_attachments() -> tuple[MarkerAttachmentSpec, ...]:
                 _marker(
                     f"{side}FME",
                     f"{side}Thigh",
+                    anatomical=True,
+                ),
+                _marker(
+                    f"{side}FME",
                     f"{side}Shank",
                     technical=False,
                     anatomical=True,

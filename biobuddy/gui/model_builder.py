@@ -421,7 +421,14 @@ class ModelTemplate:
         """
         Return the marker-to-segment classification map.
         """
-        return {attachment.name: attachment.segment_names for attachment in self.marker_attachments}
+        marker_segments = {}
+        for attachment in self.marker_attachments:
+            marker_segments[attachment.name] = tuple(
+                dict.fromkeys(
+                    marker_segments.get(attachment.name, ()) + attachment.segment_names
+                )
+            )
+        return marker_segments
 
 
 def required_static_markers(template: ModelTemplate) -> tuple[str, ...]:

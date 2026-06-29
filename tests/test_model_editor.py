@@ -27,7 +27,9 @@ from biobuddy.gui.model_editor import (
     _axis_source_name_from_list_text,
     _orthonormal_axes_from_vector_segments,
     _predictive_virtual_marker_method_from_label,
+    _preview_camera_coordinates,
     _python_code_from_c3d_draft,
+    _fit_projection,
     _remap_c3d_workflow_draft_markers,
     _axis_projection_axis_from_payload,
     _axis_projection_point_markers_from_payload,
@@ -213,6 +215,26 @@ def test_motive_57_unassigned_markers_remain_available_to_gui():
     assert {"RCAJ", "LCAJ", "RHGT", "LHGT", "RDP1", "LDP1"} <= set(
         unassigned_markers
     )
+
+
+def test_preview_projection_keeps_positive_z_visually_up():
+    _x, projected_low_y, _depth = _preview_camera_coordinates(
+        (0.0, 0.0, 0.0), 0.0, 0.0
+    )
+    _x, projected_high_y, _depth = _preview_camera_coordinates(
+        (0.0, 0.0, 1.0), 0.0, 0.0
+    )
+    transform = _fit_projection(
+        [(0.0, projected_low_y), (0.0, projected_high_y)],
+        100,
+        100,
+        lambda x, y: (x, y),
+    )
+
+    assert projected_high_y > projected_low_y
+    assert transform((0.0, projected_high_y))[1] < transform(
+        (0.0, projected_low_y)
+    )[1]
 
 
 def test_lower_limb_functional_sara_axes_do_not_trigger_missing_xyz_warning():
@@ -424,6 +446,26 @@ def test_c3d_generation_log_reports_virtual_marker_local_offset_context():
     assert any("Preset: lower_limbs" in line for line in lines)
     assert any("Virtual markers:" in line for line in lines)
     assert any("global marker added to marker pool" in line for line in lines)
+
+
+def test_motive_57_generation_log_uses_generic_static_name():
+    draft = c3d_workflow_draft(C3dModelPreset.MOTIVE_57)
+    lines = _c3d_generation_log(
+        draft,
+        None,
+        "/tmp/c3d",
+        ("LIAS", "RIAS", "LIPS", "RIPS"),
+    )
+
+    assert "- main: Static.c3d" in lines
+    assert all("P5_Calib_Static.c3d" not in line for line in lines)
+
+
+def test_static_generic_name_matches_participant_prefixed_static_c3d(tmp_path):
+    static_file = tmp_path / "P5_Calib_Static.c3d"
+    static_file.write_text("", encoding="utf-8")
+
+    assert _matching_c3d_file_for_expected_name(str(tmp_path), "Static.c3d") == static_file
 
 
 def test_predictive_virtual_marker_method_label_maps_to_internal_key():

@@ -111,7 +111,7 @@ def launch_model_editor() -> None:
     """
     try:
         from PySide6.QtCore import QPointF, Qt, QTimer
-        from PySide6.QtGui import QColor, QPainter, QPen
+        from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
         from PySide6.QtWidgets import (
             QAbstractItemView,
             QApplication,
@@ -362,13 +362,28 @@ def launch_model_editor() -> None:
         is_square: bool,
         size: int,
         pen_width: int = 1,
+        marker_shape: str | None = None,
     ) -> None:
         """
         Draw one preview marker with the shared square/circle convention.
         """
         painter.setPen(QPen(color, pen_width))
         painter.setBrush(color)
-        if is_square:
+        shape = marker_shape or ("square" if is_square else "circle")
+        if shape == "diamond":
+            x = center.x()
+            y = center.y()
+            painter.drawPolygon(
+                QPolygonF(
+                    (
+                        QPointF(x, y - size),
+                        QPointF(x + size, y),
+                        QPointF(x, y + size),
+                        QPointF(x - size, y),
+                    )
+                )
+            )
+        elif shape == "square":
             painter.drawRect(
                 int(center.x()) - size // 2, int(center.y()) - size // 2, size, size
             )
@@ -416,7 +431,7 @@ def launch_model_editor() -> None:
                 continue
             endpoint = QPointF(
                 origin.x() + length * projected[0] / norm,
-                origin.y() + length * projected[1] / norm,
+                origin.y() - length * projected[1] / norm,
             )
             painter.setPen(QPen(color, 3))
             painter.drawLine(origin, endpoint)
@@ -630,7 +645,7 @@ def launch_model_editor() -> None:
         return np.asarray(
             [
                 [cos_yaw, -sin_yaw, 0.0],
-                [-sin_pitch * sin_yaw, -sin_pitch * cos_yaw, -cos_pitch],
+                [sin_pitch * sin_yaw, sin_pitch * cos_yaw, cos_pitch],
                 [cos_pitch * sin_yaw, cos_pitch * cos_yaw, -sin_pitch],
             ],
             dtype=float,
@@ -1052,7 +1067,7 @@ def launch_model_editor() -> None:
             ):
                 is_selected = segment_name == self.selected_segment_name
                 color = (
-                    QColor("#64748b")
+                    QColor("#000000")
                     if segment_index == -2
                     else QColor("#7c3aed")
                     if segment_index == -1
@@ -1060,7 +1075,7 @@ def launch_model_editor() -> None:
                 )
                 center = transform(_rotate_preview_point(point, self.yaw, self.pitch))
                 radius = (
-                    3
+                    5
                     if segment_index == -2
                     else (7 if segment_index == -1 else (6 if is_selected else 4))
                 )
@@ -1071,6 +1086,7 @@ def launch_model_editor() -> None:
                     is_square=is_technical,
                     size=2 * radius if is_technical else radius,
                     pen_width=3 if is_selected else 1,
+                    marker_shape="diamond" if segment_index == -2 else None,
                 )
                 if (
                     _should_draw_preview_labels(self)
@@ -2332,6 +2348,7 @@ def launch_model_editor() -> None:
             self.c3d_data = None
             self.groups = ()
             self.selected_segment_name = ""
+            self.selected_marker_names = ()
             self.frame_index = 0
             self._marker_records = ()
             _initialize_preview_camera(self)
@@ -2341,11 +2358,13 @@ def launch_model_editor() -> None:
             c3d_data,
             groups: tuple[object, ...],
             selected_segment_name: str,
+            selected_marker_names: tuple[str, ...],
             frame_index: int,
         ) -> None:
             self.c3d_data = c3d_data
             self.groups = groups
             self.selected_segment_name = selected_segment_name
+            self.selected_marker_names = selected_marker_names
             self.frame_index = frame_index
             self._marker_records = self._build_marker_records()
             self.update()
@@ -2356,6 +2375,7 @@ def launch_model_editor() -> None:
             if self.c3d_data is None:
                 return ()
             marker_records = []
+            seen_marker_names = set()
             for segment_index, group in enumerate(self.groups):
                 for marker_name in group.marker_names:
                     point = _marker_frame_position(
@@ -2372,6 +2392,16 @@ def launch_model_editor() -> None:
                             segment_index,
                         )
                     )
+                    seen_marker_names.add(marker_name)
+            for marker_name in self.selected_marker_names:
+                if marker_name in seen_marker_names:
+                    continue
+                point = _marker_frame_position(
+                    self.c3d_data, marker_name, self.frame_index
+                )
+                if point is None:
+                    continue
+                marker_records.append((marker_name, point, "", False, -2))
             return tuple(marker_records)
 
         def paintEvent(self, event) -> None:
@@ -2409,18 +2439,32 @@ def launch_model_editor() -> None:
                 key=lambda record: _preview_depth(record[1], self.yaw, self.pitch),
             ):
                 is_selected = segment_name == self.selected_segment_name
-                color = QColor(_segment_preview_color(segment_index))
+                is_marker_selected = marker_name in self.selected_marker_names
+                color = (
+                    QColor("#000000")
+                    if segment_index == -2
+                    else QColor(_segment_preview_color(segment_index))
+                )
                 center = transform(_rotate_preview_point(point, self.yaw, self.pitch))
                 radius = 6 if is_selected else 4
+                if is_marker_selected:
+                    painter.setPen(QPen(QColor("#f59e0b"), 3))
+                    painter.setBrush(QColor(255, 255, 255, 0))
+                    painter.drawEllipse(center, 13, 13)
                 _draw_preview_marker(
                     painter,
                     center,
                     color,
                     is_square=is_technical,
-                    size=2 * radius if is_technical else radius,
-                    pen_width=3 if is_selected else 1,
+                    size=9
+                    if segment_index == -2
+                    else (2 * radius if is_technical else radius),
+                    pen_width=4 if is_marker_selected else (3 if is_selected else 1),
+                    marker_shape="diamond" if segment_index == -2 else None,
                 )
-                if _should_draw_preview_labels(self) and is_selected:
+                if _should_draw_preview_labels(self) and (
+                    is_selected or is_marker_selected
+                ):
                     painter.drawText(center.x() + 6, center.y() - 6, marker_name)
 
             _draw_preview_orientation_axes(
@@ -2854,6 +2898,9 @@ def launch_model_editor() -> None:
             self.step_list = QListWidget()
             self.marker_list = QListWidget()
             self.marker_list.setSelectionMode(qt_extended_selection)
+            self.marker_list.itemSelectionChanged.connect(
+                self._update_technical_segment_preview
+            )
             self.marker_mapping_label = QLabel(
                 "Load a C3D to check marker names against the selected template."
             )
@@ -4086,7 +4133,7 @@ def launch_model_editor() -> None:
                 self.workflow_draft = assign_markers_to_segment(
                     self.workflow_draft, segment_name, marker_names
                 )
-                self._update_preset_details()
+                self._refresh_marker_assignment_details(segment_name)
             except Exception as error:
                 QMessageBox.critical(self, "Unable to assign marker", str(error))
 
@@ -4100,7 +4147,7 @@ def launch_model_editor() -> None:
             self.workflow_draft = unassign_markers_from_segment(
                 self.workflow_draft, segment_name, marker_names
             )
-            self._update_preset_details()
+            self._refresh_marker_assignment_details(segment_name)
 
         def _add_workflow_virtual_marker(self) -> None:
             self.feature_list.clearSelection()
@@ -4781,6 +4828,7 @@ def launch_model_editor() -> None:
                 self.c3d_data,
                 self.workflow_draft.segment_marker_groups,
                 self._selected_workflow_segment_name() or "",
+                self._selected_workflow_marker_names(),
                 frame_index,
             )
 
@@ -4846,7 +4894,7 @@ def launch_model_editor() -> None:
                     marker_names,
                     self.assigned_marker_technical_checkbox.isChecked(),
                 )
-                self._update_preset_details()
+                self._refresh_marker_assignment_details(segment_name)
             except Exception as error:
                 QMessageBox.critical(self, "Unable to update marker type", str(error))
 
@@ -5798,6 +5846,42 @@ def launch_model_editor() -> None:
             lines = tuple(lines) + self._functional_trial_quality_lines()
             self.generation_log_edit.setPlainText("\n".join(lines))
 
+        def _refresh_marker_assignment_details(self, segment_name: str | None) -> None:
+            """
+            Refresh only the widgets affected by marker assignment edits.
+            """
+            anatomical_segment_name = self._selected_anatomical_segment_name()
+            self._populate_segment_marker_lists()
+            self._restore_workflow_segment_selection(segment_name)
+            self._restore_anatomical_segment_selection(anatomical_segment_name)
+            self._refresh_workflow_progress_and_issues()
+            self.summary_label.setText(
+                c3d_workflow_summary(self.workflow_draft.preset, self.c3d_data)
+            )
+
+        def _refresh_workflow_progress_and_issues(self) -> None:
+            self.step_list.clear()
+            for step_status in c3d_workflow_progress(
+                self.workflow_draft, self.c3d_data
+            ):
+                self.step_list.addItem(_workflow_step_item(step_status))
+            self.issue_list.clear()
+            issues = validate_c3d_workflow_draft(self.workflow_draft, self.c3d_data)
+            if len(issues) == 0:
+                self.issue_list.addItem("No draft issue detected.")
+                return
+            for issue in issues:
+                item = QListWidgetItem(
+                    f"{issue.severity.upper()} | {issue.category} | {issue.message}"
+                )
+                if issue.severity == "error":
+                    item.setForeground(QColor("#991b1b"))
+                    item.setBackground(QColor("#fee2e2"))
+                elif issue.severity == "warning":
+                    item.setForeground(QColor("#92400e"))
+                    item.setBackground(QColor("#fef3c7"))
+                self.issue_list.addItem(item)
+
         def _generate_python_code(self) -> None:
             default_folder = self.c3d_folder_path or str(Path.home())
             filepath, _ = QFileDialog.getSaveFileName(
@@ -5905,24 +5989,8 @@ def launch_model_editor() -> None:
                     "Status: ready with main marker C3D and optional functional trials."
                 )
 
-            for step_status in c3d_workflow_progress(
-                self.workflow_draft, self.c3d_data
-            ):
-                self.step_list.addItem(_workflow_step_item(step_status))
-
-            for group in self.workflow_draft.segment_marker_groups:
-                markers = (
-                    ", ".join(group.marker_names)
-                    if len(group.marker_names) != 0
-                    else "no marker assigned yet"
-                )
-                parent = group.parent_name if group.parent_name else "-"
-                self.segment_marker_list.addItem(
-                    f"{group.segment_name}: {markers} | type={group.segment_type} | parent={parent}"
-                )
-                self.anatomical_segment_list.addItem(
-                    f"{group.segment_name}: {markers} | type={group.segment_type} | parent={parent}"
-                )
+            self._refresh_workflow_progress_and_issues()
+            self._populate_segment_marker_lists()
             self._restore_workflow_segment_selection(previously_selected_segment)
             self._restore_anatomical_segment_selection(
                 previously_selected_anatomical_segment
@@ -5982,22 +6050,6 @@ def launch_model_editor() -> None:
                     f"{file_role.role} | {file_role.generic_name} | {required} | {source}"
                 )
 
-            issues = validate_c3d_workflow_draft(self.workflow_draft, self.c3d_data)
-            if len(issues) == 0:
-                self.issue_list.addItem("No draft issue detected.")
-            else:
-                for issue in issues:
-                    item = QListWidgetItem(
-                        f"{issue.severity.upper()} | {issue.category} | {issue.message}"
-                    )
-                    if issue.severity == "error":
-                        item.setForeground(QColor("#991b1b"))
-                        item.setBackground(QColor("#fee2e2"))
-                    elif issue.severity == "warning":
-                        item.setForeground(QColor("#92400e"))
-                        item.setBackground(QColor("#fef3c7"))
-                    self.issue_list.addItem(item)
-
             for example in c3d_virtual_marker_method_examples():
                 if example.method not in _visible_virtual_marker_methods():
                     continue
@@ -6010,6 +6062,18 @@ def launch_model_editor() -> None:
             self._update_virtual_marker_preview()
             self._update_segment_settings_preview()
             self._update_generation_log()
+
+        def _populate_segment_marker_lists(self) -> None:
+            self.segment_marker_list.blockSignals(True)
+            self.anatomical_segment_list.blockSignals(True)
+            self.segment_marker_list.clear()
+            self.anatomical_segment_list.clear()
+            for group in self.workflow_draft.segment_marker_groups:
+                text = _segment_marker_group_label(group)
+                self.segment_marker_list.addItem(text)
+                self.anatomical_segment_list.addItem(text)
+            self.segment_marker_list.blockSignals(False)
+            self.anatomical_segment_list.blockSignals(False)
 
         def _restore_workflow_segment_selection(self, segment_name: str | None) -> None:
             target_index = 0
@@ -7292,6 +7356,16 @@ def _list_widget_texts(list_widget) -> tuple[str, ...]:
     )
 
 
+def _segment_marker_group_label(group) -> str:
+    markers = (
+        ", ".join(group.marker_names)
+        if len(group.marker_names) != 0
+        else "no marker assigned yet"
+    )
+    parent = group.parent_name if group.parent_name else "-"
+    return f"{group.segment_name}: {markers} | type={group.segment_type} | parent={parent}"
+
+
 def _marker_pool_from_draft(workflow_draft) -> tuple[str, ...]:
     """
     Return the known marker names for a C3D draft, even before a C3D file is loaded.
@@ -7753,6 +7827,8 @@ def _matching_c3d_file_for_expected_name(
     patterns = [expected_name]
     if expected_name.startswith("Test_"):
         patterns.append(f"*{expected_name.removeprefix('Test_')}")
+    elif expected_name.lower() == "static.c3d":
+        patterns.extend(("*Static.c3d", "*static*.c3d"))
     elif "_func_" in expected_name:
         patterns.append(f"*{expected_name.split('_func_', maxsplit=1)[1]}")
 
@@ -7889,7 +7965,7 @@ def _c3d_generation_log(
     ]
     for assignment in workflow_draft.file_assignments:
         lines.append(
-            f"- {assignment.role}: {assignment.source_path or assignment.generic_name}"
+            f"- {assignment.role}: {_c3d_assignment_log_name(workflow_draft.preset, assignment)}"
         )
     lines.extend(["", "Segments:"])
     for group in workflow_draft.segment_marker_groups:
@@ -7939,6 +8015,12 @@ def _c3d_generation_log(
             f"anthropometry={anthropometry}, sex={setting.anthropometry_sex or '-'}, mass={mass}, length={length}"
         )
     return tuple(lines)
+
+
+def _c3d_assignment_log_name(preset: C3dModelPreset, assignment) -> str:
+    if preset == C3dModelPreset.MOTIVE_57 and assignment.role == "main":
+        return "Static.c3d"
+    return assignment.source_path or assignment.generic_name
 
 
 def _anatomical_frame_instruction_lines(
@@ -8373,7 +8455,7 @@ def _preview_camera_coordinates(
     yaw_y = sin_yaw * x + cos_yaw * y
     pitch_y = cos_pitch * yaw_y - sin_pitch * z
     pitch_z = sin_pitch * yaw_y + cos_pitch * z
-    return yaw_x, -pitch_z, pitch_y
+    return yaw_x, pitch_z, pitch_y
 
 
 def _segment_parent_choices(
