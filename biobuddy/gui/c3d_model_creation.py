@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -34,6 +35,8 @@ from .virtual_points import (
     VirtualPointDefinition,
     marker_data_with_virtual_features,
 )
+
+ProgressCallback = Callable[[str], None]
 
 
 class C3dModelPreset(Enum):
@@ -249,15 +252,15 @@ def _motive_57_virtual_features() -> tuple[C3dPresetVirtualFeature, ...]:
             name="LGJC",
             feature_type="point",
             segment_name="LUpperArm",
-            role="rab_glenohumeral",
-            description="method=Rab; source=LCAJ; exclude LCAJ and LHGT from humerus reconstruction",
+            role="rab2002_shoulder",
+            description="method=Rab2002; point=LCAJ; mid=LHME,LHLE; fraction=0.17; exclude LCAJ and LHGT from humerus reconstruction",
         ),
         C3dPresetVirtualFeature(
             name="RGJC",
             feature_type="point",
             segment_name="RUpperArm",
-            role="rab_glenohumeral",
-            description="method=Rab; source=RCAJ; exclude RCAJ and RHGT from humerus reconstruction",
+            role="rab2002_shoulder",
+            description="method=Rab2002; point=RCAJ; mid=RHME,RHLE; fraction=0.17; exclude RCAJ and RHGT from humerus reconstruction",
         ),
     ]
     for side, label in (("L", "left"), ("R", "right")):
@@ -426,16 +429,22 @@ def create_model_from_c3d_folder(
         dict[str, tuple[VirtualPointDefinition, ...]] | None
     ) = None,
     functional_virtual_axes: dict[str, tuple[VirtualAxisDefinition, ...]] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> C3dModelCreationResult:
     """
     Create a model from a calibration folder containing C3D files.
     """
+    _notify_progress(progress_callback, "Preparing C3D model template...")
     template = template_for_c3d_model_preset(preset)
-    static_data = C3dData(
-        str(find_static_c3d_file(calibration_folder, static_patterns))
-    )
+    _notify_progress(progress_callback, "Searching for the static C3D trial...")
+    static_file = find_static_c3d_file(calibration_folder, static_patterns)
+    _notify_progress(progress_callback, f"Loading static C3D: {static_file.name}")
+    static_data = C3dData(str(static_file))
+    _notify_progress(progress_callback, "Loading functional C3D trials...")
     functional_data = load_functional_c3d_trials(
-        template=template, calibration_folder=calibration_folder
+        template=template,
+        calibration_folder=calibration_folder,
+        progress_callback=progress_callback,
     )
     return create_model_from_marker_data(
         template=template,
@@ -447,6 +456,7 @@ def create_model_from_c3d_folder(
         static_virtual_axes=static_virtual_axes,
         functional_virtual_points=functional_virtual_points,
         functional_virtual_axes=functional_virtual_axes,
+        progress_callback=progress_callback,
     )
 
 
@@ -530,28 +540,35 @@ def create_model_from_marker_data(
         dict[str, tuple[VirtualPointDefinition, ...]] | None
     ) = None,
     functional_virtual_axes: dict[str, tuple[VirtualAxisDefinition, ...]] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> C3dModelCreationResult:
     """
     Create a model from already-loaded marker data.
     """
     functional_data = {} if functional_data is None else functional_data
+    _notify_progress(progress_callback, "Applying virtual markers to static data...")
     static_data = marker_data_with_virtual_features(
         static_data,
         point_definitions=static_virtual_points,
         axis_definitions=static_virtual_axes,
     )
+    _notify_progress(progress_callback, "Applying virtual markers to functional data...")
     functional_data = _functional_data_with_virtual_features(
         functional_data=functional_data,
         point_definitions_by_trial=functional_virtual_points,
         axis_definitions_by_trial=functional_virtual_axes,
     )
+    _notify_progress(progress_callback, "Checking marker availability...")
     marker_reports = template_marker_availability(
         template, static_data, functional_data
     )
+    _notify_progress(progress_callback, "Building biomechanical model...")
     model = build_real_model(
         template=template, static_data=static_data, functional_data=functional_data
     )
+    _notify_progress(progress_callback, "Computing frame quality metrics...")
     frame_quality = compute_frame_quality(template, static_data)
+    _notify_progress(progress_callback, "Finalizing generated model...")
     return C3dModelCreationResult(
         model=model,
         template=template,
@@ -562,6 +579,14 @@ def create_model_from_marker_data(
         static_data=static_data,
         functional_data=functional_data,
     )
+
+
+def _notify_progress(progress_callback: ProgressCallback | None, message: str) -> None:
+    """
+    Notify an optional GUI progress reporter about the current C3D creation step.
+    """
+    if progress_callback is not None:
+        progress_callback(message)
 
 
 def find_static_c3d_file(

@@ -8,6 +8,7 @@ from biobuddy.components.generic.rigidbody.axis import Axis
 from biobuddy.gui.c3d_creation_workflow import (
     add_axis_to_draft,
     add_segment_to_draft,
+    assign_c3d_file_role_to_draft,
     c3d_workflow_draft,
     c3d_workflow_progress,
     remove_axis_from_draft,
@@ -21,6 +22,7 @@ from biobuddy.gui.model_editor import (
     _joint_name_from_segments,
     _marker_frame_position,
     _matching_c3d_file_for_expected_name,
+    _mean_marker_series,
     _marker_name_mapping_for_c3d,
     _is_virtual_feature_axis,
     _anatomical_axis_source_labels,
@@ -29,6 +31,7 @@ from biobuddy.gui.model_editor import (
     _predictive_virtual_marker_method_from_label,
     _preview_camera_coordinates,
     _preview_camera_matrix_for_plane,
+    _preview_camera_matrix_for_subject_view,
     _python_code_from_c3d_draft,
     _fit_projection,
     _remap_c3d_workflow_draft_markers,
@@ -201,8 +204,26 @@ def test_virtual_feature_list_shows_sara_axes_first():
     labels = _virtual_feature_list_labels(draft)
 
     assert labels[0].startswith("[axis] Axis_LKnee_SARA")
+    assert "| AoR (sara) |" in labels[0]
     assert labels[1].startswith("[axis] Axis_RKnee_SARA")
+    assert "| AoR (sara) |" in labels[1]
     assert any(label.startswith("Proj_LKnee_on_Axis_LKnee_SARA") for label in labels)
+
+
+def test_motive_57_virtual_feature_list_shows_knee_aors():
+    draft = c3d_workflow_draft(C3dModelPreset.MOTIVE_57)
+    labels = _virtual_feature_list_labels(draft)
+
+    assert any(
+        label.startswith("[axis] Axis_LKnee_SARA")
+        and "| LShank | AoR (sara) |" in label
+        for label in labels
+    )
+    assert any(
+        label.startswith("[axis] Axis_RKnee_SARA")
+        and "| RShank | AoR (sara) |" in label
+        for label in labels
+    )
 
 
 def test_motive_57_unassigned_markers_remain_available_to_gui():
@@ -251,6 +272,48 @@ def test_preview_camera_matrix_for_standard_planes():
     assert _preview_camera_coordinates(
         point, _preview_camera_matrix_for_plane("ZX"), 0.0
     ) == (3.0, 1.0, 2.0)
+
+
+def test_preview_camera_matrix_for_subject_views_uses_global_vertical_and_pca():
+    markers = {
+        "A": np.asarray((0.0, 0.0, -3.0)),
+        "B": np.asarray((0.0, 0.0, 3.0)),
+        "C": np.asarray((0.0, 2.0, -3.0)),
+        "D": np.asarray((0.0, 2.0, 3.0)),
+        "E": np.asarray((0.8, 1.0, 0.0)),
+        "F": np.asarray((-0.8, 1.0, 0.0)),
+    }
+    point = (1.0, 2.0, 3.0)
+
+    assert _preview_camera_coordinates(
+        point, _preview_camera_matrix_for_subject_view("face", markers), 0.0
+    ) == (3.0, 2.0, 1.0)
+    assert _preview_camera_coordinates(
+        point, _preview_camera_matrix_for_subject_view("dos", markers), 0.0
+    ) == (-3.0, 2.0, -1.0)
+    assert _preview_camera_coordinates(
+        point, _preview_camera_matrix_for_subject_view("cote", markers), 0.0
+    ) == (1.0, 2.0, 3.0)
+
+
+def test_mean_marker_series_preserves_frame_axis_for_sara_preview():
+    class FakeC3dData:
+        def markers_center_position(self, marker_names):
+            assert marker_names == ("A", "B")
+            return np.asarray(
+                [
+                    [1.0, 2.0, 3.0],
+                    [4.0, 5.0, 6.0],
+                    [7.0, 8.0, 9.0],
+                    [1.0, 1.0, 1.0],
+                ]
+            )
+
+    series = _mean_marker_series(FakeC3dData(), ("A", "B"))
+
+    assert series.shape == (3, 3)
+    np.testing.assert_allclose(series[:, 0], (1.0, 4.0, 7.0))
+    np.testing.assert_allclose(series[:, 2], (3.0, 6.0, 9.0))
 
 
 def test_virtual_marker_whole_body_preview_keeps_all_markers_while_dragging():
@@ -312,9 +375,9 @@ def test_anatomical_axis_source_labels_include_all_virtual_markers_and_axes():
     assert labels[:2] == ("LASI", "RASI")
     assert "CoR_LThigh_wrt_Pelvis | virtual marker | LThigh" in labels
     assert "CoR_LFoot_wrt_LShank | virtual marker | LFoot" in labels
-    assert "[axis] Axis_LKnee_SARA | virtual axis | LShank" in labels
-    assert "[axis] LShank_second_axis | virtual axis | LShank" not in labels
-    assert _axis_source_name_from_list_text("[axis] Axis_LKnee_SARA | virtual axis | LShank") == "Axis_LKnee_SARA"
+    assert "[axis] Axis_LKnee_SARA | AoR virtual axis | LShank" in labels
+    assert "[axis] LShank_second_axis | AoR virtual axis | LShank" not in labels
+    assert _axis_source_name_from_list_text("[axis] Axis_LKnee_SARA | AoR virtual axis | LShank") == "Axis_LKnee_SARA"
     assert (
         _axis_source_name_from_list_text("CoR_LThigh_wrt_Pelvis | virtual marker | LThigh") == "CoR_LThigh_wrt_Pelvis"
     )
@@ -490,6 +553,23 @@ def test_motive_57_generation_log_uses_generic_static_name():
     assert all("P5_Calib_Static.c3d" not in line for line in lines)
 
 
+def test_motive_57_generation_log_uses_resolved_static_assignment():
+    draft = assign_c3d_file_role_to_draft(
+        c3d_workflow_draft(C3dModelPreset.MOTIVE_57),
+        "main",
+        "/tmp/P5_Calib_Static.c3d",
+    )
+    lines = _c3d_generation_log(
+        draft,
+        None,
+        "/tmp/c3d",
+        ("LIAS", "RIAS", "LIPS", "RIPS"),
+    )
+
+    assert "- main: /tmp/P5_Calib_Static.c3d" in lines
+    assert "- main: *Static.c3d" not in lines
+
+
 def test_static_generic_name_matches_participant_prefixed_static_c3d(tmp_path):
     static_file = tmp_path / "P5_Calib_Static.c3d"
     static_file.write_text("", encoding="utf-8")
@@ -507,6 +587,19 @@ def test_predictive_virtual_marker_method_label_maps_to_internal_key():
     """
     assert _predictive_virtual_marker_method_from_label("Hara 2016 hip") == "hara2016_hip"
     assert _predictive_virtual_marker_method_from_label("harrington2007_hip") == "harrington2007_hip"
+    assert _predictive_virtual_marker_method_from_label("Rab 2002 shoulder") == "rab2002_shoulder"
+
+
+def test_motive_57_gjc_virtual_markers_use_rab2002_predictive_method():
+    draft = c3d_workflow_draft(C3dModelPreset.MOTIVE_57)
+    markers_by_name = {marker.name: marker for marker in draft.virtual_markers}
+
+    assert markers_by_name["LGJC"].method == "rab2002_shoulder"
+    assert "point=LCAJ" in markers_by_name["LGJC"].source
+    assert "mid=LHME,LHLE" in markers_by_name["LGJC"].source
+    assert markers_by_name["RGJC"].method == "rab2002_shoulder"
+    assert "point=RCAJ" in markers_by_name["RGJC"].source
+    assert "mid=RHME,RHLE" in markers_by_name["RGJC"].source
 
 
 def test_python_code_from_c3d_draft_serializes_preset_value():

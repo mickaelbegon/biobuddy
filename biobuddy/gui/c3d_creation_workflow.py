@@ -42,6 +42,7 @@ SOURCE_REQUIRED_VIRTUAL_MARKER_METHODS = {
     "hara2016_hip",
     "harrington2007_hip",
     "sobral2025_shoulder",
+    "rab2002_shoulder",
 }
 
 
@@ -1192,6 +1193,12 @@ def c3d_virtual_marker_method_examples() -> tuple[C3dVirtualMarkerMethodExample,
             description="Predict a glenohumeral center with Sobral et al. 2025 from scapula landmarks.",
         ),
         C3dVirtualMarkerMethodExample(
+            method="rab2002_shoulder",
+            source_example="main_markers.c3d",
+            equation_example="CAJ -> 0.17*(mid HME/HLE - CAJ)",
+            description="Predict a glenohumeral center with Rab et al. 2002 as 17% of CAJ toward mid HME/HLE.",
+        ),
+        C3dVirtualMarkerMethodExample(
             method="score",
             source_example="*func_lhip.c3d",
             equation_example="proximal/distal center",
@@ -2069,6 +2076,8 @@ def _virtual_feature_default_method(feature_type: str, role: str) -> str:
         return "sara" if "axis" in role else "markers"
     if role == "axis_projection":
         return "axis_projection"
+    if role in SOURCE_REQUIRED_VIRTUAL_MARKER_METHODS:
+        return role
     if role in {"score", "sara"}:
         return role
     if "legacy" in role:

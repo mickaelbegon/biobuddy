@@ -345,7 +345,7 @@ def _shank_segment(side: str, use_functional: bool) -> SegmentSpec:
             origin=kjc,
             first_axis=AxisSpec(Axis.Name.Y, ajc, kjc),
             second_axis=_knee_axis_spec(side, use_functional),
-            axis_to_keep=Axis.Name.Y,
+            axis_to_keep=Axis.Name.Z,
         ),
         mesh_points=(
             _p(f"{side}FAX"),
@@ -360,6 +360,11 @@ def _shank_segment(side: str, use_functional: bool) -> SegmentSpec:
 
 def _foot_segment(side: str, use_functional: bool) -> SegmentSpec:
     ajc = _ankle_center_spec(side, use_functional)
+    z_start, z_end = (
+        (f"{side}FM1", f"{side}FM5")
+        if side == "L"
+        else (f"{side}FM5", f"{side}FM1")
+    )
     return SegmentSpec(
         name=f"{side}Foot",
         parent_name=f"{side}Shank",
@@ -369,7 +374,7 @@ def _foot_segment(side: str, use_functional: bool) -> SegmentSpec:
             first_axis=AxisSpec.from_markers(
                 Axis.Name.X, f"{side}FCC", (f"{side}FM5", f"{side}FM1")
             ),
-            second_axis=AxisSpec.from_markers(Axis.Name.Z, f"{side}FM5", f"{side}FM1"),
+            second_axis=AxisSpec.from_markers(Axis.Name.Z, z_start, z_end),
             axis_to_keep=Axis.Name.X,
         ),
         mesh_points=(

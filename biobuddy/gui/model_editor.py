@@ -98,6 +98,7 @@ PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS = {
     "hara2016_hip": "Hara 2016 hip",
     "harrington2007_hip": "Harrington 2007 hip",
     "sobral2025_shoulder": "Sobral 2025 shoulder",
+    "rab2002_shoulder": "Rab 2002 shoulder",
 }
 
 PREVIEW_AXIS_COLORS = {"x": "#dc2626", "y": "#16a34a", "z": "#2563eb"}
@@ -132,6 +133,7 @@ def launch_model_editor() -> None:
             QMainWindow,
             QMenu,
             QMessageBox,
+            QProgressDialog,
             QPushButton,
             QScrollArea,
             QSplitter,
@@ -150,10 +152,12 @@ def launch_model_editor() -> None:
         qt_match_exact = Qt.MatchFlag.MatchExactly
         qt_match_recursive = Qt.MatchFlag.MatchRecursive
         qt_dash_line = Qt.PenStyle.DashLine
+        qt_dot_line = Qt.PenStyle.DotLine
         qt_extended_selection = QAbstractItemView.SelectionMode.ExtendedSelection
         qt_open_hand_cursor = Qt.CursorShape.OpenHandCursor
         qt_closed_hand_cursor = Qt.CursorShape.ClosedHandCursor
         qt_right_button = Qt.MouseButton.RightButton
+        qt_window_modal = Qt.WindowModality.WindowModal
         qpaint_antialiasing = QPainter.RenderHint.Antialiasing
         get_event_position = lambda event: event.position()
         get_event_global_position = lambda event: event.globalPosition().toPoint()
@@ -182,6 +186,7 @@ def launch_model_editor() -> None:
                 QMainWindow,
                 QMenu,
                 QMessageBox,
+                QProgressDialog,
                 QPushButton,
                 QScrollArea,
                 QSplitter,
@@ -200,10 +205,12 @@ def launch_model_editor() -> None:
             qt_match_exact = Qt.MatchExactly
             qt_match_recursive = Qt.MatchRecursive
             qt_dash_line = Qt.DashLine
+            qt_dot_line = Qt.DotLine
             qt_extended_selection = QAbstractItemView.ExtendedSelection
             qt_open_hand_cursor = Qt.OpenHandCursor
             qt_closed_hand_cursor = Qt.ClosedHandCursor
             qt_right_button = Qt.RightButton
+            qt_window_modal = Qt.WindowModal
             qpaint_antialiasing = QPainter.Antialiasing
             get_event_position = lambda event: event.localPos()
             get_event_global_position = lambda event: event.globalPos()
@@ -242,6 +249,36 @@ def launch_model_editor() -> None:
         Return the standard RGB axis color, or a neutral fallback.
         """
         return PREVIEW_AXIS_COLORS.get(axis_name, PREVIEW_NEUTRAL_COLOR)
+
+    def _style_axis_combo(combo) -> None:
+        """
+        Tint an axis combo to match the RGB axis convention.
+        """
+        axis_name = combo.currentText().strip().lower()
+        styles = {
+            "x": ("#dc2626", "#fee2e2"),
+            "y": ("#16a34a", "#dcfce7"),
+            "z": ("#2563eb", "#dbeafe"),
+        }
+        border, background = styles.get(axis_name, ("#6b7280", "#f8fafc"))
+        combo.setStyleSheet(
+            "QComboBox {"
+            f"background-color: {background};"
+            f"border: 1px solid {border};"
+            "border-radius: 4px;"
+            "padding: 3px 8px;"
+            "}"
+        )
+
+    def _construction_axis_pen(axis_name: str, keep_vector: bool):
+        """
+        Use a subtle dotted pen for marker-to-marker construction vectors.
+        """
+        color = QColor(_preview_axis_color(axis_name))
+        color.setAlpha(175 if keep_vector else 135)
+        pen = QPen(color, 2 if keep_vector else 1)
+        pen.setStyle(qt_dot_line)
+        return pen
 
     def _small_button(text: str) -> QPushButton:
         """
@@ -804,6 +841,7 @@ def launch_model_editor() -> None:
         axis_combo.addItems(["x", "y", "z"])
         if index == 1:
             axis_combo.setCurrentText("y")
+        _style_axis_combo(axis_combo)
         keep_checkbox = QCheckBox("Keep this vector")
         keep_checkbox.setChecked(index == 0)
         add_start_button = _small_button("+")
@@ -1108,22 +1146,14 @@ def launch_model_editor() -> None:
                     painter.drawText(center.x() + 5, center.y() - 5, marker_name)
 
             for axis_name, keep_vector, start, end in axis_segments:
-                painter.setPen(
-                    QPen(
-                        QColor(_preview_axis_color(axis_name)), 4 if keep_vector else 2
-                    )
-                )
+                painter.setPen(_construction_axis_pen(axis_name, keep_vector))
                 painter.drawLine(
                     transform(_rotate_preview_point(start, self.yaw, self.pitch)),
                     transform(_rotate_preview_point(end, self.yaw, self.pitch)),
                 )
 
             for axis_name, keep_vector, start, end in temporary_segments:
-                pen = QPen(
-                    QColor(_preview_axis_color(axis_name)), 4 if keep_vector else 2
-                )
-                pen.setStyle(qt_dash_line)
-                painter.setPen(pen)
+                painter.setPen(_construction_axis_pen(axis_name, keep_vector))
                 painter.drawLine(
                     transform(_rotate_preview_point(start, self.yaw, self.pitch)),
                     transform(_rotate_preview_point(end, self.yaw, self.pitch)),
@@ -1607,7 +1637,9 @@ def launch_model_editor() -> None:
                 endpoint_screen = transform(
                     _rotate_preview_point(tuple(endpoint), self.yaw, self.pitch)
                 )
-                painter.setPen(QPen(QColor(_preview_axis_color(axis_name)), 3))
+                painter.setPen(QPen(QColor(255, 255, 255, 220), 7))
+                painter.drawLine(origin_screen, endpoint_screen)
+                painter.setPen(QPen(QColor(_preview_axis_color(axis_name)), 5))
                 painter.drawLine(origin_screen, endpoint_screen)
                 if _should_draw_preview_labels(self):
                     painter.drawText(
@@ -3035,6 +3067,11 @@ def launch_model_editor() -> None:
                     )
                 )
                 controls["axis_combo"].currentTextChanged.connect(
+                    lambda text, combo=controls["axis_combo"]: _style_axis_combo(
+                        combo
+                    )
+                )
+                controls["axis_combo"].currentTextChanged.connect(
                     self._update_segment_axis_preview
                 )
                 controls["keep_checkbox"].stateChanged.connect(
@@ -3209,6 +3246,9 @@ def launch_model_editor() -> None:
             )
             self.segment_settings_preview = C3dSegmentSettingsPreviewWidget()
             _style_preview_widget(self.segment_settings_preview)
+            self.workflow_view_button = QPushButton("View")
+            self.workflow_view_button.setObjectName("SecondaryActionButton")
+            self.workflow_view_button.clicked.connect(self._show_workflow_view_menu)
             self.segment_settings_frame_slider = QSlider(qt_horizontal)
             self.segment_settings_frame_slider.setEnabled(False)
             self.segment_settings_frame_slider.valueChanged.connect(
@@ -3486,6 +3526,7 @@ def launch_model_editor() -> None:
             options_row.addWidget(self.virtual_marker_show_functional_c3d_checkbox)
             options_row.addWidget(self.virtual_marker_whole_body_preview_checkbox)
             options_row.addStretch()
+            options_row.addWidget(self.workflow_view_button)
             layout.addLayout(options_row)
 
             self.workflow_empty_frame_slider = QSlider(qt_horizontal)
@@ -3557,6 +3598,79 @@ def launch_model_editor() -> None:
             row.addWidget(slider, 1)
             row.addWidget(label)
             return page
+
+        def _show_workflow_view_menu(self) -> None:
+            """
+            Show visible view choices for the active C3D workflow preview.
+            """
+            menu = QMenu(self)
+            plane_actions = {
+                menu.addAction(f"{plane} plane"): plane for plane in ("XY", "YZ", "ZX")
+            }
+            menu.addSeparator()
+            subject_actions = {
+                menu.addAction(label): view
+                for label, view in (
+                    ("Face view", "face"),
+                    ("Back view", "dos"),
+                    ("Side view", "cote"),
+                )
+            }
+            position = self.workflow_view_button.mapToGlobal(
+                self.workflow_view_button.rect().bottomLeft()
+            )
+            selected_action = _exec_menu(menu, position)
+            plane = plane_actions.get(selected_action)
+            try:
+                if plane is not None:
+                    matrix = _preview_camera_matrix_for_plane(plane)
+                else:
+                    view = subject_actions.get(selected_action)
+                    if view is None:
+                        return
+                    matrix = _preview_camera_matrix_for_subject_view(
+                        view, self._active_workflow_preview_marker_positions()
+                    )
+            except ValueError as error:
+                QMessageBox.warning(self, "Unavailable view", str(error))
+                return
+            self._apply_workflow_preview_camera(matrix)
+
+        def _apply_workflow_preview_camera(self, matrix: np.ndarray) -> None:
+            """
+            Apply one explicit camera matrix to the currently visible workflow preview.
+            """
+            widget = self.workflow_canvas_stack.currentWidget()
+            if not hasattr(widget, "yaw"):
+                return
+            widget.yaw = matrix
+            widget.pitch = 0.0
+            widget._last_mouse_position = None
+            widget._is_preview_dragging = False
+            widget.setCursor(qt_open_hand_cursor)
+            widget.update()
+
+        def _active_workflow_preview_marker_positions(self) -> dict[str, np.ndarray]:
+            """
+            Return marker positions from the active preview for PCA-based subject views.
+            """
+            widget = self.workflow_canvas_stack.currentWidget()
+            scene = getattr(widget, "scene", None)
+            if scene is not None:
+                return {
+                    name: np.asarray(point, dtype=float)
+                    for name, point in scene.markers.items()
+                }
+            c3d_data = getattr(widget, "c3d_data", None)
+            if c3d_data is None:
+                return {}
+            frame_index = int(getattr(widget, "frame_index", 0))
+            positions = {}
+            for marker_name in c3d_data.marker_names:
+                point = _marker_frame_position(c3d_data, marker_name, frame_index)
+                if point is not None:
+                    positions[marker_name] = np.asarray(point, dtype=float)
+            return positions
 
         def _sync_workflow_preview_panel(self, tab_index: int) -> None:
             """
@@ -3971,22 +4085,64 @@ def launch_model_editor() -> None:
             )
             if not folder:
                 return
-            self.c3d_folder_path = folder
-            self.c3d_folder_edit.setText(folder)
-            self._auto_assign_c3d_files_from_folder()
-            self._sync_virtual_marker_c3d_files()
-            self._sync_initial_rotation_c3d_files()
-            self._update_preset_details()
-            self._update_generation_log()
+            progress_dialog, progress_callback = (
+                self._c3d_folder_selection_progress_reporter()
+            )
+            try:
+                progress_callback(f"Selected folder: {folder}")
+                self.c3d_folder_path = folder
+                self.c3d_folder_edit.setText(folder)
+                self._auto_assign_c3d_files_from_folder(
+                    progress_callback=progress_callback
+                )
+                progress_callback("Refreshing C3D file selectors...")
+                self._sync_virtual_marker_c3d_files()
+                self._sync_initial_rotation_c3d_files()
+                progress_callback("Refreshing preset details...")
+                self._update_preset_details()
+                self._update_generation_log()
+            finally:
+                progress_dialog.close()
 
-        def _auto_assign_c3d_files_from_folder(self, load_main: bool = True) -> None:
+        def _c3d_folder_selection_progress_reporter(self):
+            """
+            Create a progress popup while the workflow scans and loads a C3D folder.
+            """
+            progress_dialog = QProgressDialog(
+                "Preparing C3D folder scan...",
+                None,
+                0,
+                0,
+                self,
+            )
+            progress_dialog.setWindowTitle("Loading C3D folder")
+            progress_dialog.setWindowModality(qt_window_modal)
+            progress_dialog.setCancelButton(None)
+            progress_dialog.setMinimumDuration(0)
+            progress_dialog.show()
+
+            def progress_callback(message: str) -> None:
+                progress_dialog.setLabelText(message)
+                progress_dialog.show()
+                QApplication.processEvents()
+
+            progress_callback("Preparing C3D folder scan...")
+            return progress_dialog, progress_callback
+
+        def _auto_assign_c3d_files_from_folder(
+            self, load_main: bool = True, progress_callback=None
+        ) -> None:
             if not self.c3d_folder_path or self._is_auto_assigning_c3d_files:
                 return
             self._is_auto_assigning_c3d_files = True
             try:
+                if progress_callback is not None:
+                    progress_callback("Scanning folder for expected C3D files...")
                 assignments = []
                 trial_sources = {}
                 for assignment in self.workflow_draft.file_assignments:
+                    if progress_callback is not None:
+                        progress_callback(f"Matching C3D file: {assignment.generic_name}")
                     matched_file = _matching_c3d_file_for_expected_name(
                         self.c3d_folder_path, assignment.generic_name
                     )
@@ -4000,6 +4156,8 @@ def launch_model_editor() -> None:
                         trial_sources[assignment.role] = source_path
 
                 updated_virtual_markers = []
+                if progress_callback is not None:
+                    progress_callback("Updating virtual marker C3D sources...")
                 for marker in self.workflow_draft.virtual_markers:
                     trial_name = _trial_name_from_virtual_feature_source(
                         marker.source
@@ -4026,6 +4184,8 @@ def launch_model_editor() -> None:
                     )
 
                 updated_axes = []
+                if progress_callback is not None:
+                    progress_callback("Updating virtual axis C3D sources...")
                 for axis in self.workflow_draft.axes:
                     trial_name = _trial_name_from_virtual_feature_source(axis.source)
                     source_path = trial_sources.get(trial_name, "")
@@ -4046,6 +4206,8 @@ def launch_model_editor() -> None:
                 )
                 main_source = trial_sources.get("main", "")
                 if load_main and main_source and not self.c3d_path.text().strip():
+                    if progress_callback is not None:
+                        progress_callback(f"Loading main C3D: {Path(main_source).name}")
                     self._load_c3d_file(main_source)
             finally:
                 self._is_auto_assigning_c3d_files = False
@@ -4268,7 +4430,7 @@ def launch_model_editor() -> None:
                 method_label = PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS[method].replace(
                     " ", ""
                 )
-            elif method == "sobral2025_shoulder":
+            elif method in {"sobral2025_shoulder", "rab2002_shoulder"}:
                 method_label = PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS[method].replace(
                     " ", ""
                 )
@@ -5660,6 +5822,7 @@ def launch_model_editor() -> None:
                 "hara2016_hip": "Predict a hip CoR from the selected C3D and segment pair.",
                 "harrington2007_hip": "Predict a hip CoR from the selected C3D and segment pair.",
                 "sobral2025_shoulder": "Predict a shoulder CoR from the selected C3D and segment pair.",
+                "rab2002_shoulder": "Predict a glenohumeral center from CAJ and the midpoint between HME/HLE.",
             }
             self.virtual_marker_info_label.setText(hints.get(method, ""))
             self._update_suggested_virtual_marker_name()
@@ -6391,24 +6554,47 @@ def launch_model_editor() -> None:
 
         def mousePressEvent(self, event) -> None:
             if event.button() == qt_right_button:
-                self._show_view_plane_menu(event)
+                event.accept()
                 return
             self._press_mouse_position = get_event_position(event)
             _start_preview_camera_drag(self, event)
 
-        def _show_view_plane_menu(self, event) -> None:
+        def contextMenuEvent(self, event) -> None:
+            self._show_view_plane_menu(event.globalPos())
+            event.accept()
+
+        def _show_view_plane_menu(self, position) -> None:
             """
             Show standard orthographic plane choices for the model preview.
             """
             menu = QMenu(self)
-            actions = {
+            plane_actions = {
                 menu.addAction(f"{plane} plane"): plane for plane in ("XY", "YZ", "ZX")
             }
-            selected_action = _exec_menu(menu, get_event_global_position(event))
-            plane = actions.get(selected_action)
-            if plane is None:
-                return
-            self.yaw = _preview_camera_matrix_for_plane(plane)
+            menu.addSeparator()
+            subject_actions = {
+                menu.addAction(label): view
+                for label, view in (
+                    ("Face view", "face"),
+                    ("Back view", "dos"),
+                    ("Side view", "cote"),
+                )
+            }
+            selected_action = _exec_menu(menu, position)
+            plane = plane_actions.get(selected_action)
+            if plane is not None:
+                self.yaw = _preview_camera_matrix_for_plane(plane)
+            else:
+                view = subject_actions.get(selected_action)
+                if view is None:
+                    return
+                try:
+                    self.yaw = _preview_camera_matrix_for_subject_view(
+                        view, self.scene.markers if self.scene is not None else {}
+                    )
+                except ValueError as error:
+                    QMessageBox.warning(self, "Unavailable view", str(error))
+                    return
             self.pitch = 0.0
             self._last_mouse_position = None
             self._is_preview_dragging = False
@@ -6774,20 +6960,53 @@ def launch_model_editor() -> None:
                 return
             try:
                 folder_path = Path(calibration_folder)
+                progress_dialog, progress_callback = (
+                    self._c3d_folder_generation_progress_reporter()
+                )
                 result = create_model_from_c3d_folder(
                     calibration_folder=folder_path,
                     preset=dialog.selected_preset(),
+                    progress_callback=progress_callback,
                 )
+                progress_callback("Refreshing model editor...")
                 self.model = result.model
                 self.current_filepath = folder_path / result.output_filename
                 self._refresh_model_views()
+                progress_dialog.close()
                 QMessageBox.information(
                     self,
                     "Model generated from C3D",
                     _format_c3d_creation_summary(result, folder_path),
                 )
             except Exception as error:
+                if "progress_dialog" in locals():
+                    progress_dialog.close()
                 QMessageBox.critical(self, "Unable to generate model", str(error))
+
+        def _c3d_folder_generation_progress_reporter(self):
+            """
+            Create a non-cancelable progress popup for C3D folder model generation.
+            """
+            progress_dialog = QProgressDialog(
+                "Preparing C3D model generation...",
+                None,
+                0,
+                0,
+                self,
+            )
+            progress_dialog.setWindowTitle("Generating model from C3D")
+            progress_dialog.setWindowModality(qt_window_modal)
+            progress_dialog.setCancelButton(None)
+            progress_dialog.setMinimumDuration(0)
+            progress_dialog.show()
+
+            def progress_callback(message: str) -> None:
+                progress_dialog.setLabelText(message)
+                progress_dialog.show()
+                QApplication.processEvents()
+
+            progress_callback("Preparing C3D model generation...")
+            return progress_dialog, progress_callback
 
         def _new_model_from_c3d_file(
             self, filepath: Path, preset: C3dModelPreset
@@ -8088,7 +8307,7 @@ def _c3d_generation_log(
 
 def _c3d_assignment_log_name(preset: C3dModelPreset, assignment) -> str:
     if preset == C3dModelPreset.MOTIVE_57 and assignment.role == "main":
-        return "*Static.c3d"
+        return assignment.source_path or "*Static.c3d"
     return assignment.source_path or assignment.generic_name
 
 
@@ -8163,7 +8382,7 @@ def _virtual_feature_list_labels(workflow_draft) -> tuple[str, ...]:
     compact list height, this keeps the reusable axes visible without scrolling.
     """
     axis_labels = tuple(
-        f"[axis] {axis.name} | {axis.segment_name} | {axis.method} | {axis.source or 'functional trial'}"
+        f"[axis] {axis.name} | {axis.segment_name} | AoR ({axis.method}) | {axis.source or 'functional trial'}"
         for axis in workflow_draft.axes
         if _is_virtual_feature_axis(axis)
     )
@@ -8352,10 +8571,10 @@ def _mean_frame_position(
 
 def _mean_marker_series(c3d_data, marker_names: tuple[str, ...]) -> np.ndarray:
     """
-    Return the mean position over the selected markers and all frames.
+    Return the mean marker-group trajectory over all frames.
     """
     marker_positions = c3d_data.markers_center_position(marker_names)
-    return np.nanmean(marker_positions[:3, :], axis=1)
+    return marker_positions[:3, :]
 
 
 def _scaled_axis_end_point(
@@ -8507,6 +8726,68 @@ def _preview_camera_matrix_for_plane(plane: str) -> np.ndarray:
     if normalized_plane not in matrices:
         raise ValueError(f"Unknown preview plane '{plane}'.")
     return np.asarray(matrices[normalized_plane], dtype=float)
+
+
+def _preview_camera_matrix_for_subject_view(
+    view: str, markers: dict[str, np.ndarray]
+) -> np.ndarray:
+    """
+    Return an orthographic camera matrix aligned with PCA-derived subject views.
+
+    The lab vertical is imposed as the global Y axis. The frontal plane is
+    estimated from the marker cloud by finding the dominant horizontal PCA axis.
+    """
+    vertical = np.asarray((0.0, 1.0, 0.0), dtype=float)
+    frontal_horizontal = _subject_frontal_horizontal_axis_from_pca(markers, vertical)
+    if frontal_horizontal is None:
+        raise ValueError("Face/back/side views require at least three 3D markers.")
+    forward = _normalized_cross(vertical, frontal_horizontal)
+
+    normalized_view = view.strip().lower()
+    matrices = {
+        "face": (frontal_horizontal, vertical, forward),
+        "front": (frontal_horizontal, vertical, forward),
+        "dos": (-frontal_horizontal, vertical, -forward),
+        "back": (-frontal_horizontal, vertical, -forward),
+        "cote": (forward, vertical, frontal_horizontal),
+        "side": (forward, vertical, frontal_horizontal),
+    }
+    if normalized_view not in matrices:
+        raise ValueError(f"Unknown subject view '{view}'.")
+    return np.asarray(matrices[normalized_view], dtype=float)
+
+
+def _subject_frontal_horizontal_axis_from_pca(
+    markers: dict[str, np.ndarray], vertical: np.ndarray
+) -> np.ndarray | None:
+    """
+    Estimate the horizontal axis of the frontal plane from the marker cloud.
+    """
+    points = np.asarray(
+        [point for point in markers.values() if np.all(np.isfinite(point))],
+        dtype=float,
+    )
+    if points.shape[0] < 3:
+        return None
+    vertical_norm = np.linalg.norm(vertical)
+    if vertical_norm <= 1e-12:
+        return None
+    vertical_unit = vertical / vertical_norm
+    centered = points - np.nanmean(points, axis=0)
+    horizontal = centered - np.outer(centered @ vertical_unit, vertical_unit)
+    if np.linalg.norm(horizontal) <= 1e-12:
+        return None
+    _u, _s, vh = np.linalg.svd(horizontal, full_matrices=False)
+    direction = vh[0]
+    direction = direction - np.dot(direction, vertical_unit) * vertical_unit
+    norm = np.linalg.norm(direction)
+    if norm <= 1e-12:
+        return None
+    direction = direction / norm
+    largest_component = int(np.argmax(np.abs(direction)))
+    if direction[largest_component] < 0:
+        direction = -direction
+    return direction
 
 
 def _preview_depth(

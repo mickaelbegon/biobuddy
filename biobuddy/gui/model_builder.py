@@ -20,6 +20,8 @@ from ..components.real.biomechanical_model_real import BiomechanicalModelReal
 from ..utils.enums import Rotations, Translations
 from ..utils.marker_data import C3dData, MarkerData
 
+ProgressCallback = Callable[[str], None]
+
 
 class FunctionalMethod(Enum):
     """
@@ -621,7 +623,11 @@ def build_real_model(
     return model
 
 
-def load_functional_c3d_trials(template: ModelTemplate, calibration_folder: Path) -> dict[str, MarkerData]:
+def load_functional_c3d_trials(
+    template: ModelTemplate,
+    calibration_folder: Path,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, MarkerData]:
     """
     Load optional functional trials requested by a template.
     """
@@ -632,7 +638,13 @@ def load_functional_c3d_trials(template: ModelTemplate, calibration_folder: Path
             continue
         if len(matches) > 1:
             raise RuntimeError(f"Expected one '{trial_spec.name}' trial, found {len(matches)}.")
+        if progress_callback is not None:
+            progress_callback(
+                f"Loading functional C3D {trial_spec.name}: {matches[0].name}"
+            )
         data = C3dData(str(matches[0]))
+        if progress_callback is not None:
+            progress_callback(f"Checking functional markers: {trial_spec.name}")
         missing_markers = sorted(set(trial_spec.required_markers) - set(data.marker_names))
         if missing_markers:
             raise ValueError(f"Trial '{trial_spec.name}' is missing markers: {', '.join(missing_markers)}")

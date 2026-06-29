@@ -113,13 +113,41 @@ def test_motive_57_template_uses_correct_anatomical_frames():
     assert head.first_axis.name == Axis.Name.Z
     assert head.second_axis.name == Axis.Name.X
 
-    foot = segments["RFoot"].frame
-    assert foot.first_axis.name == Axis.Name.X
-    assert foot.first_axis.start.marker_names == ("RFCC",)
-    assert foot.first_axis.end.marker_names == ("RFM5", "RFM1")
-    assert foot.second_axis.name == Axis.Name.Z
-    assert foot.second_axis.start.marker_names == ("RFM5",)
-    assert foot.second_axis.end.marker_names == ("RFM1",)
+    right_foot = segments["RFoot"].frame
+    assert right_foot.first_axis.name == Axis.Name.X
+    assert right_foot.first_axis.start.marker_names == ("RFCC",)
+    assert right_foot.first_axis.end.marker_names == ("RFM5", "RFM1")
+    assert right_foot.second_axis.name == Axis.Name.Z
+    assert right_foot.second_axis.start.marker_names == ("RFM5",)
+    assert right_foot.second_axis.end.marker_names == ("RFM1",)
+
+    left_foot = segments["LFoot"].frame
+    assert left_foot.first_axis.name == Axis.Name.X
+    assert left_foot.first_axis.start.marker_names == ("LFCC",)
+    assert left_foot.first_axis.end.marker_names == ("LFM5", "LFM1")
+    assert left_foot.second_axis.name == Axis.Name.Z
+    assert left_foot.second_axis.start.marker_names == ("LFM1",)
+    assert left_foot.second_axis.end.marker_names == ("LFM5",)
+
+    right_thigh = segments["RThigh"].frame
+    left_thigh = segments["LThigh"].frame
+    assert right_thigh.first_axis.name == Axis.Name.Y
+    assert left_thigh.first_axis.name == Axis.Name.Y
+    assert right_thigh.second_axis.fallback.start.marker_names == ("RFME",)
+    assert right_thigh.second_axis.fallback.end.marker_names == ("RFLE",)
+    assert left_thigh.second_axis.fallback.start.marker_names == ("LFLE",)
+    assert left_thigh.second_axis.fallback.end.marker_names == ("LFME",)
+
+    right_shank = segments["RShank"].frame
+    left_shank = segments["LShank"].frame
+    assert right_shank.second_axis.fallback.name == Axis.Name.Z
+    assert right_shank.second_axis.fallback.start.marker_names == ("RFME",)
+    assert right_shank.second_axis.fallback.end.marker_names == ("RFLE",)
+    assert right_shank.axis_to_keep == Axis.Name.Z
+    assert left_shank.second_axis.fallback.name == Axis.Name.Z
+    assert left_shank.second_axis.fallback.start.marker_names == ("LFLE",)
+    assert left_shank.second_axis.fallback.end.marker_names == ("LFME",)
+    assert left_shank.axis_to_keep == Axis.Name.Z
 
     upper_arm = segments["RUpperArm"].frame
     assert upper_arm.origin.marker_names == ("RGJC",)
@@ -127,6 +155,27 @@ def test_motive_57_template_uses_correct_anatomical_frames():
     assert upper_arm.first_axis.end.marker_names == ("RGJC",)
     assert upper_arm.second_axis.start.marker_names == ("RHME",)
     assert upper_arm.second_axis.end.marker_names == ("RHLE",)
+
+    left_upper_arm = segments["LUpperArm"].frame
+    assert left_upper_arm.origin.marker_names == ("LGJC",)
+    assert left_upper_arm.first_axis.start.marker_names == ("LHLE", "LHME")
+    assert left_upper_arm.first_axis.end.marker_names == ("LGJC",)
+    assert left_upper_arm.second_axis.start.marker_names == ("LHLE",)
+    assert left_upper_arm.second_axis.end.marker_names == ("LHME",)
+
+    right_forearm = segments["RForearm"].frame
+    assert right_forearm.second_axis.start.marker_names == ("RHME", "RUSP")
+    assert right_forearm.second_axis.end.marker_names == ("RHLE", "RRSP")
+    left_forearm = segments["LForearm"].frame
+    assert left_forearm.second_axis.start.marker_names == ("LHLE", "LRSP")
+    assert left_forearm.second_axis.end.marker_names == ("LHME", "LUSP")
+
+    right_hand = segments["RHand"].frame
+    assert right_hand.second_axis.start.marker_names == ("RUSP",)
+    assert right_hand.second_axis.end.marker_names == ("RRSP",)
+    left_hand = segments["LHand"].frame
+    assert left_hand.second_axis.start.marker_names == ("LRSP",)
+    assert left_hand.second_axis.end.marker_names == ("LUSP",)
 
 
 def test_motive_57_template_declares_functional_trials_and_virtual_requirements():

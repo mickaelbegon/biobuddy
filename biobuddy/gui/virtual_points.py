@@ -631,6 +631,47 @@ def predictive_sobral2025_shoulder_cor(
     )
 
 
+def predictive_rab2002_shoulder_cor(
+    name: str,
+    coracoacromial_joint: str,
+    humeral_medial_epicondyle: str,
+    humeral_lateral_epicondyle: str,
+    fraction: float = 0.17,
+) -> VirtualPointDefinition:
+    """
+    Create a Rab et al. 2002 predictive glenohumeral center from CAJ and elbow epicondyles.
+
+    The point is placed at ``fraction`` of the vector from CAJ toward the midpoint
+    between HME and HLE. The default fraction follows the Motive 57 working
+    convention discussed for the Rab predictive method.
+    """
+    if not 0.0 <= float(fraction) <= 1.0:
+        raise ValueError("fraction must be between 0 and 1.")
+    required_markers = (
+        coracoacromial_joint,
+        humeral_medial_epicondyle,
+        humeral_lateral_epicondyle,
+    )
+
+    def evaluator(data: MarkerData) -> np.ndarray:
+        caj = data.get_position([coracoacromial_joint])[:3, 0, :]
+        hme = data.get_position([humeral_medial_epicondyle])[:3, 0, :]
+        hle = data.get_position([humeral_lateral_epicondyle])[:3, 0, :]
+        humeral_epicondyle_midpoint = 0.5 * (hme + hle)
+        return caj + float(fraction) * (humeral_epicondyle_midpoint - caj)
+
+    return VirtualPointDefinition(
+        name=name,
+        method=VirtualPointMethod.GLOBAL_LINEAR_REGRESSION,
+        required_markers=required_markers,
+        evaluator=evaluator,
+        description=(
+            "Rab et al. 2002 predictive glenohumeral center: CAJ plus 17% of the "
+            "vector toward the midpoint between HME and HLE."
+        ),
+    )
+
+
 def example_predictive_hip_cor(side: str) -> VirtualPointDefinition:
     """
     Return an example pelvis-regression hip center definition.

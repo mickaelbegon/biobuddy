@@ -138,6 +138,7 @@ from .virtual_points import (
     marker_pair_virtual_axis,
     marker_mean_virtual_point,
     point_pair_virtual_axis,
+    predictive_rab2002_shoulder_cor,
     pointing_virtual_point,
     sara_virtual_axis_placeholder,
 )
@@ -314,6 +315,7 @@ __all__ = [
     marker_pair_virtual_axis.__name__,
     marker_mean_virtual_point.__name__,
     point_pair_virtual_axis.__name__,
+    predictive_rab2002_shoulder_cor.__name__,
     pointing_virtual_point.__name__,
     sara_virtual_axis_placeholder.__name__,
     UpperLimbSegmentSpec.__name__,

@@ -25,7 +25,7 @@ def anatomical_axis_source_labels(workflow_draft, marker_pool: tuple[str, ...]) 
         f"{marker.name} | virtual marker | {marker.segment_name}" for marker in workflow_draft.virtual_markers
     )
     source_labels.extend(
-        f"[axis] {axis.name} | virtual axis | {axis.segment_name}"
+        f"[axis] {axis.name} | AoR virtual axis | {axis.segment_name}"
         for axis in workflow_draft.axes
         if is_virtual_feature_axis(axis)
     )

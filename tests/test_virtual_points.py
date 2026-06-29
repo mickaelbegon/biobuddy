@@ -15,6 +15,7 @@ from biobuddy.gui.virtual_points import (
     hara2016_hip_center_local,
     predictive_hara2016_hip_cor,
     predictive_harrington2007_hip_cor,
+    predictive_rab2002_shoulder_cor,
     predictive_sobral2025_shoulder_cor,
     local_frame_virtual_axis,
     local_frame_regression_virtual_point,
@@ -262,6 +263,27 @@ def test_sobral2025_predictive_shoulder_center_is_finite():
 
     assert point.shape == (4, 2)
     assert np.isfinite(point[:3, :]).all()
+
+
+def test_rab2002_predictive_shoulder_center_uses_caj_to_elbow_midpoint_fraction():
+    data = _marker_data_from_points(
+        {
+            "RCAJ": (0.0, 0.0, 0.0),
+            "RHME": (100.0, -20.0, 0.0),
+            "RHLE": (100.0, 20.0, 0.0),
+        }
+    )
+    definition = predictive_rab2002_shoulder_cor(
+        "RGJC",
+        coracoacromial_joint="RCAJ",
+        humeral_medial_epicondyle="RHME",
+        humeral_lateral_epicondyle="RHLE",
+    )
+
+    point = definition.evaluate(data)
+
+    np.testing.assert_allclose(point[:3, 0], np.array([17.0, 0.0, 0.0]))
+    assert definition.required_markers == ("RCAJ", "RHME", "RHLE")
 
 
 def _simple_marker_data() -> DictData:

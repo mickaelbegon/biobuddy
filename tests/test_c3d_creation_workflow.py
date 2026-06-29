@@ -537,6 +537,10 @@ def test_c3d_virtual_marker_method_examples_document_regression_and_sara():
         example.method == "regression" and "example_predictive_hip_cor" in example.equation_example
         for example in examples
     )
+    assert any(
+        example.method == "rab2002_shoulder" and "0.17" in example.equation_example
+        for example in examples
+    )
     assert any(example.method == "sara" and "*func_lknee.c3d" in example.source_example for example in examples)
 
 

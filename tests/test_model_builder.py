@@ -175,6 +175,26 @@ def test_c3d_model_creation_from_marker_data_returns_model_and_reports():
     assert result.frame_quality["Pelvis"].mean_angle_degrees == pytest.approx(90.0)
 
 
+def test_c3d_model_creation_reports_progress_steps():
+    progress_messages = []
+
+    create_model_from_marker_data(
+        template=lower_limb_template(),
+        static_data=_synthetic_lower_limb_data(),
+        preset=C3dModelPreset.LOWER_LIMBS,
+        progress_callback=progress_messages.append,
+    )
+
+    assert progress_messages == [
+        "Applying virtual markers to static data...",
+        "Applying virtual markers to functional data...",
+        "Checking marker availability...",
+        "Building biomechanical model...",
+        "Computing frame quality metrics...",
+        "Finalizing generated model...",
+    ]
+
+
 def test_from_scratch_c3d_preset_is_template_free():
     assert C3dModelPreset.FROM_SCRATCH in supported_c3d_model_presets()
     with pytest.raises(NotImplementedError, match="Template-free"):
@@ -310,11 +330,17 @@ def test_c3d_model_presets_report_virtual_features_to_reconstruct():
         for feature in full_body_features
     )
     assert any(
-        feature.name == "RGJC" and feature.role == "rab_glenohumeral"
+        feature.name == "RGJC"
+        and feature.role == "rab2002_shoulder"
+        and "point=RCAJ" in feature.description
+        and "mid=RHME,RHLE" in feature.description
         for feature in motive_57_features
     )
     assert any(
-        feature.name == "LGJC" and feature.role == "rab_glenohumeral"
+        feature.name == "LGJC"
+        and feature.role == "rab2002_shoulder"
+        and "point=LCAJ" in feature.description
+        and "mid=LHME,LHLE" in feature.description
         for feature in motive_57_features
     )
     assert any(
