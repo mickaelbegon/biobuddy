@@ -71,7 +71,6 @@ from .c3d_creation_workflow import (
     assign_markers_to_segment,
     c3d_creation_workflow,
     c3d_template_payload_from_draft,
-    c3d_virtual_marker_method_examples,
     c3d_workflow_draft,
     c3d_workflow_progress,
     c3d_workflow_summary,
@@ -2947,14 +2946,20 @@ def launch_model_editor() -> None:
             self.generate_log_button.clicked.connect(self._update_generation_log)
             self.generate_python_code_button = QPushButton("Generate Python code")
             self.generate_python_code_button.clicked.connect(self._generate_python_code)
+            self.show_summary_button = QPushButton("Show summary")
+            self.show_summary_button.clicked.connect(self._show_workflow_summary)
             self.generation_log_edit = QTextEdit()
             self.generation_log_edit.setReadOnly(True)
             self.generation_log_edit.setMinimumHeight(160)
 
             self.status_label = QLabel()
             self.status_label.setObjectName("WorkflowStatusLabel")
-            self.summary_label = QLabel()
-            self.summary_label.setObjectName("MutedInfoLabel")
+            self.c3d_names_overview_label = QLabel()
+            self.c3d_names_overview_label.setObjectName("MutedInfoLabel")
+            self.c3d_names_overview_label.setWordWrap(True)
+            self.c3d_marker_status_label = QLabel()
+            self.c3d_marker_status_label.setObjectName("MutedInfoLabel")
+            self.c3d_marker_status_label.setWordWrap(True)
             self.feature_list = QListWidget()
             self.feature_list.setMinimumHeight(180)
             self.feature_list.itemSelectionChanged.connect(
@@ -3348,7 +3353,6 @@ def launch_model_editor() -> None:
             )
             self.file_role_list = QListWidget()
             self.issue_list = QListWidget()
-            self.example_list = QListWidget()
             self.add_segment_button = QPushButton("Add segment")
             self.add_segment_button.clicked.connect(self._add_workflow_segment)
             self.remove_segment_button = QPushButton("Remove segment")
@@ -3391,7 +3395,6 @@ def launch_model_editor() -> None:
                 self.segment_settings_list,
                 self.file_role_list,
                 self.issue_list,
-                self.example_list,
             ):
                 list_widget.setAlternatingRowColors(True)
             for primary_button in (
@@ -3404,6 +3407,7 @@ def launch_model_editor() -> None:
             for secondary_button in (
                 self.generate_log_button,
                 self.generate_python_code_button,
+                self.show_summary_button,
                 self.apply_anthropometry_button,
                 self.add_segment_button,
                 self.add_virtual_marker_button,
@@ -3461,8 +3465,6 @@ def launch_model_editor() -> None:
             )
             self.workflow_tabs.addTab(self._file_role_workflow_tab(), "C3D names")
             self.workflow_tabs.addTab(self.issue_list, "Checks")
-            self.workflow_tabs.addTab(self.example_list, "Examples")
-            self.workflow_tabs.addTab(self.summary_label, "Summary")
             left_layout.addWidget(self.workflow_tabs, 1)
 
             workflow_splitter = QSplitter(qt_horizontal)
@@ -3503,6 +3505,7 @@ def launch_model_editor() -> None:
             _configure_panel_layout(log_row, margin=0, spacing=8)
             log_row.addWidget(_section_label("Generation log"))
             log_row.addStretch()
+            log_row.addWidget(self.show_summary_button)
             log_row.addWidget(self.generate_python_code_button)
             log_row.addWidget(self.generate_log_button)
             layout.addLayout(log_row)
@@ -4016,7 +4019,10 @@ def launch_model_editor() -> None:
             widget = QWidget()
             layout = QVBoxLayout(widget)
             _configure_panel_layout(layout)
-            layout.addWidget(_section_label("C3D file roles"))
+            layout.addWidget(_section_label("Files and marker names"))
+            layout.addWidget(self.c3d_names_overview_label)
+            layout.addWidget(self.c3d_marker_status_label)
+            layout.addWidget(_section_label("Assigned C3D files"))
             layout.addWidget(self.file_role_list)
             row = QHBoxLayout()
             _configure_panel_layout(row, margin=0, spacing=8)
@@ -6042,6 +6048,89 @@ def launch_model_editor() -> None:
             lines = tuple(lines) + self._functional_trial_quality_lines()
             self.generation_log_edit.setPlainText("\n".join(lines))
 
+        def _show_workflow_summary(self) -> None:
+            """
+            Show the workflow summary on demand instead of keeping a permanent tab.
+            """
+            QMessageBox.information(
+                self,
+                "C3D workflow summary",
+                c3d_workflow_summary(self.workflow_draft.preset, self.c3d_data),
+            )
+
+        def _update_c3d_names_panel(self) -> None:
+            """
+            Refresh the compact C3D files and marker names status panel.
+            """
+            workflow = c3d_creation_workflow(self.workflow_draft.preset)
+            required_roles = {role.role for role in workflow.file_roles if role.required}
+            assigned_count = sum(
+                1
+                for assignment in self.workflow_draft.file_assignments
+                if assignment.source_path
+            )
+            missing_required = tuple(
+                assignment.role
+                for assignment in self.workflow_draft.file_assignments
+                if assignment.role in required_roles and not assignment.source_path
+            )
+            folder = self.c3d_folder_path or "not selected"
+            main_c3d = (
+                Path(self.c3d_path.text().strip()).name
+                if self.c3d_path.text().strip()
+                else "not selected"
+            )
+            missing_text = (
+                ", ".join(missing_required) if missing_required else "none"
+            )
+            self.c3d_names_overview_label.setText(
+                f"Folder: {folder}\n"
+                f"Main C3D: {main_c3d}\n"
+                f"Assigned C3D files: {assigned_count}/{len(self.workflow_draft.file_assignments)} "
+                f"(missing required: {missing_text})"
+            )
+
+            expected_markers = _expected_marker_names_for_preset(
+                self.workflow_draft.preset
+            )
+            if self.c3d_data is None:
+                self.c3d_marker_status_label.setText(
+                    "Marker names: load a main/static C3D to check template matches."
+                )
+                return
+            marker_mapping = _marker_name_mapping_for_c3d(
+                expected_markers, tuple(self.c3d_data.marker_names)
+            )
+            missing_markers = tuple(
+                marker
+                for marker in expected_markers
+                if marker not in marker_mapping
+            )
+            unassigned_markers = _unassigned_marker_names(
+                self.workflow_marker_pool, self.workflow_draft.segment_marker_groups
+            )
+            missing_preview = (
+                ", ".join(missing_markers[:12])
+                + ("..." if len(missing_markers) > 12 else "")
+                if missing_markers
+                else "none"
+            )
+            unassigned_preview = (
+                ", ".join(unassigned_markers[:12])
+                + ("..." if len(unassigned_markers) > 12 else "")
+                if unassigned_markers
+                else "none"
+            )
+            prefix_status = (
+                "on" if self.strip_participant_prefix_checkbox.isChecked() else "off"
+            )
+            self.c3d_marker_status_label.setText(
+                f"Marker names: {len(marker_mapping)}/{len(expected_markers)} template markers matched; "
+                f"{len(self.c3d_data.marker_names)} markers in main C3D; known pool={len(self.workflow_marker_pool)}.\n"
+                f"Participant prefix removal: {prefix_status}. Missing: {missing_preview}. "
+                f"Unassigned/available: {unassigned_preview}."
+            )
+
         def _refresh_marker_assignment_details(self, segment_name: str | None) -> None:
             """
             Refresh only the widgets affected by marker assignment edits.
@@ -6051,9 +6140,7 @@ def launch_model_editor() -> None:
             self._restore_workflow_segment_selection(segment_name)
             self._restore_anatomical_segment_selection(anatomical_segment_name)
             self._refresh_workflow_progress_and_issues()
-            self.summary_label.setText(
-                c3d_workflow_summary(self.workflow_draft.preset, self.c3d_data)
-            )
+            self._update_c3d_names_panel()
 
         def _refresh_workflow_progress_and_issues(self) -> None:
             self.step_list.clear()
@@ -6154,7 +6241,6 @@ def launch_model_editor() -> None:
             self.segment_settings_list.clear()
             self.file_role_list.clear()
             self.issue_list.clear()
-            self.example_list.clear()
 
             if preset == C3dModelPreset.FROM_SCRATCH:
                 self.status_label.setText(
@@ -6240,21 +6326,15 @@ def launch_model_editor() -> None:
                 )
                 required = "required" if role_definition.required else "optional"
                 source = (
-                    file_role.source_path if file_role.source_path else "not assigned"
+                    Path(file_role.source_path).name
+                    if file_role.source_path
+                    else "not assigned"
                 )
                 self.file_role_list.addItem(
-                    f"{file_role.role} | {file_role.generic_name} | {required} | {source}"
+                    f"{file_role.role} | {source} | expected={file_role.generic_name} | {required}"
                 )
 
-            for example in c3d_virtual_marker_method_examples():
-                if example.method not in _visible_virtual_marker_methods():
-                    continue
-                self.example_list.addItem(
-                    f"{example.method} | source: {example.source_example} | settings: "
-                    f"{example.equation_example or '-'} | {example.description}"
-                )
-
-            self.summary_label.setText(c3d_workflow_summary(preset, self.c3d_data))
+            self._update_c3d_names_panel()
             self._update_virtual_marker_preview()
             self._update_segment_settings_preview()
             self._update_generation_log()
