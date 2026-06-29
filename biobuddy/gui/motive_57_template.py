@@ -218,27 +218,15 @@ def motive_57_marker_attachments() -> tuple[MarkerAttachmentSpec, ...]:
                     anatomical=True,
                 ),
                 _marker(
-                    f"{side}FLE",
-                    f"{side}Shank",
-                    technical=False,
-                    anatomical=True,
-                ),
-                _marker(
                     f"{side}FME",
                     f"{side}Thigh",
-                    anatomical=True,
-                ),
-                _marker(
-                    f"{side}FME",
-                    f"{side}Shank",
-                    technical=False,
                     anatomical=True,
                 ),
                 _marker(f"{side}FAX", f"{side}Shank"),
                 _marker(f"{side}SK", f"{side}Shank"),
                 _marker(f"{side}TTC", f"{side}Shank"),
-                _marker(f"{side}FAL", f"{side}Shank", technical=False, anatomical=True),
-                _marker(f"{side}TAM", f"{side}Shank", technical=False, anatomical=True),
+                _marker(f"{side}FAL", f"{side}Shank", anatomical=True),
+                _marker(f"{side}TAM", f"{side}Shank", anatomical=True),
                 _marker(f"{side}FCC", f"{side}Foot", anatomical=True),
                 _marker(f"{side}FM5", f"{side}Foot", anatomical=True),
                 _marker(f"{side}FM2", f"{side}Foot", anatomical=True),
@@ -257,6 +245,8 @@ def motive_57_marker_attachments() -> tuple[MarkerAttachmentSpec, ...]:
                     f"{side}RSP", f"{side}Forearm", technical=False, anatomical=True
                 ),
                 _marker(f"{side}HM2", f"{side}Hand", anatomical=True),
+                _marker(f"{side}USP", f"{side}Hand"),
+                _marker(f"{side}RSP", f"{side}Hand"),
             )
         )
     return tuple(attachments)

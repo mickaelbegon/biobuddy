@@ -73,7 +73,8 @@ def test_c3d_file_roles_use_generic_names_for_three_presets():
     assert "Test_anato.c3d" in full_body_names
     assert "Test_main.c3d" not in full_body_names
     assert "Test_func_thorax_pelvis.c3d" in full_body_names
-    assert "Static.c3d" in motive_names
+    assert "*Static.c3d" in motive_names
+    assert "Static.c3d" not in motive_names
     assert "P5_Calib_Static.c3d" not in motive_names
     assert "Test_func_head_thorax.c3d" in full_body_names
     assert "Test_func_right_shank_right_thigh.c3d" in full_body_names

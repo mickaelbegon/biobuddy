@@ -51,10 +51,14 @@ def test_motive_57_template_contains_expected_chain_and_markers():
     assert marker_segments["RFM1"] == ("RFoot",)
     assert marker_segments["RUA"] == ("RUpperArm",)
     assert len(attachments) == 55
-    assert marker_segments["LFLE"] == ("LThigh", "LShank")
-    assert marker_segments["LFME"] == ("LThigh", "LShank")
-    assert marker_segments["RFLE"] == ("RThigh", "RShank")
-    assert marker_segments["RFME"] == ("RThigh", "RShank")
+    assert marker_segments["LFLE"] == ("LThigh",)
+    assert marker_segments["LFME"] == ("LThigh",)
+    assert marker_segments["RFLE"] == ("RThigh",)
+    assert marker_segments["RFME"] == ("RThigh",)
+    assert marker_segments["RUSP"] == ("RForearm", "RHand")
+    assert marker_segments["RRSP"] == ("RForearm", "RHand")
+    assert marker_segments["LUSP"] == ("LForearm", "LHand")
+    assert marker_segments["LRSP"] == ("LForearm", "LHand")
     assert model.segments["Pelvis"].translations == Translations.XYZ
     assert model.segments["Pelvis"].rotations == Rotations.ZXY
     assert model.segments["RShank"].rotations == Rotations.Z
@@ -66,8 +70,23 @@ def test_motive_57_template_contains_expected_chain_and_markers():
             thigh.markers[marker_name].is_technical
             for marker_name in (f"{side}FTC", f"{side}TH", f"{side}FLE", f"{side}FME")
         )
-        assert not shank.markers[f"{side}FLE"].is_technical
-        assert not shank.markers[f"{side}FME"].is_technical
+        assert f"{side}FLE" not in shank.markers
+        assert f"{side}FME" not in shank.markers
+        assert all(
+            shank.markers[marker_name].is_technical
+            for marker_name in (
+                f"{side}FAX",
+                f"{side}SK",
+                f"{side}TTC",
+                f"{side}FAL",
+                f"{side}TAM",
+            )
+        )
+        hand = model.segments[f"{side}Hand"]
+        assert all(
+            hand.markers[marker_name].is_technical
+            for marker_name in (f"{side}HM2", f"{side}USP", f"{side}RSP")
+        )
 
 
 def test_motive_57_template_uses_correct_anatomical_frames():

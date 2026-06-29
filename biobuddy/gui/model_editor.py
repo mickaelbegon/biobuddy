@@ -130,6 +130,7 @@ def launch_model_editor() -> None:
             QListWidget,
             QListWidgetItem,
             QMainWindow,
+            QMenu,
             QMessageBox,
             QPushButton,
             QScrollArea,
@@ -152,8 +153,10 @@ def launch_model_editor() -> None:
         qt_extended_selection = QAbstractItemView.SelectionMode.ExtendedSelection
         qt_open_hand_cursor = Qt.CursorShape.OpenHandCursor
         qt_closed_hand_cursor = Qt.CursorShape.ClosedHandCursor
+        qt_right_button = Qt.MouseButton.RightButton
         qpaint_antialiasing = QPainter.RenderHint.Antialiasing
         get_event_position = lambda event: event.position()
+        get_event_global_position = lambda event: event.globalPosition().toPoint()
         get_wheel_delta = lambda event: event.angleDelta().y()
     except ImportError:
         try:
@@ -177,6 +180,7 @@ def launch_model_editor() -> None:
                 QListWidget,
                 QListWidgetItem,
                 QMainWindow,
+                QMenu,
                 QMessageBox,
                 QPushButton,
                 QScrollArea,
@@ -199,8 +203,10 @@ def launch_model_editor() -> None:
             qt_extended_selection = QAbstractItemView.ExtendedSelection
             qt_open_hand_cursor = Qt.OpenHandCursor
             qt_closed_hand_cursor = Qt.ClosedHandCursor
+            qt_right_button = Qt.RightButton
             qpaint_antialiasing = QPainter.Antialiasing
             get_event_position = lambda event: event.localPos()
+            get_event_global_position = lambda event: event.globalPos()
             get_wheel_delta = lambda event: event.angleDelta().y()
         except ImportError as error:
             raise ImportError(
@@ -627,6 +633,12 @@ def launch_model_editor() -> None:
         Execute a dialog across PySide6 and PyQt5.
         """
         return dialog.exec() if hasattr(dialog, "exec") else dialog.exec_()
+
+    def _exec_menu(menu, position):
+        """
+        Execute a context menu across PySide6 and PyQt5.
+        """
+        return menu.exec(position) if hasattr(menu, "exec") else menu.exec_(position)
 
     def _default_preview_camera_matrix() -> np.ndarray:
         """
@@ -1075,7 +1087,7 @@ def launch_model_editor() -> None:
                 )
                 center = transform(_rotate_preview_point(point, self.yaw, self.pitch))
                 radius = (
-                    5
+                    4
                     if segment_index == -2
                     else (7 if segment_index == -1 else (6 if is_selected else 4))
                 )
@@ -1314,6 +1326,7 @@ def launch_model_editor() -> None:
                 return None
             cache_key = (
                 id(functional_data),
+                id(preview_data),
                 parent_marker_names,
                 child_marker_names,
                 self.use_diverse_functional_frames,
@@ -1335,11 +1348,19 @@ def launch_model_editor() -> None:
                     child_functional_marker_data = (
                         functional_data.get_partial_dict_data(child_marker_names)
                     )
+                    parent_preview_marker_data = preview_data.get_partial_dict_data(
+                        parent_marker_names
+                    )
+                    child_preview_marker_data = preview_data.get_partial_dict_data(
+                        child_marker_names
+                    )
                     rt_parent_func = SegmentCoordinateSystemUtils.rigidify(
-                        functional_data=parent_functional_marker_data
+                        functional_data=parent_functional_marker_data,
+                        static_data=parent_preview_marker_data,
                     )
                     rt_child_func = SegmentCoordinateSystemUtils.rigidify(
-                        functional_data=child_functional_marker_data
+                        functional_data=child_functional_marker_data,
+                        static_data=child_preview_marker_data,
                     )
                     rt_parent_func, rt_child_func, _ = prepare_functional_rt_pair(
                         rt_parent_func,
@@ -1708,10 +1729,11 @@ def launch_model_editor() -> None:
                     segment_by_marker[marker_name] = group.segment_name
 
             marker_records = []
-            marker_names_to_draw = (
-                set(self.c3d_data.marker_names)
-                if not getattr(self, "_is_preview_dragging", False)
-                else highlighted_marker_names
+            marker_names_to_draw = _virtual_marker_preview_marker_names_to_draw(
+                self.c3d_data.marker_names,
+                highlighted_marker_names,
+                self.show_whole_body,
+                getattr(self, "_is_preview_dragging", False),
             )
             for marker_name in marker_names_to_draw:
                 point = _marker_frame_position(
@@ -1980,6 +2002,7 @@ def launch_model_editor() -> None:
                 return ()
             cache_key = (
                 id(functional_data),
+                id(preview_data),
                 parent_marker_names,
                 child_marker_names,
                 self.use_diverse_functional_frames,
@@ -2001,11 +2024,19 @@ def launch_model_editor() -> None:
                     child_functional_marker_data = (
                         functional_data.get_partial_dict_data(child_marker_names)
                     )
+                    parent_preview_marker_data = preview_data.get_partial_dict_data(
+                        parent_marker_names
+                    )
+                    child_preview_marker_data = preview_data.get_partial_dict_data(
+                        child_marker_names
+                    )
                     rt_parent_func = SegmentCoordinateSystemUtils.rigidify(
-                        functional_data=parent_functional_marker_data
+                        functional_data=parent_functional_marker_data,
+                        static_data=parent_preview_marker_data,
                     )
                     rt_child_func = SegmentCoordinateSystemUtils.rigidify(
-                        functional_data=child_functional_marker_data
+                        functional_data=child_functional_marker_data,
+                        static_data=child_preview_marker_data,
                     )
                     rt_parent_func, rt_child_func, _ = prepare_functional_rt_pair(
                         rt_parent_func,
@@ -2393,7 +2424,9 @@ def launch_model_editor() -> None:
                         )
                     )
                     seen_marker_names.add(marker_name)
-            for marker_name in self.selected_marker_names:
+            for marker_name in _unassigned_marker_names(
+                tuple(self.c3d_data.marker_names), self.groups
+            ):
                 if marker_name in seen_marker_names:
                     continue
                 point = _marker_frame_position(
@@ -2456,7 +2489,7 @@ def launch_model_editor() -> None:
                     center,
                     color,
                     is_square=is_technical,
-                    size=9
+                    size=4
                     if segment_index == -2
                     else (2 * radius if is_technical else radius),
                     pen_width=4 if is_marker_selected else (3 if is_selected else 1),
@@ -6357,8 +6390,30 @@ def launch_model_editor() -> None:
             )
 
         def mousePressEvent(self, event) -> None:
+            if event.button() == qt_right_button:
+                self._show_view_plane_menu(event)
+                return
             self._press_mouse_position = get_event_position(event)
             _start_preview_camera_drag(self, event)
+
+        def _show_view_plane_menu(self, event) -> None:
+            """
+            Show standard orthographic plane choices for the model preview.
+            """
+            menu = QMenu(self)
+            actions = {
+                menu.addAction(f"{plane} plane"): plane for plane in ("XY", "YZ", "ZX")
+            }
+            selected_action = _exec_menu(menu, get_event_global_position(event))
+            plane = actions.get(selected_action)
+            if plane is None:
+                return
+            self.yaw = _preview_camera_matrix_for_plane(plane)
+            self.pitch = 0.0
+            self._last_mouse_position = None
+            self._is_preview_dragging = False
+            self.setCursor(qt_open_hand_cursor)
+            self.update()
 
         def mouseMoveEvent(self, event) -> None:
             _drag_preview_camera(self, event)
@@ -7398,6 +7453,20 @@ def _unassigned_marker_names(
     )
 
 
+def _virtual_marker_preview_marker_names_to_draw(
+    marker_names: tuple[str, ...],
+    highlighted_marker_names: set[str],
+    show_whole_body: bool,
+    is_dragging: bool,
+) -> set[str]:
+    """
+    Return marker names for the virtual-marker preview without changing whole-body fit.
+    """
+    if show_whole_body or not is_dragging:
+        return set(marker_names)
+    return set(highlighted_marker_names)
+
+
 def _marker_name_mapping_for_c3d(
     template_marker_names: tuple[str, ...], c3d_marker_names: tuple[str, ...]
 ) -> dict[str, str]:
@@ -8019,7 +8088,7 @@ def _c3d_generation_log(
 
 def _c3d_assignment_log_name(preset: C3dModelPreset, assignment) -> str:
     if preset == C3dModelPreset.MOTIVE_57 and assignment.role == "main":
-        return "Static.c3d"
+        return "*Static.c3d"
     return assignment.source_path or assignment.generic_name
 
 
@@ -8423,6 +8492,21 @@ def _rotate_preview_point(
     """
     screen_x, screen_y, _depth = _preview_camera_coordinates(point, yaw, pitch)
     return screen_x, screen_y
+
+
+def _preview_camera_matrix_for_plane(plane: str) -> np.ndarray:
+    """
+    Return an orthographic camera matrix aligned with a principal anatomical plane.
+    """
+    normalized_plane = plane.strip().upper()
+    matrices = {
+        "XY": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        "YZ": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+        "ZX": ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+    }
+    if normalized_plane not in matrices:
+        raise ValueError(f"Unknown preview plane '{plane}'.")
+    return np.asarray(matrices[normalized_plane], dtype=float)
 
 
 def _preview_depth(

@@ -1816,7 +1816,7 @@ def c3d_file_roles_for_preset(preset: C3dModelPreset) -> tuple[C3dFileRole, ...]
         return (
             C3dFileRole(
                 "main",
-                "Static.c3d",
+                "*Static.c3d",
                 "Static Motive (57) calibration C3D.",
                 required=True,
             ),

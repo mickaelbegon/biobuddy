@@ -28,6 +28,7 @@ from biobuddy.gui.model_editor import (
     _orthonormal_axes_from_vector_segments,
     _predictive_virtual_marker_method_from_label,
     _preview_camera_coordinates,
+    _preview_camera_matrix_for_plane,
     _python_code_from_c3d_draft,
     _fit_projection,
     _remap_c3d_workflow_draft_markers,
@@ -45,6 +46,7 @@ from biobuddy.gui.model_editor import (
     _trial_name_from_virtual_feature_source,
     _virtual_axis_name_from_feature_list_text,
     _virtual_feature_list_labels,
+    _virtual_marker_preview_marker_names_to_draw,
     _marker_pool_from_draft,
     _unassigned_marker_names,
 )
@@ -235,6 +237,32 @@ def test_preview_projection_keeps_positive_z_visually_up():
     assert transform((0.0, projected_high_y))[1] < transform(
         (0.0, projected_low_y)
     )[1]
+
+
+def test_preview_camera_matrix_for_standard_planes():
+    point = (1.0, 2.0, 3.0)
+
+    assert _preview_camera_coordinates(
+        point, _preview_camera_matrix_for_plane("XY"), 0.0
+    ) == (1.0, 2.0, 3.0)
+    assert _preview_camera_coordinates(
+        point, _preview_camera_matrix_for_plane("YZ"), 0.0
+    ) == (2.0, 3.0, 1.0)
+    assert _preview_camera_coordinates(
+        point, _preview_camera_matrix_for_plane("ZX"), 0.0
+    ) == (3.0, 1.0, 2.0)
+
+
+def test_virtual_marker_whole_body_preview_keeps_all_markers_while_dragging():
+    marker_names = ("Pelvis", "Thorax", "Head", "Foot")
+    highlighted_marker_names = {"Pelvis", "Foot"}
+
+    assert _virtual_marker_preview_marker_names_to_draw(
+        marker_names, highlighted_marker_names, show_whole_body=True, is_dragging=True
+    ) == set(marker_names)
+    assert _virtual_marker_preview_marker_names_to_draw(
+        marker_names, highlighted_marker_names, show_whole_body=False, is_dragging=True
+    ) == highlighted_marker_names
 
 
 def test_lower_limb_functional_sara_axes_do_not_trigger_missing_xyz_warning():
@@ -457,7 +485,8 @@ def test_motive_57_generation_log_uses_generic_static_name():
         ("LIAS", "RIAS", "LIPS", "RIPS"),
     )
 
-    assert "- main: Static.c3d" in lines
+    assert "- main: *Static.c3d" in lines
+    assert all("- main: Static.c3d" != line for line in lines)
     assert all("P5_Calib_Static.c3d" not in line for line in lines)
 
 
@@ -465,6 +494,10 @@ def test_static_generic_name_matches_participant_prefixed_static_c3d(tmp_path):
     static_file = tmp_path / "P5_Calib_Static.c3d"
     static_file.write_text("", encoding="utf-8")
 
+    assert (
+        _matching_c3d_file_for_expected_name(str(tmp_path), "*Static.c3d")
+        == static_file
+    )
     assert _matching_c3d_file_for_expected_name(str(tmp_path), "Static.c3d") == static_file
 
 
