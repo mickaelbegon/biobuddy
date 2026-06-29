@@ -1,0 +1,132 @@
+from biobuddy import Rotations, Translations
+from biobuddy.components.generic.rigidbody.axis import Axis
+from biobuddy.gui.model_builder import (
+    FunctionalAxisSpec,
+    FunctionalCenterSpec,
+    build_generic_model,
+    required_static_markers,
+)
+from biobuddy.gui.motive_57_template import (
+    MOTIVE_57_FUNCTIONAL_C3D_FILENAMES,
+    MOTIVE_57_MARKER_NAMES,
+    motive_57_functional_trials,
+    motive_57_marker_attachments,
+    motive_57_template,
+)
+
+
+def test_motive_57_template_contains_expected_chain_and_markers():
+    template = motive_57_template(use_functional=True)
+    model = build_generic_model(template)
+    attachments = motive_57_marker_attachments()
+    marker_segments = template.marker_segments()
+
+    assert template.root_segment_name == "Pelvis"
+    assert template.name == "BioBuddy Motive (57) from calibration C3D (SCoRE/SARA)"
+    assert [segment.name for segment in template.segments] == [
+        "Pelvis",
+        "Thorax",
+        "Head",
+        "RThigh",
+        "RShank",
+        "RFoot",
+        "LThigh",
+        "LShank",
+        "LFoot",
+        "RUpperArm",
+        "RForearm",
+        "RHand",
+        "LUpperArm",
+        "LForearm",
+        "LHand",
+    ]
+    assert "RDP1" not in marker_segments
+    assert "LDP1" not in marker_segments
+    assert "RHGT" not in marker_segments
+    assert "LHGT" not in marker_segments
+    assert "RCAJ" not in marker_segments
+    assert "LCAJ" not in marker_segments
+    assert marker_segments["RFCC"] == ("RFoot",)
+    assert marker_segments["RFM5"] == ("RFoot",)
+    assert marker_segments["RFM1"] == ("RFoot",)
+    assert marker_segments["RUA"] == ("RUpperArm",)
+    assert len(attachments) == 51
+    assert model.segments["Pelvis"].translations == Translations.XYZ
+    assert model.segments["Pelvis"].rotations == Rotations.ZXY
+    assert model.segments["RShank"].rotations == Rotations.Z
+    assert model.segments["RFoot"].rotations == Rotations.ZX
+
+
+def test_motive_57_template_uses_correct_anatomical_frames():
+    segments = {
+        segment.name: segment
+        for segment in motive_57_template(use_functional=True).segments
+    }
+
+    pelvis = segments["Pelvis"].frame
+    assert pelvis.first_axis.name == Axis.Name.Z
+    assert pelvis.first_axis.start.marker_names == ("LIAS", "LIPS")
+    assert pelvis.first_axis.end.marker_names == ("RIAS", "RIPS")
+    assert pelvis.second_axis.name == Axis.Name.X
+    assert pelvis.second_axis.start.marker_names == ("LIPS", "RIPS")
+    assert pelvis.second_axis.end.marker_names == ("LIAS", "RIAS")
+    assert pelvis.axis_to_keep == Axis.Name.Z
+
+    thorax = segments["Thorax"].frame
+    assert thorax.first_axis.name == Axis.Name.Y
+    assert thorax.first_axis.start.marker_names == ("SXS", "TV7")
+    assert thorax.first_axis.end.marker_names == ("SJN", "TV2")
+
+    head = segments["Head"].frame
+    assert head.first_axis.name == Axis.Name.Z
+    assert head.second_axis.name == Axis.Name.X
+
+    foot = segments["RFoot"].frame
+    assert foot.first_axis.name == Axis.Name.X
+    assert foot.first_axis.start.marker_names == ("RFCC",)
+    assert foot.first_axis.end.marker_names == ("RFM5", "RFM1")
+    assert foot.second_axis.name == Axis.Name.Z
+    assert foot.second_axis.start.marker_names == ("RFM5",)
+    assert foot.second_axis.end.marker_names == ("RFM1",)
+
+    upper_arm = segments["RUpperArm"].frame
+    assert upper_arm.origin.marker_names == ("RGJC",)
+    assert upper_arm.first_axis.start.marker_names == ("RHLE", "RHME")
+    assert upper_arm.first_axis.end.marker_names == ("RGJC",)
+    assert upper_arm.second_axis.start.marker_names == ("RHME",)
+    assert upper_arm.second_axis.end.marker_names == ("RHLE",)
+
+
+def test_motive_57_template_declares_functional_trials_and_virtual_requirements():
+    template = motive_57_template(use_functional=True)
+    segments = {segment.name: segment for segment in template.segments}
+    trials = {trial.name: trial for trial in motive_57_functional_trials()}
+    required_markers = set(required_static_markers(template))
+
+    assert set(MOTIVE_57_MARKER_NAMES) <= required_markers
+    assert {"LGJC", "RGJC"} <= required_markers
+    assert {trial.name for trial in template.functional_trials} == set(
+        MOTIVE_57_FUNCTIONAL_C3D_FILENAMES
+    )
+    assert trials["right_hip_score"].file_pattern == "*Func_RHip.c3d"
+    assert trials["left_ankle_score"].required_markers == (
+        "LFAX",
+        "LSK",
+        "LTTC",
+        "LFAL",
+        "LTAM",
+        "LFCC",
+        "LFM5",
+        "LFM2",
+        "LFM1",
+    )
+    assert isinstance(segments["RThigh"].frame.origin, FunctionalCenterSpec)
+    assert segments["RThigh"].frame.origin.trial_name == "right_hip_score"
+    assert isinstance(segments["RShank"].frame.second_axis, FunctionalAxisSpec)
+    assert segments["RShank"].frame.second_axis.trial_name == "right_knee_sara"
+    assert segments["RShank"].frame.second_axis.expected_axis.start.marker_names == (
+        "RFME",
+    )
+    assert segments["RShank"].frame.second_axis.expected_axis.end.marker_names == (
+        "RFLE",
+    )

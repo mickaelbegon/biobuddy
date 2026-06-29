@@ -16,7 +16,11 @@ from .full_body_bela_template import (
     rotations_from_matlab_dof,
     translations_from_matlab_dof,
 )
-from .lower_limb_template import LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES, lower_limb_template
+from .lower_limb_template import (
+    LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES,
+    lower_limb_template,
+)
+from .motive_57_template import MOTIVE_57_FUNCTIONAL_C3D_FILENAMES, motive_57_template
 from .model_builder import (
     AxisSpec,
     FunctionalAxisProjectionPointSpec,
@@ -256,7 +260,9 @@ def c3d_workflow_draft(preset: C3dModelPreset) -> C3dWorkflowDraft:
             virtual_markers=(),
             axes=(),
             segment_settings=(),
-            file_assignments=(C3dFileAssignmentDraft(role="main", generic_name="main_markers.c3d"),),
+            file_assignments=(
+                C3dFileAssignmentDraft(role="main", generic_name="main_markers.c3d"),
+            ),
         )
     virtual_features = c3d_model_preset_virtual_features(preset)
     template_axes = _axis_drafts_from_model_template(_template_for_axis_prefill(preset))
@@ -280,7 +286,9 @@ def c3d_workflow_draft(preset: C3dModelPreset) -> C3dWorkflowDraft:
         virtual_markers=tuple(
             C3dVirtualMarkerDraft(
                 name=feature.name,
-                method=_virtual_feature_default_method(feature.feature_type, feature.role),
+                method=_virtual_feature_default_method(
+                    feature.feature_type, feature.role
+                ),
                 segment_name=feature.segment_name,
                 source=_virtual_marker_source_from_feature(feature),
                 equation=_virtual_marker_equation_from_feature(feature),
@@ -314,7 +322,11 @@ def _axis_end_markers_from_feature(feature) -> tuple[str, ...]:
 def _axis_origin_markers_from_feature(feature) -> tuple[str, ...]:
     marker_match = re.search(r"origin markers=([^;]+)", feature.description)
     if marker_match is not None:
-        return tuple(marker.strip() for marker in marker_match.group(1).split(",") if marker.strip())
+        return tuple(
+            marker.strip()
+            for marker in marker_match.group(1).split(",")
+            if marker.strip()
+        )
     return _expected_axis_markers_from_feature(feature)
 
 
@@ -322,7 +334,9 @@ def _expected_axis_markers_from_feature(feature) -> tuple[str, ...]:
     marker_match = re.search(r"expected axis=([^;]+)", feature.description)
     if marker_match is None:
         return ()
-    return tuple(marker.strip() for marker in marker_match.group(1).split(",") if marker.strip())
+    return tuple(
+        marker.strip() for marker in marker_match.group(1).split(",") if marker.strip()
+    )
 
 
 def _virtual_marker_source_from_feature(feature) -> str:
@@ -331,7 +345,9 @@ def _virtual_marker_source_from_feature(feature) -> str:
     """
     if feature.role == "axis_projection":
         point_match = re.search(r"point=([^;]+)", feature.description)
-        return f"point={point_match.group(1).strip()}" if point_match is not None else ""
+        return (
+            f"point={point_match.group(1).strip()}" if point_match is not None else ""
+        )
     return feature.description
 
 
@@ -363,10 +379,14 @@ def _template_for_axis_prefill(preset: C3dModelPreset) -> ModelTemplate | None:
         return upper_limb_template()
     if preset == C3dModelPreset.FULL_BODY:
         return full_body_bela_template(use_functional=True)
+    if preset == C3dModelPreset.MOTIVE_57:
+        return motive_57_template(use_functional=True)
     return None
 
 
-def _axis_drafts_from_model_template(template: ModelTemplate | None) -> tuple[C3dAxisDraft, ...]:
+def _axis_drafts_from_model_template(
+    template: ModelTemplate | None,
+) -> tuple[C3dAxisDraft, ...]:
     """
     Convert marker-defined template axes into editable GUI axis drafts.
     """
@@ -448,7 +468,9 @@ def _functional_center_virtual_marker_name(spec: FunctionalCenterSpec) -> str:
     return names_by_trial.get(spec.trial_name, f"CoR_{spec.trial_name}_wrt_parent")
 
 
-def _functional_projection_virtual_marker_name(spec: FunctionalAxisProjectionPointSpec) -> str:
+def _functional_projection_virtual_marker_name(
+    spec: FunctionalAxisProjectionPointSpec,
+) -> str:
     """
     Return the virtual marker name exposed in the GUI for one projected point.
     """
@@ -480,7 +502,11 @@ def _full_body_virtual_center_name_from_trial(trial_name: str) -> str | None:
     for segment in bela_segment_specs():
         score_trial = f"{segment.name.lower()}_{segment.parent_name.lower()}_score"
         sara_trial = f"{segment.name.lower()}_{segment.parent_name.lower()}_sara"
-        if trial_name in {score_trial, sara_trial} and segment.parent_name not in {"", "base", "root"}:
+        if trial_name in {score_trial, sara_trial} and segment.parent_name not in {
+            "",
+            "base",
+            "root",
+        }:
             return f"CoR_{segment.name}_wrt_{segment.parent_name}"
     return None
 
@@ -548,7 +574,9 @@ def _axis_name_to_text(axis_name) -> str:
     Normalize BioBuddy's Axis.Name constants to GUI-facing x/y/z labels.
     """
     axis_value = axis_name.value if hasattr(axis_name, "value") else axis_name
-    return {0: "x", 1: "y", 2: "z", "0": "x", "1": "y", "2": "z"}.get(axis_value, str(axis_value).lower())
+    return {0: "x", 1: "y", 2: "z", "0": "x", "1": "y", "2": "z"}.get(
+        axis_value, str(axis_value).lower()
+    )
 
 
 def four_marker_groups(marker_positions: np.ndarray) -> C3dFourGroupsResult:
@@ -568,7 +596,9 @@ def four_marker_groups(marker_positions: np.ndarray) -> C3dFourGroupsResult:
             groups=((0,), (1,), (0,), (2,)),
             first_vector=tuple(float(value) for value in first_vector),
             second_vector=tuple(float(value) for value in second_vector),
-            cross_product_norm_squared=float(np.sum(np.cross(first_vector, second_vector) ** 2)),
+            cross_product_norm_squared=float(
+                np.sum(np.cross(first_vector, second_vector) ** 2)
+            ),
         )
 
     best_result: C3dFourGroupsResult | None = None
@@ -581,17 +611,31 @@ def four_marker_groups(marker_positions: np.ndarray) -> C3dFourGroupsResult:
         first_subgroup_size = int(np.ceil(len(first_half) / 2))
         second_subgroup_size = int(np.ceil(len(second_half) / 2))
         for first_group in combinations(first_half, first_subgroup_size):
-            second_group = tuple(index for index in first_half if index not in first_group)
+            second_group = tuple(
+                index for index in first_half if index not in first_group
+            )
             if not second_group or first_group > second_group:
                 continue
             for third_group in combinations(second_half, second_subgroup_size):
-                fourth_group = tuple(index for index in second_half if index not in third_group)
+                fourth_group = tuple(
+                    index for index in second_half if index not in third_group
+                )
                 if not fourth_group or third_group > fourth_group:
                     continue
-                first_vector = _mean_marker_group(positions, first_group) - _mean_marker_group(positions, second_group)
-                second_vector = _mean_marker_group(positions, third_group) - _mean_marker_group(positions, fourth_group)
-                cross_product_norm_squared = float(np.sum(np.cross(first_vector, second_vector) ** 2))
-                if best_result is None or cross_product_norm_squared > best_result.cross_product_norm_squared:
+                first_vector = _mean_marker_group(
+                    positions, first_group
+                ) - _mean_marker_group(positions, second_group)
+                second_vector = _mean_marker_group(
+                    positions, third_group
+                ) - _mean_marker_group(positions, fourth_group)
+                cross_product_norm_squared = float(
+                    np.sum(np.cross(first_vector, second_vector) ** 2)
+                )
+                if (
+                    best_result is None
+                    or cross_product_norm_squared
+                    > best_result.cross_product_norm_squared
+                ):
                     best_result = C3dFourGroupsResult(
                         groups=(first_group, second_group, third_group, fourth_group),
                         first_vector=tuple(float(value) for value in first_vector),
@@ -631,20 +675,28 @@ def parse_score_report(text: str) -> tuple[C3dScoreReportEntry, ...]:
             marker_text = line.split(":", maxsplit=1)[1]
             current["marker_names"] = tuple(marker_text.split())
             continue
-        frame_match = re.match(r"(\d+) frames sur (\d+) ont ete conservees", _strip_accents(line))
+        frame_match = re.match(
+            r"(\d+) frames sur (\d+) ont ete conservees", _strip_accents(line)
+        )
         if frame_match:
             current["kept_frame_count"] = int(frame_match.group(1))
             current["total_frame_count"] = int(frame_match.group(2))
             continue
-        proximal_match = re.match(r"CoR/AoR dans proximal a colonne (\d+)", _strip_accents(line))
+        proximal_match = re.match(
+            r"CoR/AoR dans proximal a colonne (\d+)", _strip_accents(line)
+        )
         if proximal_match:
             current["proximal_column"] = int(proximal_match.group(1))
             continue
-        distal_match = re.match(r"CoR/AoR dans distal\s+a colonne (\d+)", _strip_accents(line))
+        distal_match = re.match(
+            r"CoR/AoR dans distal\s+a colonne (\d+)", _strip_accents(line)
+        )
         if distal_match:
             current["distal_column"] = int(distal_match.group(1))
             continue
-        growth_match = re.match(r"(.+?) passe de \d+ a \d+ marqueurs", _strip_accents(line))
+        growth_match = re.match(
+            r"(.+?) passe de \d+ a \d+ marqueurs", _strip_accents(line)
+        )
         if growth_match:
             current["segment_growth"].append(growth_match.group(1).strip())
     if current is not None:
@@ -652,7 +704,9 @@ def parse_score_report(text: str) -> tuple[C3dScoreReportEntry, ...]:
     return tuple(entries)
 
 
-def score_virtual_marker_names_from_entry(entry: C3dScoreReportEntry) -> tuple[str, str]:
+def score_virtual_marker_names_from_entry(
+    entry: C3dScoreReportEntry,
+) -> tuple[str, str]:
     """
     Return understandable virtual marker names for a parsed SCORE result.
 
@@ -662,19 +716,30 @@ def score_virtual_marker_names_from_entry(entry: C3dScoreReportEntry) -> tuple[s
     """
     proximal_name = entry.proximal_segment_name or "parent"
     distal_name = entry.distal_segment_name or f"segment_{entry.segment_index}"
-    return (f"CoR_{distal_name}_wrt_{proximal_name}", f"CoR_{distal_name}_wrt_{distal_name}")
+    return (
+        f"CoR_{distal_name}_wrt_{proximal_name}",
+        f"CoR_{distal_name}_wrt_{distal_name}",
+    )
 
 
-def validate_c3d_workflow_draft(draft: C3dWorkflowDraft, data: MarkerData | None = None) -> tuple[C3dDraftIssue, ...]:
+def validate_c3d_workflow_draft(
+    draft: C3dWorkflowDraft, data: MarkerData | None = None
+) -> tuple[C3dDraftIssue, ...]:
     """
     Validate whether a C3D workflow draft has enough information to become a reusable template.
     """
     issues: list[C3dDraftIssue] = []
     raw_marker_names = set(data.marker_names) if data is not None else set()
-    assigned_marker_names = {marker_name for group in draft.segment_marker_groups for marker_name in group.marker_names}
+    assigned_marker_names = {
+        marker_name
+        for group in draft.segment_marker_groups
+        for marker_name in group.marker_names
+    }
     virtual_marker_names = {marker.name for marker in draft.virtual_markers}
     virtual_axis_names = {axis.name for axis in draft.axes if axis.method != "markers"}
-    known_marker_names = assigned_marker_names | virtual_marker_names | virtual_axis_names
+    known_marker_names = (
+        assigned_marker_names | virtual_marker_names | virtual_axis_names
+    )
     if data is not None:
         known_marker_names |= raw_marker_names
     segment_names = {group.segment_name for group in draft.segment_marker_groups}
@@ -682,7 +747,11 @@ def validate_c3d_workflow_draft(draft: C3dWorkflowDraft, data: MarkerData | None
     for group in draft.segment_marker_groups:
         if len(group.marker_names) == 0:
             issues.append(
-                C3dDraftIssue("warning", "segments", f"Segment '{group.segment_name}' has no marker assigned.")
+                C3dDraftIssue(
+                    "warning",
+                    "segments",
+                    f"Segment '{group.segment_name}' has no marker assigned.",
+                )
             )
         if group.segment_type == "technical" and len(group.technical_marker_names) < 3:
             issues.append(
@@ -705,7 +774,9 @@ def validate_c3d_workflow_draft(draft: C3dWorkflowDraft, data: MarkerData | None
                 )
             )
         if data is not None:
-            missing = sorted(set(group.marker_names) - raw_marker_names - virtual_marker_names)
+            missing = sorted(
+                set(group.marker_names) - raw_marker_names - virtual_marker_names
+            )
             if missing:
                 issues.append(
                     C3dDraftIssue(
@@ -716,7 +787,9 @@ def validate_c3d_workflow_draft(draft: C3dWorkflowDraft, data: MarkerData | None
                 )
 
     for marker in draft.virtual_markers:
-        if marker.segment_name not in {group.segment_name for group in draft.segment_marker_groups}:
+        if marker.segment_name not in {
+            group.segment_name for group in draft.segment_marker_groups
+        }:
             issues.append(
                 C3dDraftIssue(
                     "error",
@@ -724,7 +797,10 @@ def validate_c3d_workflow_draft(draft: C3dWorkflowDraft, data: MarkerData | None
                     f"Virtual marker '{marker.name}' is attached to unknown segment '{marker.segment_name}'.",
                 )
             )
-        if marker.method in SOURCE_REQUIRED_VIRTUAL_MARKER_METHODS and marker.source == "":
+        if (
+            marker.method in SOURCE_REQUIRED_VIRTUAL_MARKER_METHODS
+            and marker.source == ""
+        ):
             issues.append(
                 C3dDraftIssue(
                     "warning",
@@ -743,10 +819,14 @@ def validate_c3d_workflow_draft(draft: C3dWorkflowDraft, data: MarkerData | None
 
     for axis in draft.axes:
         is_virtual_reference_axis = _is_virtual_reference_axis(axis)
-        if axis.segment_name not in {group.segment_name for group in draft.segment_marker_groups}:
+        if axis.segment_name not in {
+            group.segment_name for group in draft.segment_marker_groups
+        }:
             issues.append(
                 C3dDraftIssue(
-                    "error", "axes", f"Axis '{axis.name}' is attached to unknown segment '{axis.segment_name}'."
+                    "error",
+                    "axes",
+                    f"Axis '{axis.name}' is attached to unknown segment '{axis.segment_name}'.",
                 )
             )
         if not is_virtual_reference_axis and axis.axis not in {"", "x", "y", "z"}:
@@ -776,7 +856,9 @@ def validate_c3d_workflow_draft(draft: C3dWorkflowDraft, data: MarkerData | None
                     "Open Anatomical segment and add one or more origin markers.",
                 )
             )
-        if axis.method == "markers" and (len(axis.start_markers) == 0 or len(axis.end_markers) == 0):
+        if axis.method == "markers" and (
+            len(axis.start_markers) == 0 or len(axis.end_markers) == 0
+        ):
             issues.append(
                 C3dDraftIssue(
                     "error",
@@ -786,7 +868,10 @@ def validate_c3d_workflow_draft(draft: C3dWorkflowDraft, data: MarkerData | None
                     f"end={','.join(axis.end_markers) or '-'}. Open Anatomical segment and fill both endpoints.",
                 )
             )
-        unknown_markers = sorted(set(axis.start_markers + axis.end_markers + axis.origin_markers) - known_marker_names)
+        unknown_markers = sorted(
+            set(axis.start_markers + axis.end_markers + axis.origin_markers)
+            - known_marker_names
+        )
         if unknown_markers:
             issues.append(
                 C3dDraftIssue(
@@ -802,9 +887,13 @@ def validate_c3d_workflow_draft(draft: C3dWorkflowDraft, data: MarkerData | None
             axes_by_segment.setdefault(axis.segment_name, []).append(axis)
     for segment_name, axes in axes_by_segment.items():
         axis_names = [axis.axis for axis in axes]
-        duplicated_axis_names = sorted({axis_name for axis_name in axis_names if axis_names.count(axis_name) > 1})
+        duplicated_axis_names = sorted(
+            {axis_name for axis_name in axis_names if axis_names.count(axis_name) > 1}
+        )
         for duplicated_axis_name in duplicated_axis_names:
-            duplicated_drafts = ", ".join(axis.name for axis in axes if axis.axis == duplicated_axis_name)
+            duplicated_drafts = ", ".join(
+                axis.name for axis in axes if axis.axis == duplicated_axis_name
+            )
             issues.append(
                 C3dDraftIssue(
                     "error",
@@ -832,7 +921,10 @@ def validate_c3d_workflow_draft(draft: C3dWorkflowDraft, data: MarkerData | None
                     f"Segment '{setting.segment_name}' has {len(setting.q_max)} q_max values for {nb_dof} DoF.",
                 )
             )
-        if setting.initial_rotation_method in {"matrix", "anatomical_c3d"} and setting.initial_rotation_source == "":
+        if (
+            setting.initial_rotation_method in {"matrix", "anatomical_c3d"}
+            and setting.initial_rotation_source == ""
+        ):
             issues.append(
                 C3dDraftIssue(
                     "warning",
@@ -841,7 +933,9 @@ def validate_c3d_workflow_draft(draft: C3dWorkflowDraft, data: MarkerData | None
                 )
             )
 
-    role_definitions = {role.role: role for role in c3d_file_roles_for_preset(draft.preset)}
+    role_definitions = {
+        role.role: role for role in c3d_file_roles_for_preset(draft.preset)
+    }
     for assignment in draft.file_assignments:
         role_definition = role_definitions[assignment.role]
         if role_definition.required and assignment.source_path == "":
@@ -863,41 +957,69 @@ def _has_functional_marker_set(group: C3dSegmentMarkerGroup) -> bool:
     Some presets use anatomical segments directly as the marker groups for SCoRE/SARA. In that case the segment is not
     tagged as ``technical``, but its markers are still the technical marker set used to rigidify the functional trial.
     """
-    marker_names = group.technical_marker_names if len(group.technical_marker_names) != 0 else group.marker_names
+    marker_names = (
+        group.technical_marker_names
+        if len(group.technical_marker_names) != 0
+        else group.marker_names
+    )
     return len(marker_names) >= 3
 
 
-def c3d_workflow_progress(draft: C3dWorkflowDraft, data: MarkerData | None = None) -> tuple[C3dWorkflowStepStatus, ...]:
+def c3d_workflow_progress(
+    draft: C3dWorkflowDraft, data: MarkerData | None = None
+) -> tuple[C3dWorkflowStepStatus, ...]:
     """
     Return user-facing completion states for the guided C3D workflow.
     """
     issues = validate_c3d_workflow_draft(draft, data)
     issue_categories = {issue.category for issue in issues}
     segment_count = len(draft.segment_marker_groups)
-    empty_segment_count = sum(len(group.marker_names) == 0 for group in draft.segment_marker_groups)
-    assigned_marker_count = sum(len(group.marker_names) for group in draft.segment_marker_groups)
-    required_role_count = sum(role.required for role in c3d_file_roles_for_preset(draft.preset))
+    empty_segment_count = sum(
+        len(group.marker_names) == 0 for group in draft.segment_marker_groups
+    )
+    assigned_marker_count = sum(
+        len(group.marker_names) for group in draft.segment_marker_groups
+    )
+    required_role_count = sum(
+        role.required for role in c3d_file_roles_for_preset(draft.preset)
+    )
     assigned_required_role_count = sum(
         1
         for assignment in draft.file_assignments
-        if assignment.source_path != "" and _file_role_is_required(draft.preset, assignment.role)
+        if assignment.source_path != ""
+        and _file_role_is_required(draft.preset, assignment.role)
     )
     source_missing_virtual_count = sum(
         marker.method in SOURCE_REQUIRED_VIRTUAL_MARKER_METHODS and marker.source == ""
         for marker in draft.virtual_markers
     )
-    anatomical_axes = tuple(axis for axis in draft.axes if not _is_virtual_reference_axis(axis))
-    virtual_reference_axes = tuple(axis for axis in draft.axes if _is_virtual_reference_axis(axis))
-    incomplete_anatomical_axes = tuple(axis for axis in anatomical_axes if axis.axis == "")
-    virtual_reference_without_xyz = tuple(axis for axis in virtual_reference_axes if axis.axis == "")
-    child_translation_count = sum(setting.child_translation for setting in draft.segment_settings)
+    anatomical_axes = tuple(
+        axis for axis in draft.axes if not _is_virtual_reference_axis(axis)
+    )
+    virtual_reference_axes = tuple(
+        axis for axis in draft.axes if _is_virtual_reference_axis(axis)
+    )
+    incomplete_anatomical_axes = tuple(
+        axis for axis in anatomical_axes if axis.axis == ""
+    )
+    virtual_reference_without_xyz = tuple(
+        axis for axis in virtual_reference_axes if axis.axis == ""
+    )
+    child_translation_count = sum(
+        setting.child_translation for setting in draft.segment_settings
+    )
     initial_rotation_source_missing_count = sum(
-        setting.initial_rotation_method in {"matrix", "anatomical_c3d"} and setting.initial_rotation_source == ""
+        setting.initial_rotation_method in {"matrix", "anatomical_c3d"}
+        and setting.initial_rotation_source == ""
         for setting in draft.segment_settings
     )
     dof_issue_count = sum(issue.category == "dof" for issue in issues)
-    explicit_technical_segment_count = sum(group.segment_type == "technical" for group in draft.segment_marker_groups)
-    functional_marker_set_count = sum(_has_functional_marker_set(group) for group in draft.segment_marker_groups)
+    explicit_technical_segment_count = sum(
+        group.segment_type == "technical" for group in draft.segment_marker_groups
+    )
+    functional_marker_set_count = sum(
+        _has_functional_marker_set(group) for group in draft.segment_marker_groups
+    )
     technical_segment_detail = (
         f"{explicit_technical_segment_count} technical-only segments; "
         f"{functional_marker_set_count} segment marker sets usable for functional trials."
@@ -906,12 +1028,18 @@ def c3d_workflow_progress(draft: C3dWorkflowDraft, data: MarkerData | None = Non
     )
 
     return (
-        C3dWorkflowStepStatus(1, "New from C3D", "done", f"Draft initialized for {draft.preset.value}."),
+        C3dWorkflowStepStatus(
+            1, "New from C3D", "done", f"Draft initialized for {draft.preset.value}."
+        ),
         C3dWorkflowStepStatus(
             2,
             "Choose main C3D",
             "done" if data is not None else "pending",
-            "Main marker C3D loaded." if data is not None else "Choose the C3D containing all visible markers.",
+            (
+                "Main marker C3D loaded."
+                if data is not None
+                else "Choose the C3D containing all visible markers."
+            ),
         ),
         C3dWorkflowStepStatus(
             3,
@@ -925,14 +1053,19 @@ def c3d_workflow_progress(draft: C3dWorkflowDraft, data: MarkerData | None = Non
         C3dWorkflowStepStatus(
             4,
             "Create virtual markers",
-            _step_status(source_missing_virtual_count == 0, len(draft.virtual_markers) != 0),
+            _step_status(
+                source_missing_virtual_count == 0, len(draft.virtual_markers) != 0
+            ),
             f"{len(draft.virtual_markers)} virtual markers; {source_missing_virtual_count} missing sources.",
         ),
         C3dWorkflowStepStatus(
             5,
             "Create anatomical segments",
             _step_status(
-                any(group.segment_type == "anatomical" for group in draft.segment_marker_groups),
+                any(
+                    group.segment_type == "anatomical"
+                    for group in draft.segment_marker_groups
+                ),
                 len(draft.segment_marker_groups) != 0,
             ),
             f"{sum(group.segment_type == 'anatomical' for group in draft.segment_marker_groups)} anatomical segments.",
@@ -940,7 +1073,10 @@ def c3d_workflow_progress(draft: C3dWorkflowDraft, data: MarkerData | None = Non
         C3dWorkflowStepStatus(
             6,
             "Segment coordinate systems",
-            _step_status("axes" not in issue_categories and len(incomplete_anatomical_axes) == 0, len(draft.axes) != 0),
+            _step_status(
+                "axes" not in issue_categories and len(incomplete_anatomical_axes) == 0,
+                len(draft.axes) != 0,
+            ),
             _segment_coordinate_system_progress_detail(
                 anatomical_axes,
                 incomplete_anatomical_axes,
@@ -968,20 +1104,31 @@ def c3d_workflow_progress(draft: C3dWorkflowDraft, data: MarkerData | None = Non
         C3dWorkflowStepStatus(
             10,
             "Validate",
-            "done" if not any(issue.severity == "error" for issue in issues) else "warning",
+            (
+                "done"
+                if not any(issue.severity == "error" for issue in issues)
+                else "warning"
+            ),
             f"{sum(issue.severity == 'error' for issue in issues)} blocking issue(s), "
             f"{sum(issue.severity == 'warning' for issue in issues)} warning(s).",
         ),
         C3dWorkflowStepStatus(
             11,
             "Generate template",
-            "done" if not any(issue.severity == "error" for issue in issues) else "warning",
+            (
+                "done"
+                if not any(issue.severity == "error" for issue in issues)
+                else "warning"
+            ),
             "Template can be exported when blocking issues are resolved.",
         ),
         C3dWorkflowStepStatus(
             12,
             "Generate model",
-            _step_status(assigned_required_role_count == required_role_count, assigned_required_role_count != 0),
+            _step_status(
+                assigned_required_role_count == required_role_count,
+                assigned_required_role_count != 0,
+            ),
             f"{assigned_required_role_count}/{required_role_count} required C3D files assigned.",
         ),
     )
@@ -995,7 +1142,11 @@ def c3d_main_marker_status(data: MarkerData | None = None) -> C3dWorkflowStepSta
         2,
         "Choose main C3D",
         "done" if data is not None and len(data.marker_names) != 0 else "pending",
-        f"{len(data.marker_names)} markers available." if data is not None else "Main marker C3D not loaded.",
+        (
+            f"{len(data.marker_names)} markers available."
+            if data is not None
+            else "Main marker C3D not loaded."
+        ),
     )
 
 
@@ -1084,23 +1235,36 @@ def add_segment_to_draft(
         + (C3dSegmentMarkerGroup(segment_name, (), parent_name.strip(), segment_type),),
         virtual_markers=draft.virtual_markers,
         axes=draft.axes,
-        segment_settings=draft.segment_settings + (C3dSegmentSettingsDraft(segment_name),),
+        segment_settings=draft.segment_settings
+        + (C3dSegmentSettingsDraft(segment_name),),
         file_assignments=draft.file_assignments,
     )
 
 
-def remove_segment_from_draft(draft: C3dWorkflowDraft, segment_name: str) -> C3dWorkflowDraft:
+def remove_segment_from_draft(
+    draft: C3dWorkflowDraft, segment_name: str
+) -> C3dWorkflowDraft:
     """
     Remove a segment and its draft virtual definitions.
     """
     return C3dWorkflowDraft(
         preset=draft.preset,
         segment_marker_groups=tuple(
-            group for group in draft.segment_marker_groups if group.segment_name != segment_name
+            group
+            for group in draft.segment_marker_groups
+            if group.segment_name != segment_name
         ),
-        virtual_markers=tuple(marker for marker in draft.virtual_markers if marker.segment_name != segment_name),
+        virtual_markers=tuple(
+            marker
+            for marker in draft.virtual_markers
+            if marker.segment_name != segment_name
+        ),
         axes=tuple(axis for axis in draft.axes if axis.segment_name != segment_name),
-        segment_settings=tuple(setting for setting in draft.segment_settings if setting.segment_name != segment_name),
+        segment_settings=tuple(
+            setting
+            for setting in draft.segment_settings
+            if setting.segment_name != segment_name
+        ),
         file_assignments=draft.file_assignments,
     )
 
@@ -1148,12 +1312,24 @@ def assign_marker_to_segment(
             groups.append(group)
             continue
         found_segment = True
-        marker_names = group.marker_names if marker_name in group.marker_names else group.marker_names + (marker_name,)
-        should_be_technical = group.segment_type == "technical" if is_technical is None else is_technical
+        marker_names = (
+            group.marker_names
+            if marker_name in group.marker_names
+            else group.marker_names + (marker_name,)
+        )
+        should_be_technical = (
+            group.segment_type == "technical" if is_technical is None else is_technical
+        )
         technical_marker_names = group.technical_marker_names
         if should_be_technical and marker_name not in technical_marker_names:
             technical_marker_names = technical_marker_names + (marker_name,)
-        groups.append(replace(group, marker_names=marker_names, technical_marker_names=technical_marker_names))
+        groups.append(
+            replace(
+                group,
+                marker_names=marker_names,
+                technical_marker_names=technical_marker_names,
+            )
+        )
     if not found_segment:
         raise ValueError(f"Segment '{segment_name}' does not exist.")
     return _replace_draft_groups(draft, tuple(groups))
@@ -1170,11 +1346,15 @@ def assign_markers_to_segment(
     """
     updated_draft = draft
     for marker_name in marker_names:
-        updated_draft = assign_marker_to_segment(updated_draft, segment_name, marker_name, is_technical=is_technical)
+        updated_draft = assign_marker_to_segment(
+            updated_draft, segment_name, marker_name, is_technical=is_technical
+        )
     return updated_draft
 
 
-def unassign_marker_from_segment(draft: C3dWorkflowDraft, segment_name: str, marker_name: str) -> C3dWorkflowDraft:
+def unassign_marker_from_segment(
+    draft: C3dWorkflowDraft, segment_name: str, marker_name: str
+) -> C3dWorkflowDraft:
     """
     Remove one marker assignment from one segment.
     """
@@ -1184,8 +1364,14 @@ def unassign_marker_from_segment(draft: C3dWorkflowDraft, segment_name: str, mar
             groups.append(
                 replace(
                     group,
-                    marker_names=tuple(name for name in group.marker_names if name != marker_name),
-                    technical_marker_names=tuple(name for name in group.technical_marker_names if name != marker_name),
+                    marker_names=tuple(
+                        name for name in group.marker_names if name != marker_name
+                    ),
+                    technical_marker_names=tuple(
+                        name
+                        for name in group.technical_marker_names
+                        if name != marker_name
+                    ),
                 )
             )
         else:
@@ -1203,7 +1389,9 @@ def unassign_markers_from_segment(
     """
     updated_draft = draft
     for marker_name in marker_names:
-        updated_draft = unassign_marker_from_segment(updated_draft, segment_name, marker_name)
+        updated_draft = unassign_marker_from_segment(
+            updated_draft, segment_name, marker_name
+        )
     return updated_draft
 
 
@@ -1230,13 +1418,17 @@ def set_segment_marker_technical(
                 f"Markers must be assigned to segment '{segment_name}' before they can be marked technical: "
                 f"{', '.join(missing_names)}."
             )
-        technical_marker_names = tuple(name for name in group.technical_marker_names if name in group.marker_names)
+        technical_marker_names = tuple(
+            name for name in group.technical_marker_names if name in group.marker_names
+        )
         if is_technical:
             for marker_name in requested_names:
                 if marker_name not in technical_marker_names:
                     technical_marker_names = technical_marker_names + (marker_name,)
         else:
-            technical_marker_names = tuple(name for name in technical_marker_names if name not in requested_names)
+            technical_marker_names = tuple(
+                name for name in technical_marker_names if name not in requested_names
+            )
         groups.append(replace(group, technical_marker_names=technical_marker_names))
     if not found_segment:
         raise ValueError(f"Segment '{segment_name}' does not exist.")
@@ -1264,7 +1456,11 @@ def add_virtual_marker_to_draft(
     return C3dWorkflowDraft(
         preset=draft.preset,
         segment_marker_groups=draft.segment_marker_groups,
-        virtual_markers=tuple(existing for existing in draft.virtual_markers if existing.name != marker.name)
+        virtual_markers=tuple(
+            existing
+            for existing in draft.virtual_markers
+            if existing.name != marker.name
+        )
         + (marker,),
         axes=draft.axes,
         segment_settings=draft.segment_settings,
@@ -1272,14 +1468,18 @@ def add_virtual_marker_to_draft(
     )
 
 
-def remove_virtual_marker_from_draft(draft: C3dWorkflowDraft, name: str) -> C3dWorkflowDraft:
+def remove_virtual_marker_from_draft(
+    draft: C3dWorkflowDraft, name: str
+) -> C3dWorkflowDraft:
     """
     Remove a virtual marker definition by name.
     """
     return C3dWorkflowDraft(
         preset=draft.preset,
         segment_marker_groups=draft.segment_marker_groups,
-        virtual_markers=tuple(marker for marker in draft.virtual_markers if marker.name != name),
+        virtual_markers=tuple(
+            marker for marker in draft.virtual_markers if marker.name != name
+        ),
         axes=draft.axes,
         segment_settings=draft.segment_settings,
         file_assignments=draft.file_assignments,
@@ -1304,9 +1504,13 @@ def add_axis_to_draft(
         name=_require_name(name, "Axis"),
         segment_name=_require_name(segment_name, "Axis segment"),
         axis=_require_name(axis, "Axis name"),
-        start_markers=tuple(name.strip() for name in start_markers if name.strip() != ""),
+        start_markers=tuple(
+            name.strip() for name in start_markers if name.strip() != ""
+        ),
         end_markers=tuple(name.strip() for name in end_markers if name.strip() != ""),
-        origin_markers=tuple(name.strip() for name in origin_markers if name.strip() != ""),
+        origin_markers=tuple(
+            name.strip() for name in origin_markers if name.strip() != ""
+        ),
         method=_require_name(method, "Axis method"),
         keep_vector=keep_vector,
     )
@@ -1320,7 +1524,10 @@ def add_axis_to_draft(
         preset=draft.preset,
         segment_marker_groups=draft.segment_marker_groups,
         virtual_markers=draft.virtual_markers,
-        axes=tuple(existing for existing in draft.axes if existing.name != axis_definition.name) + (axis_definition,),
+        axes=tuple(
+            existing for existing in draft.axes if existing.name != axis_definition.name
+        )
+        + (axis_definition,),
         segment_settings=draft.segment_settings,
         file_assignments=draft.file_assignments,
     )
@@ -1361,7 +1568,9 @@ def update_segment_settings_in_draft(
     Add or replace kinematic settings for one segment.
     """
     matrix = (
-        C3dSegmentSettingsDraft.initial_rotation_matrix if initial_rotation_matrix is None else initial_rotation_matrix
+        C3dSegmentSettingsDraft.initial_rotation_matrix
+        if initial_rotation_matrix is None
+        else initial_rotation_matrix
     )
     setting = C3dSegmentSettingsDraft(
         segment_name=_require_name(segment_name, "Segment"),
@@ -1370,12 +1579,16 @@ def update_segment_settings_in_draft(
         q_min=tuple(float(value) for value in q_min),
         q_max=tuple(float(value) for value in q_max),
         child_translation=child_translation,
-        initial_rotation_method=_require_name(initial_rotation_method, "Initial rotation method"),
+        initial_rotation_method=_require_name(
+            initial_rotation_method, "Initial rotation method"
+        ),
         initial_rotation_source=initial_rotation_source.strip(),
         initial_rotation_matrix=matrix,
         anthropometry_model=anthropometry_model.strip(),
         anthropometry_sex=anthropometry_sex.strip(),
-        anthropometry_mass=None if anthropometry_mass is None else float(anthropometry_mass),
+        anthropometry_mass=(
+            None if anthropometry_mass is None else float(anthropometry_mass)
+        ),
         segment_length=None if segment_length is None else float(segment_length),
         segment_length_source=segment_length_source.strip(),
     )
@@ -1384,13 +1597,19 @@ def update_segment_settings_in_draft(
         segment_marker_groups=draft.segment_marker_groups,
         virtual_markers=draft.virtual_markers,
         axes=draft.axes,
-        segment_settings=tuple(existing for existing in draft.segment_settings if existing.segment_name != segment_name)
+        segment_settings=tuple(
+            existing
+            for existing in draft.segment_settings
+            if existing.segment_name != segment_name
+        )
         + (setting,),
         file_assignments=draft.file_assignments,
     )
 
 
-def assign_c3d_file_role_to_draft(draft: C3dWorkflowDraft, role: str, source_path: str) -> C3dWorkflowDraft:
+def assign_c3d_file_role_to_draft(
+    draft: C3dWorkflowDraft, role: str, source_path: str
+) -> C3dWorkflowDraft:
     """
     Assign a participant C3D file to a generic role.
     """
@@ -1415,12 +1634,18 @@ def assign_c3d_file_role_to_draft(draft: C3dWorkflowDraft, role: str, source_pat
     return _replace_draft_file_assignments(draft, tuple(assignments))
 
 
-def clear_c3d_file_role_from_draft(draft: C3dWorkflowDraft, role: str) -> C3dWorkflowDraft:
+def clear_c3d_file_role_from_draft(
+    draft: C3dWorkflowDraft, role: str
+) -> C3dWorkflowDraft:
     """
     Clear a participant C3D file assignment.
     """
     assignments = tuple(
-        C3dFileAssignmentDraft(assignment.role, assignment.generic_name) if assignment.role == role else assignment
+        (
+            C3dFileAssignmentDraft(assignment.role, assignment.generic_name)
+            if assignment.role == role
+            else assignment
+        )
         for assignment in draft.file_assignments
     )
     return _replace_draft_file_assignments(draft, assignments)
@@ -1432,16 +1657,50 @@ def c3d_creation_workflow_steps() -> tuple[C3dWorkflowStep, ...]:
     """
     return (
         C3dWorkflowStep(1, "New from C3D", "Start a model creation session."),
-        C3dWorkflowStep(2, "Choose main C3D", "Load the C3D that contains all visible markers."),
-        C3dWorkflowStep(3, "Create technical segments", "Assign technical markers and parents for functional trials."),
-        C3dWorkflowStep(4, "Create virtual markers", "Add CoR, pointing, regression, SCORE, or SARA-derived markers."),
-        C3dWorkflowStep(5, "Create anatomical segments", "Define anatomical segments from C3D and virtual markers."),
-        C3dWorkflowStep(6, "Segment coordinate systems", "Define origins and axes from marker vectors."),
-        C3dWorkflowStep(7, "Initial rotations", "Choose posture C3Ds or matrices for zero-angle poses."),
-        C3dWorkflowStep(8, "DoF", "Choose rotations/translations and ranges of motion."),
-        C3dWorkflowStep(9, "Parent-child transforms", "Set rotations/translations between child and parent frames."),
-        C3dWorkflowStep(10, "Validate", "Check marker availability, frames, CoR, axes, and parent links."),
-        C3dWorkflowStep(11, "Generate template", "Save a reusable template for other participants."),
+        C3dWorkflowStep(
+            2, "Choose main C3D", "Load the C3D that contains all visible markers."
+        ),
+        C3dWorkflowStep(
+            3,
+            "Create technical segments",
+            "Assign technical markers and parents for functional trials.",
+        ),
+        C3dWorkflowStep(
+            4,
+            "Create virtual markers",
+            "Add CoR, pointing, regression, SCORE, or SARA-derived markers.",
+        ),
+        C3dWorkflowStep(
+            5,
+            "Create anatomical segments",
+            "Define anatomical segments from C3D and virtual markers.",
+        ),
+        C3dWorkflowStep(
+            6,
+            "Segment coordinate systems",
+            "Define origins and axes from marker vectors.",
+        ),
+        C3dWorkflowStep(
+            7,
+            "Initial rotations",
+            "Choose posture C3Ds or matrices for zero-angle poses.",
+        ),
+        C3dWorkflowStep(
+            8, "DoF", "Choose rotations/translations and ranges of motion."
+        ),
+        C3dWorkflowStep(
+            9,
+            "Parent-child transforms",
+            "Set rotations/translations between child and parent frames.",
+        ),
+        C3dWorkflowStep(
+            10,
+            "Validate",
+            "Check marker availability, frames, CoR, axes, and parent links.",
+        ),
+        C3dWorkflowStep(
+            11, "Generate template", "Save a reusable template for other participants."
+        ),
         C3dWorkflowStep(12, "Generate model", "Export the final BioMod model."),
     )
 
@@ -1459,13 +1718,26 @@ def c3d_file_roles_for_preset(preset: C3dModelPreset) -> tuple[C3dFileRole, ...]
     """
     if preset == C3dModelPreset.LOWER_LIMBS:
         return (
-            C3dFileRole("main", "Test_func_anat.c3d", "C3D containing all visible markers.", required=True),
-            C3dFileRole("trunk_score", LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["trunk_score"], "Trunk SCORE trial."),
             C3dFileRole(
-                "left_hip_score", LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["left_hip_score"], "Left hip SCORE trial."
+                "main",
+                "Test_func_anat.c3d",
+                "C3D containing all visible markers.",
+                required=True,
             ),
             C3dFileRole(
-                "left_knee_sara", LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["left_knee_sara"], "Left knee SARA trial."
+                "trunk_score",
+                LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["trunk_score"],
+                "Trunk SCORE trial.",
+            ),
+            C3dFileRole(
+                "left_hip_score",
+                LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["left_hip_score"],
+                "Left hip SCORE trial.",
+            ),
+            C3dFileRole(
+                "left_knee_sara",
+                LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["left_knee_sara"],
+                "Left knee SARA trial.",
             ),
             C3dFileRole(
                 "left_ankle_score",
@@ -1473,10 +1745,14 @@ def c3d_file_roles_for_preset(preset: C3dModelPreset) -> tuple[C3dFileRole, ...]
                 "Left ankle SCORE trial.",
             ),
             C3dFileRole(
-                "right_hip_score", LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["right_hip_score"], "Right hip SCORE trial."
+                "right_hip_score",
+                LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["right_hip_score"],
+                "Right hip SCORE trial.",
             ),
             C3dFileRole(
-                "right_knee_sara", LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["right_knee_sara"], "Right knee SARA trial."
+                "right_knee_sara",
+                LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["right_knee_sara"],
+                "Right knee SARA trial.",
             ),
             C3dFileRole(
                 "right_ankle_score",
@@ -1485,22 +1761,105 @@ def c3d_file_roles_for_preset(preset: C3dModelPreset) -> tuple[C3dFileRole, ...]
             ),
         )
     if preset == C3dModelPreset.LOWER_LIMBS_ANATOMICAL:
-        return (C3dFileRole("main", "main_markers.c3d", "C3D containing all visible markers.", required=True),)
+        return (
+            C3dFileRole(
+                "main",
+                "main_markers.c3d",
+                "C3D containing all visible markers.",
+                required=True,
+            ),
+        )
     if preset == C3dModelPreset.FROM_SCRATCH:
-        return (C3dFileRole("main", "main_markers.c3d", "C3D containing all visible markers.", required=True),)
+        return (
+            C3dFileRole(
+                "main",
+                "main_markers.c3d",
+                "C3D containing all visible markers.",
+                required=True,
+            ),
+        )
     if preset == C3dModelPreset.UPPER_LIMB:
         return (
-            C3dFileRole("main", "main_markers.c3d", "C3D containing all visible markers.", required=True),
-            C3dFileRole("pointing", "pointing_virtual_markers.c3d", "Pointing trial for virtual anatomical points."),
-            C3dFileRole("shoulder_score", "functional_shoulder_score.c3d", "Shoulder center functional trial."),
-            C3dFileRole("elbow_sara", "functional_elbow_sara.c3d", "Elbow flexion axis SARA trial."),
-            C3dFileRole("forearm_sara", "functional_forearm_sara.c3d", "Forearm pronation/supination SARA trial."),
-            C3dFileRole("wrist_score", "functional_wrist_score.c3d", "Wrist center functional trial."),
+            C3dFileRole(
+                "main",
+                "main_markers.c3d",
+                "C3D containing all visible markers.",
+                required=True,
+            ),
+            C3dFileRole(
+                "pointing",
+                "pointing_virtual_markers.c3d",
+                "Pointing trial for virtual anatomical points.",
+            ),
+            C3dFileRole(
+                "shoulder_score",
+                "functional_shoulder_score.c3d",
+                "Shoulder center functional trial.",
+            ),
+            C3dFileRole(
+                "elbow_sara",
+                "functional_elbow_sara.c3d",
+                "Elbow flexion axis SARA trial.",
+            ),
+            C3dFileRole(
+                "forearm_sara",
+                "functional_forearm_sara.c3d",
+                "Forearm pronation/supination SARA trial.",
+            ),
+            C3dFileRole(
+                "wrist_score",
+                "functional_wrist_score.c3d",
+                "Wrist center functional trial.",
+            ),
+        )
+    if preset == C3dModelPreset.MOTIVE_57:
+        return (
+            C3dFileRole(
+                "main",
+                "P5_Calib_Static.c3d",
+                "Static Motive (57) calibration C3D.",
+                required=True,
+            ),
+            C3dFileRole(
+                "left_hip_score",
+                MOTIVE_57_FUNCTIONAL_C3D_FILENAMES["left_hip_score"],
+                "Left hip SCORE trial.",
+            ),
+            C3dFileRole(
+                "left_knee_sara",
+                MOTIVE_57_FUNCTIONAL_C3D_FILENAMES["left_knee_sara"],
+                "Left knee SARA trial.",
+            ),
+            C3dFileRole(
+                "left_ankle_score",
+                MOTIVE_57_FUNCTIONAL_C3D_FILENAMES["left_ankle_score"],
+                "Left ankle SCORE trial.",
+            ),
+            C3dFileRole(
+                "right_hip_score",
+                MOTIVE_57_FUNCTIONAL_C3D_FILENAMES["right_hip_score"],
+                "Right hip SCORE trial.",
+            ),
+            C3dFileRole(
+                "right_knee_sara",
+                MOTIVE_57_FUNCTIONAL_C3D_FILENAMES["right_knee_sara"],
+                "Right knee SARA trial.",
+            ),
+            C3dFileRole(
+                "right_ankle_score",
+                MOTIVE_57_FUNCTIONAL_C3D_FILENAMES["right_ankle_score"],
+                "Right ankle SCORE trial.",
+            ),
         )
     if preset == C3dModelPreset.FULL_BODY:
         filenames = full_body_bela_functional_c3d_filenames()
         roles = [
-            C3dFileRole("main", filenames["main"], "C3D containing all visible full-body markers.", required=True),
+            C3dFileRole(
+                "main",
+                filenames["main"],
+                "C3D containing all visible full-body markers.",
+                required=True,
+            ),
         ]
         roles.extend(
             C3dFileRole(
@@ -1515,7 +1874,9 @@ def c3d_file_roles_for_preset(preset: C3dModelPreset) -> tuple[C3dFileRole, ...]
     raise ValueError(f"Unsupported C3D model preset: {preset}.")
 
 
-def c3d_segment_marker_groups_for_preset(preset: C3dModelPreset) -> tuple[C3dSegmentMarkerGroup, ...]:
+def c3d_segment_marker_groups_for_preset(
+    preset: C3dModelPreset,
+) -> tuple[C3dSegmentMarkerGroup, ...]:
     """
     Return segment marker groups for raw markers in a preset.
     """
@@ -1527,6 +1888,8 @@ def c3d_segment_marker_groups_for_preset(preset: C3dModelPreset) -> tuple[C3dSeg
         return ()
     if preset == C3dModelPreset.UPPER_LIMB:
         return _groups_from_model_template(upper_limb_template())
+    if preset == C3dModelPreset.MOTIVE_57:
+        return _groups_from_model_template(motive_57_template(use_functional=True))
     if preset == C3dModelPreset.FULL_BODY:
         return tuple(
             C3dSegmentMarkerGroup(
@@ -1546,7 +1909,10 @@ def c3d_workflow_summary(preset: C3dModelPreset, data: MarkerData | None = None)
     Return a compact text summary for the selected preset and optional C3D data.
     """
     workflow = c3d_creation_workflow(preset)
-    lines = [f"Preset: {preset.value}", f"Segments: {len(workflow.segment_marker_groups)}"]
+    lines = [
+        f"Preset: {preset.value}",
+        f"Segments: {len(workflow.segment_marker_groups)}",
+    ]
     if data is not None:
         expected_markers = _expected_marker_names_for_preset(preset)
         present_markers = set(data.marker_names)
@@ -1562,7 +1928,9 @@ def c3d_workflow_summary(preset: C3dModelPreset, data: MarkerData | None = None)
         )
     virtual_features = c3d_model_preset_virtual_features(preset)
     lines.append(f"Virtual features to define: {len(virtual_features)}")
-    lines.append(f"Generic C3D names: {', '.join(role.generic_name for role in workflow.file_roles)}")
+    lines.append(
+        f"Generic C3D names: {', '.join(role.generic_name for role in workflow.file_roles)}"
+    )
     return "\n".join(lines)
 
 
@@ -1575,8 +1943,12 @@ def c3d_template_payload(preset: C3dModelPreset) -> dict:
         "preset": preset.value,
         "steps": [asdict(step) for step in workflow.steps],
         "c3d_file_roles": [asdict(role) for role in workflow.file_roles],
-        "segment_marker_groups": [asdict(group) for group in workflow.segment_marker_groups],
-        "virtual_features": [asdict(feature) for feature in c3d_model_preset_virtual_features(preset)],
+        "segment_marker_groups": [
+            asdict(group) for group in workflow.segment_marker_groups
+        ],
+        "virtual_features": [
+            asdict(feature) for feature in c3d_model_preset_virtual_features(preset)
+        ],
     }
 
 
@@ -1589,25 +1961,37 @@ def c3d_template_payload_from_draft(draft: C3dWorkflowDraft) -> dict:
         "preset": draft.preset.value,
         "steps": [asdict(step) for step in workflow.steps],
         "c3d_file_roles": [asdict(role) for role in workflow.file_roles],
-        "segment_marker_groups": [asdict(group) for group in draft.segment_marker_groups],
+        "segment_marker_groups": [
+            asdict(group) for group in draft.segment_marker_groups
+        ],
         "virtual_markers": [asdict(marker) for marker in draft.virtual_markers],
         "axes": [asdict(axis) for axis in draft.axes],
         "segment_settings": [asdict(setting) for setting in draft.segment_settings],
-        "c3d_file_assignments": [asdict(assignment) for assignment in draft.file_assignments],
+        "c3d_file_assignments": [
+            asdict(assignment) for assignment in draft.file_assignments
+        ],
         "progress": [asdict(status) for status in c3d_workflow_progress(draft)],
-        "virtual_marker_method_examples": [asdict(example) for example in c3d_virtual_marker_method_examples()],
-        "validation_issues": [asdict(issue) for issue in validate_c3d_workflow_draft(draft)],
+        "virtual_marker_method_examples": [
+            asdict(example) for example in c3d_virtual_marker_method_examples()
+        ],
+        "validation_issues": [
+            asdict(issue) for issue in validate_c3d_workflow_draft(draft)
+        ],
     }
 
 
-def _groups_from_model_template(template: ModelTemplate) -> tuple[C3dSegmentMarkerGroup, ...]:
+def _groups_from_model_template(
+    template: ModelTemplate,
+) -> tuple[C3dSegmentMarkerGroup, ...]:
     marker_segments = {}
     technical_marker_segments = {}
     for attachment in template.marker_attachments:
         for segment_name in attachment.segment_names:
             marker_segments.setdefault(segment_name, []).append(attachment.name)
             if attachment.is_technical:
-                technical_marker_segments.setdefault(segment_name, []).append(attachment.name)
+                technical_marker_segments.setdefault(segment_name, []).append(
+                    attachment.name
+                )
     return tuple(
         C3dSegmentMarkerGroup(
             segment.name,
@@ -1623,14 +2007,23 @@ def _groups_from_model_template(template: ModelTemplate) -> tuple[C3dSegmentMark
 def _expected_marker_names_for_preset(preset: C3dModelPreset) -> set[str]:
     if preset == C3dModelPreset.LOWER_LIMBS:
         template = lower_limb_template(use_functional=True)
-        return set(required_static_markers(template)) | set().union(*required_functional_markers(template).values())
+        return set(required_static_markers(template)) | set().union(
+            *required_functional_markers(template).values()
+        )
     if preset == C3dModelPreset.LOWER_LIMBS_ANATOMICAL:
         return set(required_static_markers(lower_limb_template(use_functional=False)))
     if preset == C3dModelPreset.UPPER_LIMB:
         return set(required_static_markers(upper_limb_template()))
+    if preset == C3dModelPreset.MOTIVE_57:
+        template = motive_57_template(use_functional=True)
+        return set(required_static_markers(template)) | set().union(
+            *required_functional_markers(template).values()
+        )
     if preset == C3dModelPreset.FULL_BODY:
         template = full_body_bela_template(use_functional=True)
-        return set(required_static_markers(template)) | set().union(*required_functional_markers(template).values())
+        return set(required_static_markers(template)) | set().union(
+            *required_functional_markers(template).values()
+        )
     if preset == C3dModelPreset.FROM_SCRATCH:
         return set()
     raise ValueError(f"Unsupported C3D model preset: {preset}.")
@@ -1728,16 +2121,29 @@ def _segment_coordinate_system_progress_detail(
 
 
 def _file_role_is_required(preset: C3dModelPreset, role_name: str) -> bool:
-    return any(role.role == role_name and role.required for role in c3d_file_roles_for_preset(preset))
+    return any(
+        role.role == role_name and role.required
+        for role in c3d_file_roles_for_preset(preset)
+    )
 
 
-def _initial_segment_settings(preset: C3dModelPreset) -> tuple[C3dSegmentSettingsDraft, ...]:
+def _initial_segment_settings(
+    preset: C3dModelPreset,
+) -> tuple[C3dSegmentSettingsDraft, ...]:
     if preset == C3dModelPreset.LOWER_LIMBS:
-        return tuple(_settings_from_model_template(lower_limb_template(use_functional=True)))
+        return tuple(
+            _settings_from_model_template(lower_limb_template(use_functional=True))
+        )
     if preset == C3dModelPreset.LOWER_LIMBS_ANATOMICAL:
-        return tuple(_settings_from_model_template(lower_limb_template(use_functional=False)))
+        return tuple(
+            _settings_from_model_template(lower_limb_template(use_functional=False))
+        )
     if preset == C3dModelPreset.UPPER_LIMB:
         return tuple(_settings_from_model_template(upper_limb_template()))
+    if preset == C3dModelPreset.MOTIVE_57:
+        return tuple(
+            _settings_from_model_template(motive_57_template(use_functional=True))
+        )
     if preset == C3dModelPreset.FULL_BODY:
         return tuple(
             C3dSegmentSettingsDraft(
@@ -1753,14 +2159,22 @@ def _initial_segment_settings(preset: C3dModelPreset) -> tuple[C3dSegmentSetting
     raise ValueError(f"Unsupported C3D model preset: {preset}.")
 
 
-def _settings_from_model_template(template: ModelTemplate) -> tuple[C3dSegmentSettingsDraft, ...]:
+def _settings_from_model_template(
+    template: ModelTemplate,
+) -> tuple[C3dSegmentSettingsDraft, ...]:
     settings = []
     for segment in template.segments:
         settings.append(
             C3dSegmentSettingsDraft(
                 segment_name=segment.name,
-                translations="" if segment.translations.value is None else segment.translations.value,
-                rotations="" if segment.rotations.value is None else segment.rotations.value,
+                translations=(
+                    ""
+                    if segment.translations.value is None
+                    else segment.translations.value
+                ),
+                rotations=(
+                    "" if segment.rotations.value is None else segment.rotations.value
+                ),
                 child_translation=segment.translations.value is not None,
             )
         )
@@ -1778,7 +2192,13 @@ def _strip_accents(text: str) -> str:
     """
     Normalize the small French report snippets that need regex matching.
     """
-    return text.replace("é", "e").replace("è", "e").replace("ê", "e").replace("à", "a").replace("�", "e")
+    return (
+        text.replace("é", "e")
+        .replace("è", "e")
+        .replace("ê", "e")
+        .replace("à", "a")
+        .replace("�", "e")
+    )
 
 
 def _score_entry_from_dict(raw_entry: dict) -> C3dScoreReportEntry:

@@ -43,6 +43,8 @@ from biobuddy.gui.model_editor import (
     _trial_name_from_virtual_feature_source,
     _virtual_axis_name_from_feature_list_text,
     _virtual_feature_list_labels,
+    _marker_pool_from_draft,
+    _unassigned_marker_names,
 )
 from biobuddy.gui.lower_limb_template import lower_limb_template
 from biobuddy.model_modifiers.functional_frame_selection import (
@@ -197,6 +199,20 @@ def test_virtual_feature_list_shows_sara_axes_first():
     assert labels[0].startswith("[axis] Axis_LKnee_SARA")
     assert labels[1].startswith("[axis] Axis_RKnee_SARA")
     assert any(label.startswith("Proj_LKnee_on_Axis_LKnee_SARA") for label in labels)
+
+
+def test_motive_57_unassigned_markers_remain_available_to_gui():
+    draft = c3d_workflow_draft(C3dModelPreset.MOTIVE_57)
+
+    marker_pool = _marker_pool_from_draft(draft)
+    unassigned_markers = _unassigned_marker_names(
+        marker_pool, draft.segment_marker_groups
+    )
+
+    assert {"RCAJ", "LCAJ", "RHGT", "LHGT", "RDP1", "LDP1"} <= set(marker_pool)
+    assert {"RCAJ", "LCAJ", "RHGT", "LHGT", "RDP1", "LDP1"} <= set(
+        unassigned_markers
+    )
 
 
 def test_lower_limb_functional_sara_axes_do_not_trigger_missing_xyz_warning():

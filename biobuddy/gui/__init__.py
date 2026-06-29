@@ -155,6 +155,13 @@ from .upper_limb_template import (
     upper_limb_virtual_point_name,
 )
 from .lower_limb_template import lower_limb_template
+from .motive_57_template import (
+    MOTIVE_57_FUNCTIONAL_C3D_FILENAMES,
+    MOTIVE_57_MARKER_NAMES,
+    motive_57_functional_trials,
+    motive_57_marker_attachments,
+    motive_57_template,
+)
 from .full_body_bela_template import (
     BelaSegmentSpec,
     S2mMarkerSpec,
@@ -321,6 +328,11 @@ __all__ = [
     upper_limb_virtual_feature_requirements.__name__,
     upper_limb_virtual_point_name.__name__,
     lower_limb_template.__name__,
+    "MOTIVE_57_FUNCTIONAL_C3D_FILENAMES",
+    "MOTIVE_57_MARKER_NAMES",
+    motive_57_functional_trials.__name__,
+    motive_57_marker_attachments.__name__,
+    motive_57_template.__name__,
     BelaSegmentSpec.__name__,
     S2mMarkerSpec.__name__,
     S2mSegmentSpec.__name__,
