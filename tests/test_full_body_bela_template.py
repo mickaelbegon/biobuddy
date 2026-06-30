@@ -40,7 +40,14 @@ def test_bela_markers_follow_matlab_order_and_segment_ownership():
 
     assert len(marker_names) == 94
     assert marker_names[:6] == ("EIASD", "CID", "EIPSD", "EIPSG", "CIG", "EIASG")
-    assert marker_names[-6:] == ("CALCG", "MIDMETA4G", "MIDMETA1G", "SCAPHOIDEG", "METAT5G", "METAT1G")
+    assert marker_names[-6:] == (
+        "CALCG",
+        "MIDMETA4G",
+        "MIDMETA1G",
+        "SCAPHOIDEG",
+        "METAT5G",
+        "METAT1G",
+    )
     assert "CLAV3D" not in marker_names
     assert len(attachments) == 94
     assert attachments[0].name == "EIASD"
@@ -51,17 +58,29 @@ def test_bela_inertial_parameters_are_available_by_segment_name():
     inertia = bela_inertia_by_segment()
 
     assert inertia["Pelvis"]["mass"] == pytest.approx(11.5688)
-    np.testing.assert_allclose(inertia["Pelvis"]["center_of_mass"], np.array([0.0, 0.0, 0.1147]))
-    np.testing.assert_allclose(inertia["Thorax"]["center_of_mass"], np.array([0.0, 0.0, 0.1130523729]))
-    np.testing.assert_allclose(inertia["EpauleD"]["center_of_mass"], np.array([0.1123, 0.0, 0.0]))
-    np.testing.assert_allclose(inertia["EpauleG"]["center_of_mass"], np.array([-0.1123, 0.0, 0.0]))
     np.testing.assert_allclose(
-        inertia["MainD"]["center_of_mass"], np.array([0.0201989512, -0.0490185172, -0.027307392])
+        inertia["Pelvis"]["center_of_mass"], np.array([0.0, 0.0, 0.1147])
     )
     np.testing.assert_allclose(
-        inertia["MainG"]["center_of_mass"], np.array([-0.0264342737, -0.0469823183, -0.0252076569])
+        inertia["Thorax"]["center_of_mass"], np.array([0.0, 0.0, 0.1130523729])
     )
-    np.testing.assert_allclose(np.diag(inertia["PiedG"]["inertia"]), np.array([0.0068, 0.0066, 0.0012]))
+    np.testing.assert_allclose(
+        inertia["EpauleD"]["center_of_mass"], np.array([0.1123, 0.0, 0.0])
+    )
+    np.testing.assert_allclose(
+        inertia["EpauleG"]["center_of_mass"], np.array([-0.1123, 0.0, 0.0])
+    )
+    np.testing.assert_allclose(
+        inertia["MainD"]["center_of_mass"],
+        np.array([0.0201989512, -0.0490185172, -0.027307392]),
+    )
+    np.testing.assert_allclose(
+        inertia["MainG"]["center_of_mass"],
+        np.array([-0.0264342737, -0.0469823183, -0.0252076569]),
+    )
+    np.testing.assert_allclose(
+        np.diag(inertia["PiedG"]["inertia"]), np.array([0.0068, 0.0066, 0.0012])
+    )
 
 
 def test_full_body_bela_template_builds_functional_model202_template():
@@ -86,9 +105,13 @@ def test_full_body_bela_functional_trials_expose_score_and_sara_requirements():
 
     assert trials["thorax_pelvis_score"].file_pattern == "Test_func_thorax_pelvis.c3d"
     assert trials["thorax_pelvis_score"].method.value == "score"
-    assert set(("EIASD", "EIASG", "MANU", "D10")).issubset(trials["thorax_pelvis_score"].required_markers)
-    assert trials["jambed_cuissed_sara"].method.value == "sara"
-    assert set(("CONDEXTD", "CONDINTD", "CRETED", "MALINTD")).issubset(trials["jambed_cuissed_sara"].required_markers)
+    assert set(("EIASD", "EIASG", "MANU", "D10")).issubset(
+        trials["thorax_pelvis_score"].required_markers
+    )
+    assert trials["jambed_cuissed_sara"].method.value == "sara_direction"
+    assert set(("CONDEXTD", "CONDINTD", "CRETED", "MALINTD")).issubset(
+        trials["jambed_cuissed_sara"].required_markers
+    )
 
 
 def test_matlab_dof_signs_do_not_change_model_axes():
@@ -109,9 +132,15 @@ def test_guse_inertial_parameters_use_the_same_segments_with_subject_values():
 
     assert set(guse_inertia) == set(bela_inertia)
     assert guse_inertia["Pelvis"]["mass"] == pytest.approx(9.5842)
-    np.testing.assert_allclose(guse_inertia["Pelvis"]["center_of_mass"], np.array([0.0, 0.0, 0.0918]))
-    np.testing.assert_allclose(guse_inertia["EpauleD"]["center_of_mass"], np.array([0.0858, 0.0, 0.0]))
-    np.testing.assert_allclose(guse_inertia["EpauleG"]["center_of_mass"], np.array([-0.0858, 0.0, 0.0]))
+    np.testing.assert_allclose(
+        guse_inertia["Pelvis"]["center_of_mass"], np.array([0.0, 0.0, 0.0918])
+    )
+    np.testing.assert_allclose(
+        guse_inertia["EpauleD"]["center_of_mass"], np.array([0.0858, 0.0, 0.0])
+    )
+    np.testing.assert_allclose(
+        guse_inertia["EpauleG"]["center_of_mass"], np.array([-0.0858, 0.0, 0.0])
+    )
     assert bela_inertia["Pelvis"]["mass"] != guse_inertia["Pelvis"]["mass"]
 
 
@@ -132,7 +161,9 @@ def test_unresolved_marker_references_report_virtual_or_functional_points():
     assert unresolved["ABrasD"] == (9, 10)
     assert unresolved["JambeD"] == (7, 8, 9)
     with pytest.raises(ValueError, match="references marker index 7"):
-        signed_marker_groups(bela_segment_specs()[1], bela_segment_specs()[1].origin_indices)
+        signed_marker_groups(
+            bela_segment_specs()[1], bela_segment_specs()[1].origin_indices
+        )
 
 
 def test_parse_s2m_model_reads_segments_markers_and_local_properties(tmp_path):
@@ -191,7 +222,10 @@ def test_bela_s2m_model_is_consistent_with_matlab_chain_when_available():
     for s2m_segment in s2m_segments:
         matlab_segment = matlab_segments[s2m_segment.name]
         assert s2m_segment.parent_name == matlab_segment.parent_name
-        assert tuple(marker.name for marker in s2m_segment.markers) == matlab_segment.marker_names
+        assert (
+            tuple(marker.name for marker in s2m_segment.markers)
+            == matlab_segment.marker_names
+        )
         assert s2m_segment.translations == translations_from_matlab_dof(matlab_segment)
         assert s2m_segment.rotations == rotations_from_matlab_dof(matlab_segment)
 
@@ -211,13 +245,22 @@ def test_bela_biomod_reference_is_consistent_with_template_when_available():
         matlab_segment = matlab_segments[reference_segment.name]
         expected_inertia = inertia[reference_segment.name]
         assert reference_segment.parent_name == matlab_segment.parent_name
-        assert tuple(marker.name for marker in reference_segment.markers) == matlab_segment.marker_names
-        assert reference_segment.translations == translations_from_matlab_dof(matlab_segment)
+        assert (
+            tuple(marker.name for marker in reference_segment.markers)
+            == matlab_segment.marker_names
+        )
+        assert reference_segment.translations == translations_from_matlab_dof(
+            matlab_segment
+        )
         assert reference_segment.rotations == rotations_from_matlab_dof(matlab_segment)
-        assert reference_segment.mass == pytest.approx(expected_inertia["mass"], abs=0.005)
+        assert reference_segment.mass == pytest.approx(
+            expected_inertia["mass"], abs=0.005
+        )
         np.testing.assert_allclose(
             reference_segment.center_of_mass,
             expected_inertia["center_of_mass"],
             atol=1e-10,
         )
-        np.testing.assert_allclose(reference_segment.inertia, expected_inertia["inertia"], atol=1e-10)
+        np.testing.assert_allclose(
+            reference_segment.inertia, expected_inertia["inertia"], atol=1e-10
+        )

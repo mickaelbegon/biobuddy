@@ -103,6 +103,11 @@ PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS = {
 PREVIEW_AXIS_COLORS = {"x": "#dc2626", "y": "#16a34a", "z": "#2563eb"}
 PREVIEW_NEUTRAL_COLOR = "#6b7280"
 VIRTUAL_MARKER_METHOD_DISPLAY_LABELS = {"axis_projection": "projection on axis"}
+SARA_DIRECTION_METHODS = {"sara", "sara_direction"}
+
+
+def _is_sara_direction_method(method: str) -> bool:
+    return method in SARA_DIRECTION_METHODS
 
 
 def launch_model_editor() -> None:
@@ -1118,9 +1123,11 @@ def launch_model_editor() -> None:
                 color = (
                     QColor("#000000")
                     if segment_index == -2
-                    else QColor("#7c3aed")
-                    if segment_index == -1
-                    else QColor(_segment_preview_color(segment_index))
+                    else (
+                        QColor("#7c3aed")
+                        if segment_index == -1
+                        else QColor(_segment_preview_color(segment_index))
+                    )
                 )
                 center = transform(_rotate_preview_point(point, self.yaw, self.pitch))
                 radius = (
@@ -1813,7 +1820,7 @@ def launch_model_editor() -> None:
                         self.proximal_segment_name, self.distal_segment_name
                     )
                 )
-            elif self.selected_method == "sara":
+            elif _is_sara_direction_method(self.selected_method):
                 solution_axes.extend(self._sara_axis_solution_lines())
             elif self.selected_method in set(PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS):
                 proximal_point = self._technical_segment_center(
@@ -2330,19 +2337,24 @@ def launch_model_editor() -> None:
                 (item for item in self.axes if item.name == self.selected_marker_name),
                 None,
             )
-            if selected_axis is not None and selected_axis.method == "sara":
+            if selected_axis is not None and _is_sara_direction_method(
+                selected_axis.method
+            ):
                 return selected_axis
             segment_axes = [
                 axis
                 for axis in self.axes
-                if axis.method == "sara"
+                if _is_sara_direction_method(axis.method)
                 and axis.segment_name == self.distal_segment_name
             ]
             if len(segment_axes) == 1:
                 return segment_axes[0]
             if len(segment_axes) != 0:
                 return segment_axes[0]
-            return next((axis for axis in self.axes if axis.method == "sara"), None)
+            return next(
+                (axis for axis in self.axes if _is_sara_direction_method(axis.method)),
+                None,
+            )
 
         def _draw_legend(self, painter) -> None:
             painter.setPen(QPen(QColor("#111827"), 1))
@@ -2520,9 +2532,11 @@ def launch_model_editor() -> None:
                     center,
                     color,
                     is_square=is_technical,
-                    size=4
-                    if segment_index == -2
-                    else (2 * radius if is_technical else radius),
+                    size=(
+                        4
+                        if segment_index == -2
+                        else (2 * radius if is_technical else radius)
+                    ),
                     pen_width=4 if is_marker_selected else (3 if is_selected else 1),
                     marker_shape="diamond" if segment_index == -2 else None,
                 )
@@ -3072,9 +3086,7 @@ def launch_model_editor() -> None:
                     )
                 )
                 controls["axis_combo"].currentTextChanged.connect(
-                    lambda text, combo=controls["axis_combo"]: _style_axis_combo(
-                        combo
-                    )
+                    lambda text, combo=controls["axis_combo"]: _style_axis_combo(combo)
                 )
                 controls["axis_combo"].currentTextChanged.connect(
                     self._update_segment_axis_preview
@@ -3115,7 +3127,7 @@ def launch_model_editor() -> None:
                 [
                     "pointing",
                     "score",
-                    "sara",
+                    "sara_direction",
                     "marker_mean",
                     _virtual_marker_method_display("axis_projection"),
                     "predictive",
@@ -4148,7 +4160,9 @@ def launch_model_editor() -> None:
                 trial_sources = {}
                 for assignment in self.workflow_draft.file_assignments:
                     if progress_callback is not None:
-                        progress_callback(f"Matching C3D file: {assignment.generic_name}")
+                        progress_callback(
+                            f"Matching C3D file: {assignment.generic_name}"
+                        )
                     matched_file = _matching_c3d_file_for_expected_name(
                         self.c3d_folder_path, assignment.generic_name
                     )
@@ -4170,7 +4184,10 @@ def launch_model_editor() -> None:
                     ) or _trial_name_from_virtual_feature_source(marker.equation)
                     source_path = trial_sources.get(trial_name, "")
                     equation = marker.equation
-                    if marker.method in {"score", "sara"} and equation == "":
+                    if (
+                        marker.method in {"score", "sara", "sara_direction"}
+                        and equation == ""
+                    ):
                         parent_name = _parent_segment_name(
                             self.workflow_draft, marker.segment_name
                         )
@@ -4401,7 +4418,7 @@ def launch_model_editor() -> None:
         def _virtual_marker_equation_from_form(self, method: str) -> str:
             if method == "axis_projection":
                 return self.virtual_marker_equation_edit.text().strip()
-            methods_with_segment_context = {"score", "sara"} | set(
+            methods_with_segment_context = {"score", "sara", "sara_direction"} | set(
                 PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS
             )
             if method not in methods_with_segment_context:
@@ -4426,6 +4443,7 @@ def launch_model_editor() -> None:
             method_label = {
                 "score": "SCoRE",
                 "sara": "SARA",
+                "sara_direction": "SARADirection",
                 "marker_mean": "Average",
                 "axis_projection": "ProjectionOnAxis",
             }.get(
@@ -4441,7 +4459,7 @@ def launch_model_editor() -> None:
                     " ", ""
                 )
             local_segment = proximal or segment_name
-            if method in {"score", "sara"} and local_segment:
+            if method in {"score", "sara", "sara_direction"} and local_segment:
                 return f"CoR_{method_label}_{joint_name}_wrt_{local_segment}"
             if segment_name:
                 return f"{method_label}_{joint_name}_wrt_{segment_name}"
@@ -4845,7 +4863,7 @@ def launch_model_editor() -> None:
                     keep_vector,
                 ) in enumerate(vector_specs, start=1):
                     method = (
-                        "sara"
+                        "sara_direction"
                         if self._contains_virtual_axis_source(start_markers)
                         else "markers"
                     )
@@ -5784,10 +5802,10 @@ def launch_model_editor() -> None:
                 method not in {"marker_mean", "axis_projection"} and has_c3d_file
             )
             self.virtual_marker_proximal_combo.setEnabled(
-                method in {"score", "sara"} or is_predictive
+                method in {"score", "sara", "sara_direction"} or is_predictive
             )
             self.virtual_marker_distal_combo.setEnabled(
-                method in {"score", "sara"} or is_predictive
+                method in {"score", "sara", "sara_direction"} or is_predictive
             )
             is_axis_projection = method == "axis_projection"
             self.virtual_marker_projection_group.setEnabled(is_axis_projection)
@@ -5818,6 +5836,10 @@ def launch_model_editor() -> None:
                 ),
                 "score": "Choose the functional C3D plus proximal and distal technical segments. SCoRE estimates a joint center.",
                 "sara": (
+                    "Choose the functional C3D plus the segment and parent technical markers. SARA estimates an "
+                    "axis direction; its displayed origin comes from the reference point projected onto that axis."
+                ),
+                "sara_direction": (
                     "Choose the functional C3D plus the segment and parent technical markers. SARA estimates an "
                     "axis direction; its displayed origin comes from the reference point projected onto that axis."
                 ),
@@ -5931,7 +5953,7 @@ def launch_model_editor() -> None:
             )
             for feature in features:
                 method = getattr(feature, "method", "")
-                if method not in {"score", "sara"}:
+                if method not in {"score", "sara", "sara_direction"}:
                     continue
                 source = getattr(feature, "source", "")
                 payload = _key_value_payload(source)
@@ -6063,7 +6085,9 @@ def launch_model_editor() -> None:
             Refresh the compact C3D files and marker names status panel.
             """
             workflow = c3d_creation_workflow(self.workflow_draft.preset)
-            required_roles = {role.role for role in workflow.file_roles if role.required}
+            required_roles = {
+                role.role for role in workflow.file_roles if role.required
+            }
             assigned_count = sum(
                 1
                 for assignment in self.workflow_draft.file_assignments
@@ -6080,9 +6104,7 @@ def launch_model_editor() -> None:
                 if self.c3d_path.text().strip()
                 else "not selected"
             )
-            missing_text = (
-                ", ".join(missing_required) if missing_required else "none"
-            )
+            missing_text = ", ".join(missing_required) if missing_required else "none"
             self.c3d_names_overview_label.setText(
                 f"Folder: {folder}\n"
                 f"Main C3D: {main_c3d}\n"
@@ -6102,9 +6124,7 @@ def launch_model_editor() -> None:
                 expected_markers, tuple(self.c3d_data.marker_names)
             )
             missing_markers = tuple(
-                marker
-                for marker in expected_markers
-                if marker not in marker_mapping
+                marker for marker in expected_markers if marker not in marker_mapping
             )
             unassigned_markers = _unassigned_marker_names(
                 self.workflow_marker_pool, self.workflow_draft.segment_marker_groups
@@ -7717,7 +7737,9 @@ def _segment_marker_group_label(group) -> str:
         else "no marker assigned yet"
     )
     parent = group.parent_name if group.parent_name else "-"
-    return f"{group.segment_name}: {markers} | type={group.segment_type} | parent={parent}"
+    return (
+        f"{group.segment_name}: {markers} | type={group.segment_type} | parent={parent}"
+    )
 
 
 def _marker_pool_from_draft(workflow_draft) -> tuple[str, ...]:
@@ -7941,9 +7963,14 @@ def _visible_virtual_marker_methods() -> set[str]:
     """
     Return virtual marker methods shown in the GUI.
     """
-    return {"pointing", "score", "sara", "marker_mean", "axis_projection"} | set(
-        PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS
-    )
+    return {
+        "pointing",
+        "score",
+        "sara",
+        "sara_direction",
+        "marker_mean",
+        "axis_projection",
+    } | set(PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS)
 
 
 def _virtual_marker_method_display(method: str) -> str:
@@ -8105,7 +8132,7 @@ def _functional_algorithm_quality_text(method: str, rt_parent, rt_child) -> str:
                 f"SCoRE residual={np.nanmean(residuals) * 1000:.1f} +/- {np.nanstd(residuals) * 1000:.1f} mm "
                 f"over {len(rt_parent_valid)} algorithm frames"
             )
-        if method == "sara":
+        if _is_sara_direction_method(method):
             from ..model_modifiers.joint_center_tool import Sara
 
             (
@@ -8353,7 +8380,7 @@ def _c3d_generation_log(
         equation = marker.equation if marker.equation else "-"
         proximal, distal = _score_segments_from_payload(marker.equation)
         local_note = ""
-        if marker.method in {"score", "sara"} | set(
+        if marker.method in {"score", "sara", "sara_direction"} | set(
             PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS
         ):
             local_note = (

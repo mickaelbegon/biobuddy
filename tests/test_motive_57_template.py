@@ -1,6 +1,7 @@
 from biobuddy import Rotations, Translations
 from biobuddy.components.generic.rigidbody.axis import Axis
 from biobuddy.gui.model_builder import (
+    FunctionalAxisProjectionPointSpec,
     FunctionalAxisSpec,
     FunctionalCenterSpec,
     build_generic_model,
@@ -203,8 +204,14 @@ def test_motive_57_template_declares_functional_trials_and_virtual_requirements(
     )
     assert isinstance(segments["RThigh"].frame.origin, FunctionalCenterSpec)
     assert segments["RThigh"].frame.origin.trial_name == "right_hip_score"
+    assert isinstance(
+        segments["RShank"].frame.origin, FunctionalAxisProjectionPointSpec
+    )
+    assert segments["RShank"].frame.origin.trial_name == "right_knee_sara"
+    assert segments["RShank"].frame.origin.method.value == "sara_direction"
     assert isinstance(segments["RShank"].frame.second_axis, FunctionalAxisSpec)
     assert segments["RShank"].frame.second_axis.trial_name == "right_knee_sara"
+    assert segments["RShank"].frame.second_axis.method.value == "sara_direction"
     assert segments["RShank"].frame.second_axis.expected_axis.start.marker_names == (
         "RFME",
     )

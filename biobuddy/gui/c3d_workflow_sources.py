@@ -10,10 +10,12 @@ def is_virtual_feature_axis(axis) -> bool:
     """
     Return whether an axis should appear as a virtual feature.
     """
-    return axis.method == "sara" and axis.name.startswith("Axis_")
+    return axis.method in {"sara", "sara_direction"} and axis.name.startswith("Axis_")
 
 
-def anatomical_axis_source_labels(workflow_draft, marker_pool: tuple[str, ...]) -> tuple[str, ...]:
+def anatomical_axis_source_labels(
+    workflow_draft, marker_pool: tuple[str, ...]
+) -> tuple[str, ...]:
     """
     Return labels shown in anatomical and virtual-feature source lists.
 
@@ -22,7 +24,8 @@ def anatomical_axis_source_labels(workflow_draft, marker_pool: tuple[str, ...]) 
     """
     source_labels = list(dict.fromkeys(marker_pool))
     source_labels.extend(
-        f"{marker.name} | virtual marker | {marker.segment_name}" for marker in workflow_draft.virtual_markers
+        f"{marker.name} | virtual marker | {marker.segment_name}"
+        for marker in workflow_draft.virtual_markers
     )
     source_labels.extend(
         f"[axis] {axis.name} | AoR virtual axis | {axis.segment_name}"

@@ -28,7 +28,9 @@ LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES = {
 }
 
 
-def lower_limb_template(use_functional: bool = True, include_de_leva: bool = True) -> ModelTemplate:
+def lower_limb_template(
+    use_functional: bool = True, include_de_leva: bool = True
+) -> ModelTemplate:
     """
     Return the lower-body model template inspired by the walking reconstruction example.
     """
@@ -60,7 +62,13 @@ def lower_limb_template(use_functional: bool = True, include_de_leva: bool = Tru
                     ),
                     axis_to_keep=Axis.Name.Y,
                 ),
-                mesh_points=(_p("LPSI"), _p("RPSI"), _p("RASI"), _p("LASI"), _p("LPSI")),
+                mesh_points=(
+                    _p("LPSI"),
+                    _p("RPSI"),
+                    _p("RASI"),
+                    _p("LASI"),
+                    _p("LPSI"),
+                ),
             ),
             SegmentSpec(
                 name="Trunk",
@@ -94,7 +102,10 @@ def lower_limb_template(use_functional: bool = True, include_de_leva: bool = Tru
                 ),
             ),
             _thigh_segment(
-                side="L", hip_fallback="LASI", knee_axis_start=("LKNE", "LKNEM"), use_functional=use_functional
+                side="L",
+                hip_fallback="LASI",
+                knee_axis_start=("LKNE", "LKNEM"),
+                use_functional=use_functional,
             ),
             _shank_segment(
                 side="L",
@@ -109,7 +120,10 @@ def lower_limb_template(use_functional: bool = True, include_de_leva: bool = Tru
                 use_functional=use_functional,
             ),
             _thigh_segment(
-                side="R", hip_fallback="RASI", knee_axis_start=("RKNEM", "RKNE"), use_functional=use_functional
+                side="R",
+                hip_fallback="RASI",
+                knee_axis_start=("RKNEM", "RKNE"),
+                use_functional=use_functional,
             ),
             _shank_segment(
                 side="R",
@@ -125,10 +139,14 @@ def lower_limb_template(use_functional: bool = True, include_de_leva: bool = Tru
             ),
         ),
         marker_attachments=markers,
-        required_static_markers=tuple(sorted({attachment.name for attachment in markers})),
+        required_static_markers=tuple(
+            sorted({attachment.name for attachment in markers})
+        ),
         functional_trials=functional_trials,
         root_segment_name="Pelvis",
-        inertia_parameters_factory=lower_limb_de_leva_inertia_parameters if include_de_leva else None,
+        inertia_parameters_factory=(
+            lower_limb_de_leva_inertia_parameters if include_de_leva else None
+        ),
     )
 
 
@@ -160,13 +178,30 @@ def _functional_trials() -> tuple[FunctionalTrialSpec, ...]:
         FunctionalTrialSpec(
             name="left_knee_sara",
             file_pattern=LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["left_knee_sara"],
-            required_markers=("LTHI", "LTHIB", "LTHID", "LTIB", "LTIBF", "LTIBD", "LKNE", "LKNEM"),
-            method=FunctionalMethod.SARA,
+            required_markers=(
+                "LTHI",
+                "LTHIB",
+                "LTHID",
+                "LTIB",
+                "LTIBF",
+                "LTIBD",
+                "LKNE",
+                "LKNEM",
+            ),
+            method=FunctionalMethod.SARA_DIRECTION,
         ),
         FunctionalTrialSpec(
             name="left_ankle_score",
             file_pattern=LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["left_ankle_score"],
-            required_markers=("LTIB", "LTIBF", "LTIBD", "LHEE", "LNAV", "LTOE", "LTOE5"),
+            required_markers=(
+                "LTIB",
+                "LTIBF",
+                "LTIBD",
+                "LHEE",
+                "LNAV",
+                "LTOE",
+                "LTOE5",
+            ),
             method=FunctionalMethod.SCORE,
         ),
         FunctionalTrialSpec(
@@ -178,13 +213,30 @@ def _functional_trials() -> tuple[FunctionalTrialSpec, ...]:
         FunctionalTrialSpec(
             name="right_knee_sara",
             file_pattern=LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["right_knee_sara"],
-            required_markers=("RTHI", "RTHIB", "RTHID", "RTIB", "RTIBF", "RTIBD", "RKNE", "RKNEM"),
-            method=FunctionalMethod.SARA,
+            required_markers=(
+                "RTHI",
+                "RTHIB",
+                "RTHID",
+                "RTIB",
+                "RTIBF",
+                "RTIBD",
+                "RKNE",
+                "RKNEM",
+            ),
+            method=FunctionalMethod.SARA_DIRECTION,
         ),
         FunctionalTrialSpec(
             name="right_ankle_score",
             file_pattern=LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES["right_ankle_score"],
-            required_markers=("RTIB", "RTIBF", "RTIBD", "RHEE", "RNAV", "RTOE", "RTOE5"),
+            required_markers=(
+                "RTIB",
+                "RTIBF",
+                "RTIBD",
+                "RHEE",
+                "RNAV",
+                "RTOE",
+                "RTOE5",
+            ),
             method=FunctionalMethod.SCORE,
         ),
     )
@@ -214,7 +266,9 @@ def _hip_center_spec(side: str, fallback_marker: str, use_functional: bool):
     )
 
 
-def _ankle_center_spec(side: str, fallback_markers: tuple[str, str], use_functional: bool):
+def _ankle_center_spec(
+    side: str, fallback_markers: tuple[str, str], use_functional: bool
+):
     if not use_functional:
         return _p(*fallback_markers)
     return FunctionalCenterSpec(
@@ -232,11 +286,13 @@ def _knee_sara_axis_spec(
     use_functional: bool,
     axis_name=Axis.Name.X,
 ):
-    fallback_axis = AxisSpec.from_markers(axis_name, knee_axis_start[0], knee_axis_start[1])
+    fallback_axis = AxisSpec.from_markers(
+        axis_name, knee_axis_start[0], knee_axis_start[1]
+    )
     if not use_functional:
         return fallback_axis
     return FunctionalAxisSpec(
-        method=FunctionalMethod.SARA,
+        method=FunctionalMethod.SARA_DIRECTION,
         trial_name="left_knee_sara" if side == "L" else "right_knee_sara",
         fallback=fallback_axis,
         parent_marker_names=(
@@ -254,13 +310,15 @@ def _knee_sara_axis_spec(
     )
 
 
-def _knee_projection_spec(side: str, knee_axis_start: tuple[str, str], use_functional: bool):
+def _knee_projection_spec(
+    side: str, knee_axis_start: tuple[str, str], use_functional: bool
+):
     fallback = _p(*knee_axis_start)
     if not use_functional:
         return fallback
     sara_axis = _knee_sara_axis_spec(side, knee_axis_start, use_functional=True)
     return FunctionalAxisProjectionPointSpec(
-        method=FunctionalMethod.SARA,
+        method=FunctionalMethod.SARA_DIRECTION,
         trial_name=sara_axis.trial_name,
         parent_marker_names=sara_axis.parent_marker_names,
         child_marker_names=sara_axis.child_marker_names,
@@ -271,7 +329,9 @@ def _knee_projection_spec(side: str, knee_axis_start: tuple[str, str], use_funct
     )
 
 
-def _thigh_segment(side: str, hip_fallback: str, knee_axis_start: tuple[str, str], use_functional: bool) -> SegmentSpec:
+def _thigh_segment(
+    side: str, hip_fallback: str, knee_axis_start: tuple[str, str], use_functional: bool
+) -> SegmentSpec:
     thigh = f"{side}Thigh"
     origin = _hip_center_spec(side, hip_fallback, use_functional)
     knee_projection = _knee_projection_spec(side, knee_axis_start, use_functional)
@@ -349,8 +409,12 @@ def _foot_segment(
         inertia_name=SegmentName.FOOT,
         frame=LocalFrameSpec(
             origin=origin,
-            first_axis=AxisSpec.from_markers(Axis.Name.Y, f"{side}HEE", (f"{side}TOE", f"{side}TOE5")),
-            second_axis=AxisSpec.from_markers(Axis.Name.X, ankle_axis[0], ankle_axis[1]),
+            first_axis=AxisSpec.from_markers(
+                Axis.Name.Y, f"{side}HEE", (f"{side}TOE", f"{side}TOE5")
+            ),
+            second_axis=AxisSpec.from_markers(
+                Axis.Name.X, ankle_axis[0], ankle_axis[1]
+            ),
             axis_to_keep=Axis.Name.Y,
         ),
         mesh_points=(
@@ -393,7 +457,9 @@ def lower_limb_de_leva_inertia_parameters(
             _distance(_mean_position(data, ("RASI",)), right_knee),
         )
     )
-    shank_length = np.nanmean((_distance(left_knee, left_ankle), _distance(right_knee, right_ankle)))
+    shank_length = np.nanmean(
+        (_distance(left_knee, left_ankle), _distance(right_knee, right_ankle))
+    )
     trunk_length = _distance(pelvis, trunk_top)
     foot_length = np.nanmean(
         (
@@ -401,7 +467,9 @@ def lower_limb_de_leva_inertia_parameters(
             _distance(_mean_position(data, ("RHEE",)), _mean_position(data, ("RTOE",))),
         )
     )
-    hip_width = _distance(_mean_position(data, ("LASI",)), _mean_position(data, ("RASI",)))
+    hip_width = _distance(
+        _mean_position(data, ("LASI",)), _mean_position(data, ("RASI",))
+    )
 
     ankle_height = 0.0
     knee_height = float(shank_length)
@@ -487,7 +555,9 @@ def _markers() -> tuple[MarkerAttachmentSpec, ...]:
     )
 
 
-def _marker(name: str, *segment_names: str, technical: bool = True, anatomical: bool = False) -> MarkerAttachmentSpec:
+def _marker(
+    name: str, *segment_names: str, technical: bool = True, anatomical: bool = False
+) -> MarkerAttachmentSpec:
     return MarkerAttachmentSpec(
         name=name,
         segment_names=tuple(segment_names),

@@ -4,6 +4,7 @@ from ..components.generic.rigidbody.axis import Axis
 from ..utils.enums import Rotations, Translations
 from .model_builder import (
     AxisSpec,
+    FunctionalAxisProjectionPointSpec,
     FunctionalAxisSpec,
     FunctionalCenterSpec,
     FunctionalMethod,
@@ -163,7 +164,7 @@ def motive_57_functional_trials() -> tuple[FunctionalTrialSpec, ...]:
                         f"{side}FAL",
                         f"{side}TAM",
                     ),
-                    method=FunctionalMethod.SARA,
+                    method=FunctionalMethod.SARA_DIRECTION,
                 ),
                 FunctionalTrialSpec(
                     name=f"{label}_ankle_score",
@@ -312,7 +313,10 @@ def _head_segment() -> SegmentSpec:
 
 def _thigh_segment(side: str, use_functional: bool) -> SegmentSpec:
     hjc = _hip_center_spec(side, use_functional)
-    kjc = _p(f"{side}FLE", f"{side}FME")
+    kjc = _knee_projection_spec(side, use_functional)
+    kjc_fallback = (
+        kjc.fallback if isinstance(kjc, FunctionalAxisProjectionPointSpec) else kjc
+    )
     return SegmentSpec(
         name=f"{side}Thigh",
         parent_name="Pelvis",
@@ -328,14 +332,14 @@ def _thigh_segment(side: str, use_functional: bool) -> SegmentSpec:
             _p(f"{side}FTC"),
             _p(f"{side}TH"),
             _p(f"{side}FLE"),
-            kjc,
+            kjc_fallback,
             _p(f"{side}FME"),
         ),
     )
 
 
 def _shank_segment(side: str, use_functional: bool) -> SegmentSpec:
-    kjc = _p(f"{side}FLE", f"{side}FME")
+    kjc = _knee_projection_spec(side, use_functional)
     ajc = _ankle_center_spec(side, use_functional)
     return SegmentSpec(
         name=f"{side}Shank",
@@ -361,9 +365,7 @@ def _shank_segment(side: str, use_functional: bool) -> SegmentSpec:
 def _foot_segment(side: str, use_functional: bool) -> SegmentSpec:
     ajc = _ankle_center_spec(side, use_functional)
     z_start, z_end = (
-        (f"{side}FM1", f"{side}FM5")
-        if side == "L"
-        else (f"{side}FM5", f"{side}FM1")
+        (f"{side}FM1", f"{side}FM5") if side == "L" else (f"{side}FM5", f"{side}FM1")
     )
     return SegmentSpec(
         name=f"{side}Foot",
@@ -483,7 +485,7 @@ def _knee_axis_spec(side: str, use_functional: bool):
     if not use_functional:
         return fallback
     return FunctionalAxisSpec(
-        method=FunctionalMethod.SARA,
+        method=FunctionalMethod.SARA_DIRECTION,
         trial_name="left_knee_sara" if side == "L" else "right_knee_sara",
         fallback=fallback,
         parent_marker_names=(f"{side}FTC", f"{side}TH", f"{side}FLE", f"{side}FME"),
@@ -496,6 +498,23 @@ def _knee_axis_spec(side: str, use_functional: bool):
         ),
         expected_axis=fallback,
         origin_marker_names=(f"{side}FLE", f"{side}FME"),
+    )
+
+
+def _knee_projection_spec(side: str, use_functional: bool):
+    fallback = _p(f"{side}FLE", f"{side}FME")
+    if not use_functional:
+        return fallback
+    sara_axis = _knee_axis_spec(side, use_functional=True)
+    return FunctionalAxisProjectionPointSpec(
+        method=FunctionalMethod.SARA_DIRECTION,
+        trial_name=sara_axis.trial_name,
+        parent_marker_names=sara_axis.parent_marker_names,
+        child_marker_names=sara_axis.child_marker_names,
+        expected_axis=sara_axis.expected_axis,
+        origin_marker_names=sara_axis.origin_marker_names,
+        point_marker_names=sara_axis.origin_marker_names,
+        fallback=fallback,
     )
 
 

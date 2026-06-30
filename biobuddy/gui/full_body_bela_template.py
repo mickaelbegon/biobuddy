@@ -57,8 +57,15 @@ class BelaSegmentSpec:
         """
         Return local marker indices that cannot be mapped to this segment markers.
         """
-        raw_indices = self.u_indices + self.v_indices + self.origin_indices + self.functional_axis_indices
-        missing_indices = {abs(index) for index in raw_indices if abs(index) > len(self.marker_names)}
+        raw_indices = (
+            self.u_indices
+            + self.v_indices
+            + self.origin_indices
+            + self.functional_axis_indices
+        )
+        missing_indices = {
+            abs(index) for index in raw_indices if abs(index) > len(self.marker_names)
+        }
         return tuple(sorted(missing_indices))
 
 
@@ -110,12 +117,17 @@ def full_body_bela_template(use_functional: bool = True) -> ModelTemplate:
     """
     return ModelTemplate(
         name="Full body Model202 from calibration C3D",
-        segments=tuple(_segment_to_template(segment, use_functional=use_functional) for segment in BELA_SEGMENTS),
+        segments=tuple(
+            _segment_to_template(segment, use_functional=use_functional)
+            for segment in BELA_SEGMENTS
+        ),
         marker_attachments=bela_marker_attachments(),
         required_static_markers=tuple(sorted(bela_marker_names())),
         functional_trials=full_body_bela_functional_trials() if use_functional else (),
         root_segment_name="Pelvis",
-        inertia_parameters_factory=lambda data: _generic_inertia_parameters_by_segment(bela_inertia_by_segment()),
+        inertia_parameters_factory=lambda data: _generic_inertia_parameters_by_segment(
+            bela_inertia_by_segment()
+        ),
     )
 
 
@@ -128,7 +140,11 @@ def full_body_bela_functional_trials() -> tuple[FunctionalTrialSpec, ...]:
         if segment.parent_name in {"", "base", "root"}:
             continue
         parent = _segment_by_name(segment.parent_name)
-        method = FunctionalMethod.SARA if segment.joint == "aor" else FunctionalMethod.SCORE
+        method = (
+            FunctionalMethod.SARA_DIRECTION
+            if segment.joint == "aor"
+            else FunctionalMethod.SCORE
+        )
         required_markers = list(parent.marker_names)
         required_markers.extend(segment.marker_names)
         if segment.joint == "aor":
@@ -232,17 +248,27 @@ def bela_virtual_marker_reference_map() -> dict[tuple[str, int], tuple[str, str,
     """
     reference_map: dict[tuple[str, int], tuple[str, str, str]] = {}
     segment_by_name = {segment.name: segment for segment in BELA_SEGMENTS}
-    children_by_parent: dict[str, list[BelaSegmentSpec]] = {segment.name: [] for segment in BELA_SEGMENTS}
+    children_by_parent: dict[str, list[BelaSegmentSpec]] = {
+        segment.name: [] for segment in BELA_SEGMENTS
+    }
     for segment in BELA_SEGMENTS:
         if segment.parent_name in children_by_parent:
             children_by_parent[segment.parent_name].append(segment)
     for segment in BELA_SEGMENTS:
-        if segment.parent_name in {"", "base", "root"} or segment.parent_name not in segment_by_name:
+        if (
+            segment.parent_name in {"", "base", "root"}
+            or segment.parent_name not in segment_by_name
+        ):
             continue
         parent_name = segment.parent_name
         child_index = len(segment.marker_names) + 1
-        reference_map[(segment.name, child_index)] = _virtual_feature_reference(segment, parent_name, "child")
-        if segment.joint_determination_type == "functional" and len(segment.functional_axis_indices) != 0:
+        reference_map[(segment.name, child_index)] = _virtual_feature_reference(
+            segment, parent_name, "child"
+        )
+        if (
+            segment.joint_determination_type == "functional"
+            and len(segment.functional_axis_indices) != 0
+        ):
             reference_map[(segment.name, child_index + 1)] = (
                 _aor_axis_name(segment),
                 "sara",
@@ -256,11 +282,15 @@ def bela_virtual_marker_reference_map() -> dict[tuple[str, int], tuple[str, str,
         if parent.joint == "aor":
             first_child_index += 1
         for child_index, child in enumerate(children, start=first_child_index):
-            reference_map[(parent_name, child_index)] = _virtual_feature_reference(child, parent_name, "parent")
+            reference_map[(parent_name, child_index)] = _virtual_feature_reference(
+                child, parent_name, "parent"
+            )
     return reference_map
 
 
-def _virtual_feature_reference(segment: BelaSegmentSpec, parent_name: str, frame_role: str) -> tuple[str, str, str]:
+def _virtual_feature_reference(
+    segment: BelaSegmentSpec, parent_name: str, frame_role: str
+) -> tuple[str, str, str]:
     if segment.joint == "aor":
         return (
             _joint_center_name(segment),
@@ -312,7 +342,10 @@ def _segment_to_template(segment: BelaSegmentSpec, use_functional: bool) -> Segm
         rotations=_rotations_from_string(rotations_from_matlab_dof(segment)),
         frame=LocalFrameSpec(
             origin=_endpoint_from_indices(
-                segment, segment.origin_indices, role="origin", use_functional=use_functional
+                segment,
+                segment.origin_indices,
+                role="origin",
+                use_functional=use_functional,
             ),
             first_axis=_axis_from_indices(
                 segment,
@@ -321,14 +354,20 @@ def _segment_to_template(segment: BelaSegmentSpec, use_functional: bool) -> Segm
                 axis_name=_u_axis_name(segment),
                 use_functional=use_functional,
             ),
-            second_axis=_second_axis_from_indices(segment, use_functional=use_functional),
+            second_axis=_second_axis_from_indices(
+                segment, use_functional=use_functional
+            ),
             axis_to_keep=_axis_name_from_label(segment.axis_label),
         ),
-        mesh_points=tuple(MarkerEndpointSpec((marker_name,)) for marker_name in segment.marker_names),
+        mesh_points=tuple(
+            MarkerEndpointSpec((marker_name,)) for marker_name in segment.marker_names
+        ),
     )
 
 
-def _second_axis_from_indices(segment: BelaSegmentSpec, use_functional: bool) -> AxisSpec | FunctionalAxisSpec:
+def _second_axis_from_indices(
+    segment: BelaSegmentSpec, use_functional: bool
+) -> AxisSpec | FunctionalAxisSpec:
     axis_name = _v_axis_name(segment)
     if use_functional and segment.joint == "aor":
         return _aor_axis_spec(segment, axis_name=axis_name)
@@ -349,13 +388,20 @@ def _endpoint_from_indices(
 ) -> MarkerEndpointSpec | FunctionalCenterSpec | FunctionalAxisProjectionPointSpec:
     if len(signed_indices) == 0:
         return MarkerEndpointSpec((f"{segment.name}_{role}_virtual_0",))
-    endpoint_names = [_marker_or_virtual_point_name(segment, abs(index), use_functional) for index in signed_indices]
+    endpoint_names = [
+        _marker_or_virtual_point_name(segment, abs(index), use_functional)
+        for index in signed_indices
+    ]
     first_endpoint = endpoint_names[0]
-    if all(endpoint == first_endpoint for endpoint in endpoint_names) and not isinstance(first_endpoint, str):
+    if all(
+        endpoint == first_endpoint for endpoint in endpoint_names
+    ) and not isinstance(first_endpoint, str):
         return first_endpoint
     if all(isinstance(endpoint, str) for endpoint in endpoint_names):
         return MarkerEndpointSpec(tuple(endpoint_names))
-    return MarkerEndpointSpec(tuple(_endpoint_display_name(endpoint) for endpoint in endpoint_names))
+    return MarkerEndpointSpec(
+        tuple(_endpoint_display_name(endpoint) for endpoint in endpoint_names)
+    )
 
 
 def _axis_from_indices(
@@ -368,7 +414,10 @@ def _axis_from_indices(
     start_indices = tuple(abs(index) for index in signed_indices if index < 0)
     end_indices = tuple(abs(index) for index in signed_indices if index > 0)
     if len(start_indices) == 0 and len(end_indices) == 0:
-        start_name, end_name = f"{segment.name}_{role}_start", f"{segment.name}_{role}_end"
+        start_name, end_name = (
+            f"{segment.name}_{role}_start",
+            f"{segment.name}_{role}_end",
+        )
         return AxisSpec.from_markers(axis_name, start_name, end_name)
     if len(start_indices) == 0:
         start_names = _endpoint_from_indices(
@@ -377,9 +426,13 @@ def _axis_from_indices(
             role="axis_start",
             use_functional=use_functional,
         )
-        end_names = _endpoint_from_indices(segment, end_indices, role="axis_end", use_functional=use_functional)
+        end_names = _endpoint_from_indices(
+            segment, end_indices, role="axis_end", use_functional=use_functional
+        )
     elif len(end_indices) == 0:
-        start_names = _endpoint_from_indices(segment, start_indices, role="axis_start", use_functional=use_functional)
+        start_names = _endpoint_from_indices(
+            segment, start_indices, role="axis_start", use_functional=use_functional
+        )
         end_names = _endpoint_from_indices(
             segment,
             segment.origin_indices,
@@ -387,7 +440,9 @@ def _axis_from_indices(
             use_functional=use_functional,
         )
     else:
-        start_names, end_names = _signed_index_groups(segment, signed_indices, use_functional=use_functional)
+        start_names, end_names = _signed_index_groups(
+            segment, signed_indices, use_functional=use_functional
+        )
     return AxisSpec(name=axis_name, start=start_names, end=end_names)
 
 
@@ -402,8 +457,12 @@ def _signed_index_groups(
     start_indices = tuple(abs(index) for index in signed_indices if index < 0)
     end_indices = tuple(abs(index) for index in signed_indices if index > 0)
     return (
-        _endpoint_from_indices(segment, start_indices, role="axis_start", use_functional=use_functional),
-        _endpoint_from_indices(segment, end_indices, role="axis_end", use_functional=use_functional),
+        _endpoint_from_indices(
+            segment, start_indices, role="axis_start", use_functional=use_functional
+        ),
+        _endpoint_from_indices(
+            segment, end_indices, role="axis_end", use_functional=use_functional
+        ),
     )
 
 
@@ -427,9 +486,20 @@ def _virtual_endpoint_from_index(
         return _aor_projection_spec(segment)
     child = _child_from_parent_local_index(segment, matlab_index)
     if child is not None:
-        return _aor_projection_spec(child) if child.joint == "aor" else _joint_center_spec(child)
-    if segment.parent_name not in {"", "base", "root"} and matlab_index == len(segment.marker_names) + 1:
-        return _aor_projection_spec(segment) if segment.joint == "aor" else _joint_center_spec(segment)
+        return (
+            _aor_projection_spec(child)
+            if child.joint == "aor"
+            else _joint_center_spec(child)
+        )
+    if (
+        segment.parent_name not in {"", "base", "root"}
+        and matlab_index == len(segment.marker_names) + 1
+    ):
+        return (
+            _aor_projection_spec(segment)
+            if segment.joint == "aor"
+            else _joint_center_spec(segment)
+        )
     return MarkerEndpointSpec((_virtual_marker_name_from_index(segment, matlab_index),))
 
 
@@ -449,7 +519,7 @@ def _aor_projection_spec(segment: BelaSegmentSpec) -> FunctionalAxisProjectionPo
     expected_axis = _aor_expected_axis_spec(segment)
     expected_markers = _aor_expected_axis_markers(segment)
     return FunctionalAxisProjectionPointSpec(
-        method=FunctionalMethod.SARA,
+        method=FunctionalMethod.SARA_DIRECTION,
         trial_name=_functional_trial_name(segment),
         parent_marker_names=parent.marker_names,
         child_marker_names=segment.marker_names,
@@ -460,13 +530,17 @@ def _aor_projection_spec(segment: BelaSegmentSpec) -> FunctionalAxisProjectionPo
     )
 
 
-def _aor_axis_spec(segment: BelaSegmentSpec, axis_name: Axis.Name) -> FunctionalAxisSpec:
+def _aor_axis_spec(
+    segment: BelaSegmentSpec, axis_name: Axis.Name
+) -> FunctionalAxisSpec:
     parent = _segment_by_name(segment.parent_name)
     expected_axis = _aor_expected_axis_spec(segment)
     return FunctionalAxisSpec(
-        method=FunctionalMethod.SARA,
+        method=FunctionalMethod.SARA_DIRECTION,
         trial_name=_functional_trial_name(segment),
-        fallback=AxisSpec.from_markers(axis_name, expected_axis.start.marker_names, expected_axis.end.marker_names),
+        fallback=AxisSpec.from_markers(
+            axis_name, expected_axis.start.marker_names, expected_axis.end.marker_names
+        ),
         parent_marker_names=parent.marker_names,
         child_marker_names=segment.marker_names,
         expected_axis=expected_axis,
@@ -476,7 +550,9 @@ def _aor_axis_spec(segment: BelaSegmentSpec, axis_name: Axis.Name) -> Functional
 
 def _aor_expected_axis_spec(segment: BelaSegmentSpec) -> AxisSpec:
     start_marker, end_marker = _aor_expected_axis_markers(segment)
-    return AxisSpec.from_markers(_axis_name_from_label(segment.axis_label), start_marker, end_marker)
+    return AxisSpec.from_markers(
+        _axis_name_from_label(segment.axis_label), start_marker, end_marker
+    )
 
 
 def _aor_expected_axis_markers(segment: BelaSegmentSpec) -> tuple[str, str]:
@@ -490,10 +566,14 @@ def _aor_expected_axis_markers(segment: BelaSegmentSpec) -> tuple[str, str]:
             parent.marker_names[segment.functional_axis_indices[0] - 1],
             parent.marker_names[segment.functional_axis_indices[1] - 1],
         )
-    raise ValueError(f"Segment '{segment.name}' does not define a functional AOR orientation.")
+    raise ValueError(
+        f"Segment '{segment.name}' does not define a functional AOR orientation."
+    )
 
 
-def _child_from_parent_local_index(parent: BelaSegmentSpec, matlab_index: int) -> BelaSegmentSpec | None:
+def _child_from_parent_local_index(
+    parent: BelaSegmentSpec, matlab_index: int
+) -> BelaSegmentSpec | None:
     child_index = len(parent.marker_names) + 1
     if parent.parent_name not in {"", "base", "root"}:
         child_index += 1
@@ -509,7 +589,10 @@ def _child_from_parent_local_index(parent: BelaSegmentSpec, matlab_index: int) -
 def _is_aor_axis_index(segment: BelaSegmentSpec, matlab_index: int) -> bool:
     if segment.joint != "aor":
         return False
-    return segment.parent_name not in {"", "base", "root"} and matlab_index == len(segment.marker_names) + 2
+    return (
+        segment.parent_name not in {"", "base", "root"}
+        and matlab_index == len(segment.marker_names) + 2
+    )
 
 
 def _virtual_marker_name_from_index(segment: BelaSegmentSpec, matlab_index: int) -> str:
@@ -520,7 +603,9 @@ def _virtual_marker_name_from_index(segment: BelaSegmentSpec, matlab_index: int)
     return name
 
 
-def _endpoint_display_name(endpoint: str | FunctionalCenterSpec | FunctionalAxisProjectionPointSpec) -> str:
+def _endpoint_display_name(
+    endpoint: str | FunctionalCenterSpec | FunctionalAxisProjectionPointSpec,
+) -> str:
     if isinstance(endpoint, str):
         return endpoint
     if isinstance(endpoint, FunctionalCenterSpec):
@@ -570,12 +655,20 @@ def _english_segment_label(segment_name: str) -> str:
 
 def _u_axis_name(segment: BelaSegmentSpec) -> Axis.Name:
     kept_axis_name = _axis_name_from_label(segment.axis_label)
-    return kept_axis_name if segment.keep_axis_index == 1 else _complementary_axis_name(kept_axis_name)
+    return (
+        kept_axis_name
+        if segment.keep_axis_index == 1
+        else _complementary_axis_name(kept_axis_name)
+    )
 
 
 def _v_axis_name(segment: BelaSegmentSpec) -> Axis.Name:
     kept_axis_name = _axis_name_from_label(segment.axis_label)
-    return kept_axis_name if segment.keep_axis_index == 2 else _complementary_axis_name(kept_axis_name)
+    return (
+        kept_axis_name
+        if segment.keep_axis_index == 2
+        else _complementary_axis_name(kept_axis_name)
+    )
 
 
 def _axis_name_from_label(axis_label: str) -> Axis.Name:
@@ -606,11 +699,17 @@ def _segment_by_name(segment_name: str) -> BelaSegmentSpec:
 
 
 def _segment_by_trial_name(trial_name: str) -> BelaSegmentSpec:
-    return next(segment for segment in BELA_SEGMENTS if _functional_trial_name(segment) == trial_name)
+    return next(
+        segment
+        for segment in BELA_SEGMENTS
+        if _functional_trial_name(segment) == trial_name
+    )
 
 
 def _children_by_parent_name(parent_name: str) -> tuple[BelaSegmentSpec, ...]:
-    return tuple(segment for segment in BELA_SEGMENTS if segment.parent_name == parent_name)
+    return tuple(
+        segment for segment in BELA_SEGMENTS if segment.parent_name == parent_name
+    )
 
 
 def bela_inertia_by_segment() -> dict[str, dict[str, np.ndarray | float]]:
@@ -647,7 +746,9 @@ def guse_inertia_by_segment() -> dict[str, dict[str, np.ndarray | float]]:
     return _inertia_by_segment(GUSE_INERTIAL_PARAMETERS)
 
 
-def subject_inertia_by_segment(subject_name: str) -> dict[str, dict[str, np.ndarray | float]]:
+def subject_inertia_by_segment(
+    subject_name: str,
+) -> dict[str, dict[str, np.ndarray | float]]:
     """
     Return inertial parameters for a supported subject.
     """
@@ -656,7 +757,9 @@ def subject_inertia_by_segment(subject_name: str) -> dict[str, dict[str, np.ndar
         return bela_inertia_by_segment()
     if subject_key == "guse":
         return guse_inertia_by_segment()
-    raise ValueError(f"Unsupported subject '{subject_name}'. Expected 'BeLa' or 'GuSe'.")
+    raise ValueError(
+        f"Unsupported subject '{subject_name}'. Expected 'BeLa' or 'GuSe'."
+    )
 
 
 def parse_s2m_model(filepath: str | Path) -> tuple[S2mSegmentSpec, ...]:
@@ -689,11 +792,18 @@ def parse_s2m_model(filepath: str | Path) -> tuple[S2mSegmentSpec, ...]:
                 "markers": [],
             }
             segments.append(current_segment)
-        elif current_segment is not None and current_marker is None and keyword == "parent":
+        elif (
+            current_segment is not None
+            and current_marker is None
+            and keyword == "parent"
+        ):
             current_segment["parent_name"] = tokens[1]
         elif current_segment is not None and keyword == "RT":
             current_segment["rt"] = np.array(
-                [[float(value) for value in lines[i_line + row].strip().split()] for row in range(1, 5)],
+                [
+                    [float(value) for value in lines[i_line + row].strip().split()]
+                    for row in range(1, 5)
+                ],
                 dtype=float,
             )
             i_line += 4
@@ -705,12 +815,17 @@ def parse_s2m_model(filepath: str | Path) -> tuple[S2mSegmentSpec, ...]:
             current_segment["mass"] = float(tokens[1])
         elif current_segment is not None and keyword == "inertia":
             current_segment["inertia"] = np.array(
-                [[float(value) for value in lines[i_line + row].strip().split()] for row in range(1, 4)],
+                [
+                    [float(value) for value in lines[i_line + row].strip().split()]
+                    for row in range(1, 4)
+                ],
                 dtype=float,
             )
             i_line += 3
         elif current_segment is not None and keyword == "com":
-            current_segment["center_of_mass"] = tuple(float(value) for value in tokens[1:4])
+            current_segment["center_of_mass"] = tuple(
+                float(value) for value in tokens[1:4]
+            )
         elif current_segment is not None and keyword == "marker":
             current_marker = {
                 "name": tokens[1],
@@ -718,13 +833,29 @@ def parse_s2m_model(filepath: str | Path) -> tuple[S2mSegmentSpec, ...]:
                 "position": (0.0, 0.0, 0.0),
                 "is_technical": False,
             }
-        elif current_segment is not None and current_marker is not None and keyword == "parent":
+        elif (
+            current_segment is not None
+            and current_marker is not None
+            and keyword == "parent"
+        ):
             current_marker["parent_name"] = tokens[1]
-        elif current_segment is not None and current_marker is not None and keyword == "position":
+        elif (
+            current_segment is not None
+            and current_marker is not None
+            and keyword == "position"
+        ):
             current_marker["position"] = tuple(float(value) for value in tokens[1:4])
-        elif current_segment is not None and current_marker is not None and keyword == "technical":
+        elif (
+            current_segment is not None
+            and current_marker is not None
+            and keyword == "technical"
+        ):
             current_marker["is_technical"] = bool(int(tokens[1]))
-        elif current_segment is not None and current_marker is not None and keyword == "endmarker":
+        elif (
+            current_segment is not None
+            and current_marker is not None
+            and keyword == "endmarker"
+        ):
             current_segment["markers"].append(S2mMarkerSpec(**current_marker))
             current_marker = None
 
@@ -747,7 +878,9 @@ def parse_s2m_model(filepath: str | Path) -> tuple[S2mSegmentSpec, ...]:
 
 
 def _inertia_by_segment(
-    inertial_parameters: dict[str, tuple[float, tuple[float, float, float], tuple[float, float, float]]],
+    inertial_parameters: dict[
+        str, tuple[float, tuple[float, float, float], tuple[float, float, float]]
+    ],
 ) -> dict[str, dict[str, np.ndarray | float]]:
     return {
         segment_name: {
@@ -755,7 +888,11 @@ def _inertia_by_segment(
             "center_of_mass": np.array(center_of_mass, dtype=float),
             "inertia": np.diag(np.array(inertia_diagonal, dtype=float)),
         }
-        for segment_name, (mass, center_of_mass, inertia_diagonal) in inertial_parameters.items()
+        for segment_name, (
+            mass,
+            center_of_mass,
+            inertia_diagonal,
+        ) in inertial_parameters.items()
     }
 
 
@@ -766,11 +903,19 @@ BELA_INERTIAL_PARAMETERS = {
     "EpauleD": (1.6452, (0.1123, 0.0, 0.0), (0.0, 0.0, 0.0)),
     "BrasD": (2.5570, (0.0, 0.0, -0.1425), (0.0203, 0.0203, 0.0036)),
     "ABrasD": (1.1968, (0.0, 0.0, -0.1216), (0.0074, 0.0074, 0.0048)),
-    "MainD": (0.5401, (0.0201989512, -0.0490185172, -0.027307392), (0.0027, 0.0029, 0.0003)),
+    "MainD": (
+        0.5401,
+        (0.0201989512, -0.0490185172, -0.027307392),
+        (0.0027, 0.0029, 0.0003),
+    ),
     "EpauleG": (1.6452, (-0.1123, 0.0, 0.0), (0.0, 0.0, 0.0)),
     "BrasG": (2.5570, (0.0, 0.0, -0.1425), (0.0203, 0.0203, 0.0036)),
     "ABrasG": (1.1968, (0.0, 0.0, -0.1216), (0.0074, 0.0074, 0.0048)),
-    "MainG": (0.5401, (-0.0264342737, -0.0469823183, -0.0252076569), (0.0027, 0.0029, 0.0003)),
+    "MainG": (
+        0.5401,
+        (-0.0264342737, -0.0469823183, -0.0252076569),
+        (0.0027, 0.0029, 0.0003),
+    ),
     "CuisseD": (8.5549, (0.0, 0.0, -0.1764), (0.1211, 0.1211, 0.0321)),
     "JambeD": (4.2391, (0.0, 0.0, -0.1989), (0.0835, 0.0835, 0.0064)),
     "PiedD": (1.1323, (0.0, 0.0, -0.0476), (0.0068, 0.0066, 0.0012)),
@@ -885,7 +1030,16 @@ BELA_SEGMENTS = (
     BelaSegmentSpec(
         name="ABrasD",
         parent_name="BrasD",
-        marker_names=("OLE1D", "OLE2D", "BRACHD", "BRACHANTD", "ABRAPOSTD", "ABRASANTD", "ULNAD", "RADIUSD"),
+        marker_names=(
+            "OLE1D",
+            "OLE2D",
+            "BRACHD",
+            "BRACHANTD",
+            "ABRAPOSTD",
+            "ABRASANTD",
+            "ULNAD",
+            "RADIUSD",
+        ),
         u_indices=(9, -10),
         v_indices=(8, -7),
         origin_indices=(9,),
@@ -949,7 +1103,16 @@ BELA_SEGMENTS = (
     BelaSegmentSpec(
         name="ABrasG",
         parent_name="BrasG",
-        marker_names=("OLE1G", "OLE2G", "BRACHG", "BRACHANTG", "ABRAPOSTG", "ABRANTG", "ULNAG", "RADIUSG"),
+        marker_names=(
+            "OLE1G",
+            "OLE2G",
+            "BRACHG",
+            "BRACHANTG",
+            "ABRAPOSTG",
+            "ABRANTG",
+            "ULNAG",
+            "RADIUSG",
+        ),
         u_indices=(9, -10),
         v_indices=(-8, 7),
         origin_indices=(9,),
@@ -1016,7 +1179,14 @@ BELA_SEGMENTS = (
     BelaSegmentSpec(
         name="PiedD",
         parent_name="JambeD",
-        marker_names=("CALCD", "MIDMETA4D", "MIDMETA1D", "SCAPHOIDED", "METAT5D", "METAT1D"),
+        marker_names=(
+            "CALCD",
+            "MIDMETA4D",
+            "MIDMETA1D",
+            "SCAPHOIDED",
+            "METAT5D",
+            "METAT1D",
+        ),
         u_indices=(7, 7, -5, -6),
         v_indices=(5, -6),
         origin_indices=(7,),
@@ -1067,7 +1237,14 @@ BELA_SEGMENTS = (
     BelaSegmentSpec(
         name="PiedG",
         parent_name="JambeG",
-        marker_names=("CALCG", "MIDMETA4G", "MIDMETA1G", "SCAPHOIDEG", "METAT5G", "METAT1G"),
+        marker_names=(
+            "CALCG",
+            "MIDMETA4G",
+            "MIDMETA1G",
+            "SCAPHOIDEG",
+            "METAT5G",
+            "METAT1G",
+        ),
         u_indices=(7, 7, -5, -6),
         v_indices=(-5, 6),
         origin_indices=(7,),

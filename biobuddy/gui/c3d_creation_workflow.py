@@ -38,6 +38,7 @@ SOURCE_REQUIRED_VIRTUAL_MARKER_METHODS = {
     "regression",
     "score",
     "sara",
+    "sara_direction",
     "axis_projection",
     "hara2016_hip",
     "harrington2007_hip",
@@ -1205,10 +1206,10 @@ def c3d_virtual_marker_method_examples() -> tuple[C3dVirtualMarkerMethodExample,
             description="Use a functional calibration trial to estimate a center of rotation.",
         ),
         C3dVirtualMarkerMethodExample(
-            method="sara",
+            method="sara_direction",
             source_example="*func_lknee.c3d",
             equation_example="axis direction from condyles",
-            description="Use SARA to estimate a functional joint axis, then orient it with anatomical markers.",
+            description="Use SARA to estimate a functional joint axis as a direction plus an origin point.",
         ),
         C3dVirtualMarkerMethodExample(
             method="axis_projection",
@@ -2073,12 +2074,12 @@ def _require_name(value: str, label: str) -> str:
 
 def _virtual_feature_default_method(feature_type: str, role: str) -> str:
     if feature_type == "axis":
-        return "sara" if "axis" in role else "markers"
+        return "sara_direction" if "axis" in role else "markers"
     if role == "axis_projection":
         return "axis_projection"
     if role in SOURCE_REQUIRED_VIRTUAL_MARKER_METHODS:
         return role
-    if role in {"score", "sara"}:
+    if role in {"score", "sara", "sara_direction"}:
         return role
     if "legacy" in role:
         return "pointing_or_regression"

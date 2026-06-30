@@ -55,14 +55,30 @@ def test_c3d_creation_workflow_steps_match_expected_pipeline():
 
 
 def test_c3d_file_roles_use_generic_names_for_three_presets():
-    from_scratch_names = {role.generic_name for role in c3d_file_roles_for_preset(C3dModelPreset.FROM_SCRATCH)}
-    lower_limb_names = {role.generic_name for role in c3d_file_roles_for_preset(C3dModelPreset.LOWER_LIMBS)}
-    lower_limb_anatomical_names = {
-        role.generic_name for role in c3d_file_roles_for_preset(C3dModelPreset.LOWER_LIMBS_ANATOMICAL)
+    from_scratch_names = {
+        role.generic_name
+        for role in c3d_file_roles_for_preset(C3dModelPreset.FROM_SCRATCH)
     }
-    upper_limb_names = {role.generic_name for role in c3d_file_roles_for_preset(C3dModelPreset.UPPER_LIMB)}
-    full_body_names = {role.generic_name for role in c3d_file_roles_for_preset(C3dModelPreset.FULL_BODY)}
-    motive_names = {role.generic_name for role in c3d_file_roles_for_preset(C3dModelPreset.MOTIVE_57)}
+    lower_limb_names = {
+        role.generic_name
+        for role in c3d_file_roles_for_preset(C3dModelPreset.LOWER_LIMBS)
+    }
+    lower_limb_anatomical_names = {
+        role.generic_name
+        for role in c3d_file_roles_for_preset(C3dModelPreset.LOWER_LIMBS_ANATOMICAL)
+    }
+    upper_limb_names = {
+        role.generic_name
+        for role in c3d_file_roles_for_preset(C3dModelPreset.UPPER_LIMB)
+    }
+    full_body_names = {
+        role.generic_name
+        for role in c3d_file_roles_for_preset(C3dModelPreset.FULL_BODY)
+    }
+    motive_names = {
+        role.generic_name
+        for role in c3d_file_roles_for_preset(C3dModelPreset.MOTIVE_57)
+    }
 
     assert from_scratch_names == {"main_markers.c3d"}
     assert "Test_func_anat.c3d" in lower_limb_names
@@ -81,22 +97,47 @@ def test_c3d_file_roles_use_generic_names_for_three_presets():
 
 
 def test_c3d_segment_marker_groups_cover_three_models():
-    from_scratch_groups = c3d_segment_marker_groups_for_preset(C3dModelPreset.FROM_SCRATCH)
+    from_scratch_groups = c3d_segment_marker_groups_for_preset(
+        C3dModelPreset.FROM_SCRATCH
+    )
     lower_limb_groups = c3d_segment_marker_groups_for_preset(C3dModelPreset.LOWER_LIMBS)
-    lower_limb_anatomical_groups = c3d_segment_marker_groups_for_preset(C3dModelPreset.LOWER_LIMBS_ANATOMICAL)
+    lower_limb_anatomical_groups = c3d_segment_marker_groups_for_preset(
+        C3dModelPreset.LOWER_LIMBS_ANATOMICAL
+    )
     upper_limb_groups = c3d_segment_marker_groups_for_preset(C3dModelPreset.UPPER_LIMB)
     full_body_groups = c3d_segment_marker_groups_for_preset(C3dModelPreset.FULL_BODY)
 
     assert from_scratch_groups == ()
-    assert any(group.segment_name == "Pelvis" and "LASI" in group.marker_names for group in lower_limb_groups)
     assert any(
-        group.segment_name == "Pelvis" and "LASI" in group.marker_names for group in lower_limb_anatomical_groups
+        group.segment_name == "Pelvis" and "LASI" in group.marker_names
+        for group in lower_limb_groups
     )
-    assert all("LASI" not in group.marker_names for group in lower_limb_groups if group.segment_name != "Pelvis")
-    assert all("RASI" not in group.marker_names for group in lower_limb_groups if group.segment_name != "Pelvis")
-    assert any(group.segment_name == "Arm" and "EPICl" in group.marker_names for group in upper_limb_groups)
-    assert any(group.segment_name == "Thorax" and "MANU" in group.marker_names for group in full_body_groups)
-    assert any(group.segment_name == "Trunk" and group.parent_name == "Pelvis" for group in lower_limb_groups)
+    assert any(
+        group.segment_name == "Pelvis" and "LASI" in group.marker_names
+        for group in lower_limb_anatomical_groups
+    )
+    assert all(
+        "LASI" not in group.marker_names
+        for group in lower_limb_groups
+        if group.segment_name != "Pelvis"
+    )
+    assert all(
+        "RASI" not in group.marker_names
+        for group in lower_limb_groups
+        if group.segment_name != "Pelvis"
+    )
+    assert any(
+        group.segment_name == "Arm" and "EPICl" in group.marker_names
+        for group in upper_limb_groups
+    )
+    assert any(
+        group.segment_name == "Thorax" and "MANU" in group.marker_names
+        for group in full_body_groups
+    )
+    assert any(
+        group.segment_name == "Trunk" and group.parent_name == "Pelvis"
+        for group in lower_limb_groups
+    )
     assert all(group.segment_type == "anatomical" for group in full_body_groups)
 
 
@@ -120,7 +161,9 @@ def test_c3d_creation_workflow_collects_roles_and_segments():
     assert workflow.preset == C3dModelPreset.UPPER_LIMB
     assert len(workflow.steps) == 12
     assert any(role.role == "pointing" for role in workflow.file_roles)
-    assert any(group.segment_name == "Scapula" for group in workflow.segment_marker_groups)
+    assert any(
+        group.segment_name == "Scapula" for group in workflow.segment_marker_groups
+    )
 
 
 def test_c3d_template_payload_is_serializable_and_contains_virtual_features():
@@ -128,8 +171,12 @@ def test_c3d_template_payload_is_serializable_and_contains_virtual_features():
 
     assert payload["preset"] == "upper_limb"
     assert len(payload["steps"]) == 12
-    assert any(group["segment_name"] == "Arm" for group in payload["segment_marker_groups"])
-    assert any(feature["name"] == "Thorax_virtual_7" for feature in payload["virtual_features"])
+    assert any(
+        group["segment_name"] == "Arm" for group in payload["segment_marker_groups"]
+    )
+    assert any(
+        feature["name"] == "Thorax_virtual_7" for feature in payload["virtual_features"]
+    )
 
 
 def test_lower_limb_functional_draft_exposes_sara_knee_axes():
@@ -137,13 +184,21 @@ def test_lower_limb_functional_draft_exposes_sara_knee_axes():
     anatomical_draft = c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS_ANATOMICAL)
 
     left_knee_axis = next(axis for axis in draft.axes if axis.name == "Axis_LKnee_SARA")
-    left_thigh_first_axis = next(axis for axis in draft.axes if axis.name == "LThigh_first_axis")
-    left_thigh_second_axis = next(axis for axis in draft.axes if axis.name == "LThigh_second_axis")
-    left_shank_first_axis = next(axis for axis in draft.axes if axis.name == "LShank_first_axis")
-    left_shank_second_axis = next(axis for axis in draft.axes if axis.name == "LShank_second_axis")
+    left_thigh_first_axis = next(
+        axis for axis in draft.axes if axis.name == "LThigh_first_axis"
+    )
+    left_thigh_second_axis = next(
+        axis for axis in draft.axes if axis.name == "LThigh_second_axis"
+    )
+    left_shank_first_axis = next(
+        axis for axis in draft.axes if axis.name == "LShank_first_axis"
+    )
+    left_shank_second_axis = next(
+        axis for axis in draft.axes if axis.name == "LShank_second_axis"
+    )
 
     assert all(axis.axis in {"", "x", "y", "z"} for axis in draft.axes)
-    assert left_knee_axis.method == "sara"
+    assert left_knee_axis.method == "sara_direction"
     assert "trial=left_knee_sara" in left_knee_axis.source
     assert "parent markers=LTIBD,LTIB,LTIBF" in left_knee_axis.source
     assert "child markers=LTHIB,LTHID,LTHI" in left_knee_axis.source
@@ -157,7 +212,7 @@ def test_lower_limb_functional_draft_exposes_sara_knee_axes():
     assert left_thigh_first_axis.end_markers == ("CoR_LThigh_wrt_Pelvis",)
     assert left_thigh_first_axis.origin_markers == ("CoR_LThigh_wrt_Pelvis",)
     assert left_thigh_second_axis.axis == "x"
-    assert left_thigh_second_axis.method == "sara"
+    assert left_thigh_second_axis.method == "sara_direction"
     assert left_thigh_second_axis.start_markers == ("Axis_LKnee_SARA",)
     assert left_thigh_second_axis.end_markers == ()
     assert left_thigh_second_axis.keep_vector is False
@@ -166,7 +221,7 @@ def test_lower_limb_functional_draft_exposes_sara_knee_axes():
     assert left_shank_first_axis.end_markers == ("Proj_LKnee_on_Axis_LKnee_SARA",)
     assert left_shank_first_axis.origin_markers == ("Proj_LKnee_on_Axis_LKnee_SARA",)
     assert left_shank_second_axis.axis == "x"
-    assert left_shank_second_axis.method == "sara"
+    assert left_shank_second_axis.method == "sara_direction"
     assert left_shank_second_axis.start_markers == ("Axis_LKnee_SARA",)
     assert left_shank_second_axis.end_markers == ()
     assert left_shank_second_axis.keep_vector is True
@@ -176,64 +231,108 @@ def test_lower_limb_functional_draft_exposes_sara_knee_axes():
 def test_c3d_workflow_draft_edits_segment_marker_assignments():
     draft = c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS)
 
-    draft = add_segment_to_draft(draft, "CustomSegment", parent_name="Pelvis", segment_type="technical")
+    draft = add_segment_to_draft(
+        draft, "CustomSegment", parent_name="Pelvis", segment_type="technical"
+    )
     draft = assign_marker_to_segment(draft, "CustomSegment", "CUSTOM1")
     draft = assign_marker_to_segment(draft, "CustomSegment", "CUSTOM1")
 
-    custom_group = next(group for group in draft.segment_marker_groups if group.segment_name == "CustomSegment")
+    custom_group = next(
+        group
+        for group in draft.segment_marker_groups
+        if group.segment_name == "CustomSegment"
+    )
     assert custom_group.marker_names == ("CUSTOM1",)
     assert custom_group.technical_marker_names == ("CUSTOM1",)
     assert custom_group.parent_name == "Pelvis"
     assert custom_group.segment_type == "technical"
 
     draft = unassign_marker_from_segment(draft, "CustomSegment", "CUSTOM1")
-    custom_group = next(group for group in draft.segment_marker_groups if group.segment_name == "CustomSegment")
+    custom_group = next(
+        group
+        for group in draft.segment_marker_groups
+        if group.segment_name == "CustomSegment"
+    )
     assert custom_group.marker_names == ()
     assert custom_group.technical_marker_names == ()
 
     draft = remove_segment_from_draft(draft, "CustomSegment")
-    assert all(group.segment_name != "CustomSegment" for group in draft.segment_marker_groups)
+    assert all(
+        group.segment_name != "CustomSegment" for group in draft.segment_marker_groups
+    )
 
 
 def test_c3d_workflow_draft_edits_multiple_segment_marker_assignments():
     draft = c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS)
     draft = add_segment_to_draft(draft, "CustomSegment")
 
-    draft = assign_markers_to_segment(draft, "CustomSegment", ("CUSTOM1", "CUSTOM2", "CUSTOM1"))
-    custom_group = next(group for group in draft.segment_marker_groups if group.segment_name == "CustomSegment")
+    draft = assign_markers_to_segment(
+        draft, "CustomSegment", ("CUSTOM1", "CUSTOM2", "CUSTOM1")
+    )
+    custom_group = next(
+        group
+        for group in draft.segment_marker_groups
+        if group.segment_name == "CustomSegment"
+    )
 
     assert custom_group.marker_names == ("CUSTOM1", "CUSTOM2")
 
-    draft = unassign_markers_from_segment(draft, "CustomSegment", ("CUSTOM1", "MISSING_MARKER"))
-    custom_group = next(group for group in draft.segment_marker_groups if group.segment_name == "CustomSegment")
+    draft = unassign_markers_from_segment(
+        draft, "CustomSegment", ("CUSTOM1", "MISSING_MARKER")
+    )
+    custom_group = next(
+        group
+        for group in draft.segment_marker_groups
+        if group.segment_name == "CustomSegment"
+    )
 
     assert custom_group.marker_names == ("CUSTOM2",)
 
 
 def test_c3d_workflow_draft_updates_segment_parent():
     draft = c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS)
-    draft = add_segment_to_draft(draft, "CustomSegment", parent_name="Pelvis", segment_type="technical")
+    draft = add_segment_to_draft(
+        draft, "CustomSegment", parent_name="Pelvis", segment_type="technical"
+    )
 
     draft = update_segment_parent_in_draft(draft, "CustomSegment", "Trunk")
 
-    custom_group = next(group for group in draft.segment_marker_groups if group.segment_name == "CustomSegment")
+    custom_group = next(
+        group
+        for group in draft.segment_marker_groups
+        if group.segment_name == "CustomSegment"
+    )
     assert custom_group.parent_name == "Trunk"
 
 
 def test_c3d_workflow_draft_marks_assigned_markers_as_technical():
     draft = c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS)
     draft = add_segment_to_draft(draft, "CustomSegment", segment_type="anatomical")
-    draft = assign_markers_to_segment(draft, "CustomSegment", ("CUSTOM1", "CUSTOM2"), is_technical=False)
+    draft = assign_markers_to_segment(
+        draft, "CustomSegment", ("CUSTOM1", "CUSTOM2"), is_technical=False
+    )
 
-    custom_group = next(group for group in draft.segment_marker_groups if group.segment_name == "CustomSegment")
+    custom_group = next(
+        group
+        for group in draft.segment_marker_groups
+        if group.segment_name == "CustomSegment"
+    )
     assert custom_group.technical_marker_names == ()
 
     draft = set_segment_marker_technical(draft, "CustomSegment", ("CUSTOM1",), True)
-    custom_group = next(group for group in draft.segment_marker_groups if group.segment_name == "CustomSegment")
+    custom_group = next(
+        group
+        for group in draft.segment_marker_groups
+        if group.segment_name == "CustomSegment"
+    )
     assert custom_group.technical_marker_names == ("CUSTOM1",)
 
     draft = set_segment_marker_technical(draft, "CustomSegment", ("CUSTOM1",), False)
-    custom_group = next(group for group in draft.segment_marker_groups if group.segment_name == "CustomSegment")
+    custom_group = next(
+        group
+        for group in draft.segment_marker_groups
+        if group.segment_name == "CustomSegment"
+    )
     assert custom_group.technical_marker_names == ()
 
 
@@ -278,7 +377,10 @@ def test_parse_score_report_extracts_joint_center_entries():
     assert entry.distal_column == 7
     assert entry.proximal_segment_name == "Pelvis"
     assert entry.distal_segment_name == "Thorax"
-    assert score_virtual_marker_names_from_entry(entry) == ("CoR_Thorax_wrt_Pelvis", "CoR_Thorax_wrt_Thorax")
+    assert score_virtual_marker_names_from_entry(entry) == (
+        "CoR_Thorax_wrt_Pelvis",
+        "CoR_Thorax_wrt_Thorax",
+    )
 
 
 def test_c3d_workflow_draft_edits_virtual_markers_and_axes():
@@ -307,8 +409,14 @@ def test_c3d_workflow_draft_edits_virtual_markers_and_axes():
     payload = c3d_template_payload_from_draft(draft)
 
     assert any(marker["name"] == "ShoulderCoR" for marker in payload["virtual_markers"])
-    assert any(axis["name"] == "ElbowFlexionAxis" and axis["keep_vector"] is True for axis in payload["axes"])
-    assert any(axis["name"] == "ElbowFlexionAxis" and axis["origin_markers"] == ("ELB",) for axis in payload["axes"])
+    assert any(
+        axis["name"] == "ElbowFlexionAxis" and axis["keep_vector"] is True
+        for axis in payload["axes"]
+    )
+    assert any(
+        axis["name"] == "ElbowFlexionAxis" and axis["origin_markers"] == ("ELB",)
+        for axis in payload["axes"]
+    )
 
     draft = remove_virtual_marker_from_draft(draft, "ShoulderCoR")
     draft = remove_axis_from_draft(draft, "ElbowFlexionAxis")
@@ -352,7 +460,9 @@ def test_c3d_workflow_draft_replaces_virtual_marker_and_axis_with_same_name():
         method="sara",
     )
 
-    shoulder_markers = [marker for marker in draft.virtual_markers if marker.name == "ShoulderCoR"]
+    shoulder_markers = [
+        marker for marker in draft.virtual_markers if marker.name == "ShoulderCoR"
+    ]
     elbow_axes = [axis for axis in draft.axes if axis.name == "ElbowFlexionAxis"]
 
     assert len(shoulder_markers) == 1
@@ -386,7 +496,11 @@ def test_c3d_workflow_draft_edits_segment_settings_and_file_assignments():
 
     payload = c3d_template_payload_from_draft(draft)
 
-    lshank_settings = next(setting for setting in payload["segment_settings"] if setting["segment_name"] == "LShank")
+    lshank_settings = next(
+        setting
+        for setting in payload["segment_settings"]
+        if setting["segment_name"] == "LShank"
+    )
     assert lshank_settings["translations"] == "z"
     assert lshank_settings["rotations"] == "xz"
     assert lshank_settings["child_translation"] is True
@@ -395,14 +509,25 @@ def test_c3d_workflow_draft_edits_segment_settings_and_file_assignments():
     assert lshank_settings["anthropometry_sex"] == "female"
     assert lshank_settings["anthropometry_mass"] == 62.0
     assert lshank_settings["segment_length"] == 0.42
-    assert lshank_settings["segment_length_source"] == "proximal=LKNE,LKNEM; distal=LANK,LANKM; child=LFoot"
+    assert (
+        lshank_settings["segment_length_source"]
+        == "proximal=LKNE,LKNEM; distal=LANK,LANKM; child=LFoot"
+    )
     assert any(
-        assignment["role"] == "main" and assignment["source_path"] == "/tmp/main_markers.c3d"
+        assignment["role"] == "main"
+        and assignment["source_path"] == "/tmp/main_markers.c3d"
         for assignment in payload["c3d_file_assignments"]
     )
 
     draft = clear_c3d_file_role_from_draft(draft, "main")
-    assert next(assignment for assignment in draft.file_assignments if assignment.role == "main").source_path == ""
+    assert (
+        next(
+            assignment
+            for assignment in draft.file_assignments
+            if assignment.role == "main"
+        ).source_path
+        == ""
+    )
 
 
 def test_c3d_workflow_draft_validation_reports_empty_custom_segment():
@@ -412,20 +537,30 @@ def test_c3d_workflow_draft_validation_reports_empty_custom_segment():
     issues = validate_c3d_workflow_draft(draft)
 
     assert any(
-        issue.severity == "warning" and issue.category == "segments" and "CustomSegment" in issue.message
+        issue.severity == "warning"
+        and issue.category == "segments"
+        and "CustomSegment" in issue.message
         for issue in issues
     )
 
 
 def test_c3d_workflow_draft_validation_reports_technical_segment_requirements():
     draft = c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS)
-    draft = add_segment_to_draft(draft, "TechnicalFemur", parent_name="UnknownParent", segment_type="technical")
+    draft = add_segment_to_draft(
+        draft, "TechnicalFemur", parent_name="UnknownParent", segment_type="technical"
+    )
     draft = assign_marker_to_segment(draft, "TechnicalFemur", "THI1")
 
     issues = validate_c3d_workflow_draft(draft)
 
-    assert any(issue.severity == "warning" and "at least 3 technical markers" in issue.message for issue in issues)
-    assert any(issue.severity == "error" and "UnknownParent" in issue.message for issue in issues)
+    assert any(
+        issue.severity == "warning" and "at least 3 technical markers" in issue.message
+        for issue in issues
+    )
+    assert any(
+        issue.severity == "error" and "UnknownParent" in issue.message
+        for issue in issues
+    )
 
 
 def test_c3d_workflow_draft_validation_reports_missing_c3d_markers():
@@ -437,7 +572,9 @@ def test_c3d_workflow_draft_validation_reports_missing_c3d_markers():
 
     issues = validate_c3d_workflow_draft(draft, data)
 
-    assert any(issue.severity == "error" and "NOT_IN_C3D" in issue.message for issue in issues)
+    assert any(
+        issue.severity == "error" and "NOT_IN_C3D" in issue.message for issue in issues
+    )
 
 
 def test_c3d_workflow_draft_validation_reports_axis_marker_typo():
@@ -454,7 +591,10 @@ def test_c3d_workflow_draft_validation_reports_axis_marker_typo():
 
     issues = validate_c3d_workflow_draft(draft)
 
-    assert any(issue.category == "axes" and "MISSPELLED_MARKER" in issue.message for issue in issues)
+    assert any(
+        issue.category == "axes" and "MISSPELLED_MARKER" in issue.message
+        for issue in issues
+    )
 
 
 def test_c3d_workflow_draft_validation_reports_axis_projection_missing_axis():
@@ -470,7 +610,10 @@ def test_c3d_workflow_draft_validation_reports_axis_projection_missing_axis():
 
     issues = validate_c3d_workflow_draft(draft)
 
-    assert any(issue.category == "virtual markers" and "no axis definition" in issue.message for issue in issues)
+    assert any(
+        issue.category == "virtual markers" and "no axis definition" in issue.message
+        for issue in issues
+    )
 
 
 def test_c3d_workflow_draft_validation_reports_dof_limit_length_mismatch():
@@ -486,7 +629,10 @@ def test_c3d_workflow_draft_validation_reports_dof_limit_length_mismatch():
 
     issues = validate_c3d_workflow_draft(draft)
 
-    assert any(issue.severity == "error" and "q_min values for 3 DoF" in issue.message for issue in issues)
+    assert any(
+        issue.severity == "error" and "q_min values for 3 DoF" in issue.message
+        for issue in issues
+    )
 
 
 def test_c3d_template_payload_from_draft_includes_validation_issues():
@@ -494,7 +640,9 @@ def test_c3d_template_payload_from_draft_includes_validation_issues():
 
     payload = c3d_template_payload_from_draft(draft)
 
-    assert any(issue["category"] == "c3d files" for issue in payload["validation_issues"])
+    assert any(
+        issue["category"] == "c3d files" for issue in payload["validation_issues"]
+    )
 
 
 def test_c3d_workflow_progress_reports_pending_c3d_selection():
@@ -508,7 +656,11 @@ def test_c3d_workflow_progress_reports_pending_c3d_selection():
 
 
 def test_c3d_workflow_progress_reports_loaded_markers_and_assigned_required_roles():
-    marker_dict = {"LASI": np.ones((4, 2)), "RASI": np.ones((4, 2)), "LPSI": np.ones((4, 2))}
+    marker_dict = {
+        "LASI": np.ones((4, 2)),
+        "RASI": np.ones((4, 2)),
+        "LPSI": np.ones((4, 2)),
+    }
     data = DictData(marker_dict)
     draft = c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS)
     draft = assign_c3d_file_role_to_draft(draft, "main", "/tmp/main_markers.c3d")
@@ -527,21 +679,29 @@ def test_c3d_workflow_progress_accepts_anatomical_segments_as_functional_marker_
     progress_by_name = {step.name: step for step in progress}
 
     assert progress_by_name["Create technical segments"].status == "done"
-    assert "segment marker sets usable for functional trials" in progress_by_name["Create technical segments"].detail
+    assert (
+        "segment marker sets usable for functional trials"
+        in progress_by_name["Create technical segments"].detail
+    )
 
 
 def test_c3d_virtual_marker_method_examples_document_regression_and_sara():
     examples = c3d_virtual_marker_method_examples()
 
     assert any(
-        example.method == "regression" and "example_predictive_hip_cor" in example.equation_example
+        example.method == "regression"
+        and "example_predictive_hip_cor" in example.equation_example
         for example in examples
     )
     assert any(
         example.method == "rab2002_shoulder" and "0.17" in example.equation_example
         for example in examples
     )
-    assert any(example.method == "sara" and "*func_lknee.c3d" in example.source_example for example in examples)
+    assert any(
+        example.method == "sara_direction"
+        and "*func_lknee.c3d" in example.source_example
+        for example in examples
+    )
 
 
 def test_c3d_template_payload_from_draft_includes_progress_and_method_examples():
@@ -549,5 +709,10 @@ def test_c3d_template_payload_from_draft_includes_progress_and_method_examples()
 
     payload = c3d_template_payload_from_draft(draft)
 
-    assert any(step["name"] == "Segment coordinate systems" for step in payload["progress"])
-    assert any(example["method"] == "score" for example in payload["virtual_marker_method_examples"])
+    assert any(
+        step["name"] == "Segment coordinate systems" for step in payload["progress"]
+    )
+    assert any(
+        example["method"] == "score"
+        for example in payload["virtual_marker_method_examples"]
+    )
