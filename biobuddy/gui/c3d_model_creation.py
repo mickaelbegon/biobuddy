@@ -288,6 +288,13 @@ def _motive_57_virtual_features() -> tuple[C3dPresetVirtualFeature, ...]:
                     ),
                 ),
                 C3dPresetVirtualFeature(
+                    name=f"Proj_{side}Knee_on_Axis_{side}Knee_SARA",
+                    feature_type="point",
+                    segment_name=f"{side}Shank",
+                    role="axis_projection",
+                    description=f"point={side}FLE,{side}FME; axis=Axis_{side}Knee_SARA; trial={label}_knee_sara",
+                ),
+                C3dPresetVirtualFeature(
                     name=f"CoR_{side}Foot_wrt_{side}Shank",
                     feature_type="point",
                     segment_name=f"{side}Foot",

@@ -162,25 +162,11 @@ class FunctionalAxisProjectionPointSpec:
                 child_marker_names=list(self.child_marker_names),
                 expected_rotation_axis_orientation=self.expected_axis.to_axis(functional_data=None),
                 origin_positions_global=lambda sara_markers, sara_model: sara_markers.markers_center_position(
-                    list(self.origin_marker_names)
+                    list(self.point_marker_names)
                 )[:3, :],
                 visualize=False,
             )
-            axis_start = sara_axis.start.function(markers, model)[:3].reshape(3, 1)
-            axis_end = sara_axis.end.function(markers, model)[:3].reshape(3, 1)
-            point = markers.markers_center_position(list(self.point_marker_names))[:3, :]
-            axis_vector = axis_end - axis_start
-            axis_norm = np.linalg.norm(axis_vector, axis=0, keepdims=True)
-            axis_unit = np.divide(
-                axis_vector,
-                axis_norm,
-                out=np.zeros_like(axis_vector),
-                where=axis_norm > 1e-12,
-            )
-            distance = np.sum((point - axis_start) * axis_unit, axis=0, keepdims=True)
-            projected = np.ones((4, markers.nb_frames))
-            projected[:3, :] = axis_start + axis_unit * distance
-            return np.nanmean(projected, axis=1)
+            return sara_axis.start.function(markers, model)
 
         return projected_point
 

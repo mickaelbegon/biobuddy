@@ -173,6 +173,17 @@ def test_lower_limb_functional_draft_exposes_sara_knee_axes():
     assert not any(axis.name == "Axis_LKnee_SARA" for axis in anatomical_draft.axes)
 
 
+def test_motive_57_draft_exposes_knee_axis_projection_markers_without_axis_warnings():
+    draft = c3d_workflow_draft(C3dModelPreset.MOTIVE_57)
+
+    projection_names = {marker.name for marker in draft.virtual_markers if marker.method == "axis_projection"}
+    issues = validate_c3d_workflow_draft(draft)
+
+    assert "Proj_LKnee_on_Axis_LKnee_SARA" in projection_names
+    assert "Proj_RKnee_on_Axis_RKnee_SARA" in projection_names
+    assert not any(issue.category == "axes" and "Proj_" in issue.message for issue in issues)
+
+
 def test_c3d_workflow_draft_edits_segment_marker_assignments():
     draft = c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS)
 

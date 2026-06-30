@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from biobuddy import DictData, Rotations, Translations
+from biobuddy import BiomechanicalModelReal, DictData, Rotations, SegmentCoordinateSystemUtils, Translations
 from biobuddy.gui.lower_limb_template import (
     LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES,
     lower_limb_template,
@@ -21,6 +21,7 @@ from biobuddy.gui.model_builder import (
     FunctionalAxisProjectionPointSpec,
     FunctionalAxisSpec,
     FunctionalCenterSpec,
+    FunctionalMethod,
     MarkerEndpointSpec,
     build_generic_model,
     build_real_model,
@@ -124,6 +125,60 @@ def test_lower_limb_functional_origins_use_expected_virtual_points():
     assert segments["LFoot"].frame.first_axis.start.marker_names == ("LHEE",)
     assert segments["LFoot"].frame.first_axis.end.marker_names == ("LTOE", "LTOE5")
     assert anatomical_segments["Trunk"].frame.origin.marker_names == ("CLAV",)
+
+
+def test_functional_axis_projection_transfers_projected_point_from_functional_trial(monkeypatch):
+    def marker(position):
+        values = np.ones((4, 2))
+        values[:3, :] = np.asarray(position, dtype=float)[:, np.newaxis]
+        return values
+
+    functional_trial = DictData(
+        {
+            "parent": marker([0.0, 0.0, 0.0]),
+            "child": marker([0.0, 1.0, 0.0]),
+            "axis_start": marker([0.0, 0.0, 0.0]),
+            "axis_end": marker([0.0, 0.0, 1.0]),
+            "origin_a": marker([10.0, 0.0, 0.0]),
+            "origin_b": marker([10.0, 2.0, 0.0]),
+            "point_a": marker([1.0, 0.0, 0.0]),
+            "point_b": marker([3.0, 0.0, 0.0]),
+        }
+    )
+    static_data = DictData({"fallback": marker([0.0, 0.0, 0.0])})
+    captured = {}
+
+    class FakeEndpoint:
+        def __init__(self, value):
+            self.function = lambda markers, model: np.asarray(value, dtype=float)
+
+    class FakeAxis:
+        start = FakeEndpoint([2.0, 0.0, 0.0, 1.0])
+        end = FakeEndpoint([2.0, 0.0, 1.0, 1.0])
+
+    def fake_sara(**kwargs):
+        captured["origin_positions_global"] = kwargs["origin_positions_global"]
+        return FakeAxis()
+
+    monkeypatch.setattr(SegmentCoordinateSystemUtils, "sara", fake_sara)
+
+    projection = FunctionalAxisProjectionPointSpec(
+        method=FunctionalMethod.SARA_DIRECTION,
+        trial_name="knee",
+        parent_marker_names=("parent",),
+        child_marker_names=("child",),
+        expected_axis=AxisSpec.from_markers(Axis.Name.Z, "axis_start", "axis_end"),
+        origin_marker_names=("origin_a", "origin_b"),
+        point_marker_names=("point_a", "point_b"),
+        fallback=MarkerEndpointSpec(("fallback",)),
+    )
+
+    projected_point = projection.to_callable({"knee": functional_trial})
+    np.testing.assert_allclose(projected_point(static_data, BiomechanicalModelReal()), [2.0, 0.0, 0.0, 1.0])
+    np.testing.assert_allclose(
+        captured["origin_positions_global"](functional_trial, BiomechanicalModelReal()),
+        functional_trial.markers_center_position(["point_a", "point_b"])[:3, :],
+    )
 
 
 def test_marker_availability_reports_presence_and_valid_frame_count():

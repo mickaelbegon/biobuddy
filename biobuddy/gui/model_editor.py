@@ -1644,7 +1644,11 @@ def launch_model_editor() -> None:
                 else:
                     radius = 4 if is_highlighted else 2
                     _draw_preview_marker(painter, center, color, is_square=False, size=radius)
-                if _should_draw_preview_labels(self) and is_highlighted and segment_name == self.distal_segment_name:
+                if (
+                    _should_draw_preview_labels(self)
+                    and is_highlighted
+                    and segment_name in {self.proximal_segment_name, self.distal_segment_name}
+                ):
                     painter.drawText(center.x() + 5, center.y() - 5, marker_name)
 
             painter.setPen(QPen(QColor("#7c3aed"), 2))
@@ -2507,6 +2511,11 @@ def launch_model_editor() -> None:
             self.c3d_folder_path = ""
             self.workflow_draft = c3d_workflow_draft(self.presets[0])
             self.workflow_marker_pool = _marker_pool_from_draft(self.workflow_draft)
+            self._workflow_playback_slider = None
+            self._workflow_frame_play_buttons = {}
+            self._workflow_playback_timer = QTimer(self)
+            self._workflow_playback_timer.setInterval(60)
+            self._workflow_playback_timer.timeout.connect(self._advance_workflow_frame_playback)
 
             self.preset_combo = QComboBox()
             for preset in self.presets:
@@ -2677,9 +2686,9 @@ def launch_model_editor() -> None:
             self.use_diverse_functional_frames_checkbox.setToolTip(
                 "Select a smaller set of valid functional frames with different parent-child rototranslations."
             )
-            self.use_diverse_functional_frames_checkbox.stateChanged.connect(self._update_virtual_marker_preview)
-            self.use_diverse_functional_frames_checkbox.stateChanged.connect(self._update_segment_axis_preview)
-            self.use_diverse_functional_frames_checkbox.stateChanged.connect(self._update_generation_log)
+            self.use_diverse_functional_frames_checkbox.stateChanged.connect(
+                self._update_diverse_functional_frame_calculations
+            )
             self.virtual_marker_frame_slider = QSlider(qt_horizontal)
             self.virtual_marker_frame_slider.setEnabled(False)
             self.virtual_marker_frame_slider.valueChanged.connect(self._update_virtual_marker_preview)
@@ -2713,7 +2722,7 @@ def launch_model_editor() -> None:
             _style_preview_widget(self.segment_settings_preview)
             self.workflow_view_button = QPushButton("View")
             self.workflow_view_button.setObjectName("SecondaryActionButton")
-            self.workflow_view_button.clicked.connect(self._show_workflow_view_menu)
+            self.workflow_view_button.setMenu(self._create_workflow_view_menu())
             self.segment_settings_frame_slider = QSlider(qt_horizontal)
             self.segment_settings_frame_slider.setEnabled(False)
             self.segment_settings_frame_slider.valueChanged.connect(self._update_segment_settings_preview)
@@ -2987,39 +2996,120 @@ def launch_model_editor() -> None:
             page = QWidget()
             row = QHBoxLayout(page)
             _configure_panel_layout(row, margin=0, spacing=8)
+            play_button = _small_button(">")
+            play_button.setToolTip("Play frames")
+            play_button.setEnabled(slider.isEnabled() and slider.maximum() > slider.minimum())
+            play_button.clicked.connect(
+                lambda checked=False, frame_slider=slider: self._toggle_workflow_frame_playback(frame_slider)
+            )
+            self._workflow_frame_play_buttons[slider] = play_button
             row.addWidget(QLabel("Frame"))
+            row.addWidget(play_button)
             row.addWidget(slider, 1)
             row.addWidget(label)
             return page
+
+        def _toggle_workflow_frame_playback(self, slider) -> None:
+            """
+            Start or stop playback for one preview frame slider.
+            """
+            if self._workflow_playback_timer.isActive() and self._workflow_playback_slider is slider:
+                self._stop_workflow_frame_playback()
+                return
+            self._stop_workflow_frame_playback()
+            if not slider.isEnabled() or slider.maximum() <= slider.minimum():
+                self._sync_workflow_frame_play_button(slider)
+                return
+            self._workflow_playback_slider = slider
+            button = self._workflow_frame_play_buttons.get(slider)
+            if button is not None:
+                button.setText("||")
+                button.setToolTip("Pause frames")
+            self._workflow_playback_timer.start()
+
+        def _advance_workflow_frame_playback(self) -> None:
+            """
+            Advance the currently playing preview slider, looping at the end.
+            """
+            slider = self._workflow_playback_slider
+            if slider is None or not slider.isEnabled() or slider.maximum() <= slider.minimum():
+                self._stop_workflow_frame_playback()
+                return
+            next_frame = slider.value() + 1
+            if next_frame > slider.maximum():
+                next_frame = slider.minimum()
+            slider.setValue(next_frame)
+
+        def _stop_workflow_frame_playback(self) -> None:
+            """
+            Stop frame playback and restore the play button state.
+            """
+            if self._workflow_playback_timer.isActive():
+                self._workflow_playback_timer.stop()
+            slider = self._workflow_playback_slider
+            self._workflow_playback_slider = None
+            if slider is not None:
+                button = self._workflow_frame_play_buttons.get(slider)
+                if button is not None:
+                    button.setText(">")
+                    button.setToolTip("Play frames")
+                    button.setEnabled(slider.isEnabled() and slider.maximum() > slider.minimum())
+
+        def _sync_workflow_frame_play_button(self, slider) -> None:
+            """
+            Enable or disable the playback button associated with a frame slider.
+            """
+            button = self._workflow_frame_play_buttons.get(slider)
+            if button is None:
+                return
+            can_play = slider.isEnabled() and slider.maximum() > slider.minimum()
+            if not can_play and self._workflow_playback_slider is slider:
+                self._stop_workflow_frame_playback()
+            button.setEnabled(can_play)
 
         def _show_workflow_view_menu(self) -> None:
             """
             Show visible view choices for the active C3D workflow preview.
             """
-            menu = QMenu(self)
-            plane_actions = {menu.addAction(f"{plane} plane"): plane for plane in ("XY", "YZ", "ZX")}
-            menu.addSeparator()
-            subject_actions = {
-                menu.addAction(label): view
-                for label, view in (
-                    ("Face view", "face"),
-                    ("Back view", "dos"),
-                    ("Side view", "cote"),
-                )
-            }
+            if self.workflow_view_button.menu() is None:
+                self.workflow_view_button.setMenu(self._create_workflow_view_menu())
             position = self.workflow_view_button.mapToGlobal(self.workflow_view_button.rect().bottomLeft())
-            selected_action = _exec_menu(menu, position)
-            plane = plane_actions.get(selected_action)
+            self.workflow_view_button.menu().popup(position)
+
+        def _create_workflow_view_menu(self):
+            """
+            Create the native view menu attached to the workflow preview button.
+            """
+            menu = QMenu(self)
+            for plane in ("XY", "YZ", "ZX"):
+                action = menu.addAction(f"{plane} plane")
+                action.triggered.connect(
+                    lambda checked=False, selected_plane=plane: self._apply_workflow_preview_plane(selected_plane)
+                )
+            menu.addSeparator()
+            for label, view in (
+                ("Face view", "face"),
+                ("Back view", "dos"),
+                ("Side view", "cote"),
+            ):
+                action = menu.addAction(label)
+                action.triggered.connect(
+                    lambda checked=False, selected_view=view: self._apply_workflow_preview_subject_view(selected_view)
+                )
+            return menu
+
+        def _apply_workflow_preview_plane(self, plane: str) -> None:
+            """
+            Apply one standard lab-plane view to the active workflow preview.
+            """
+            self._apply_workflow_preview_camera(_preview_camera_matrix_for_plane(plane))
+
+        def _apply_workflow_preview_subject_view(self, view: str) -> None:
+            """
+            Apply one PCA-derived subject view to the active workflow preview.
+            """
             try:
-                if plane is not None:
-                    matrix = _preview_camera_matrix_for_plane(plane)
-                else:
-                    view = subject_actions.get(selected_action)
-                    if view is None:
-                        return
-                    matrix = _preview_camera_matrix_for_subject_view(
-                        view, self._active_workflow_preview_marker_positions()
-                    )
+                matrix = _preview_camera_matrix_for_subject_view(view, self._active_workflow_preview_marker_positions())
             except ValueError as error:
                 QMessageBox.warning(self, "Unavailable view", str(error))
                 return
@@ -3062,6 +3152,7 @@ def launch_model_editor() -> None:
             """
             Show the preview that matches the active construction step.
             """
+            self._stop_workflow_frame_playback()
             tab_text = self.workflow_tabs.tabText(tab_index)
             title = "Anatomical frame preview"
             frame_index = self.workflow_frame_anatomical_index
@@ -3494,6 +3585,31 @@ def launch_model_editor() -> None:
                 QApplication.processEvents()
 
             progress_callback("Preparing C3D folder scan...")
+            return progress_dialog, progress_callback
+
+        def _functional_frame_calculation_progress_reporter(self):
+            """
+            Create a progress popup while diverse functional-frame previews are recomputed.
+            """
+            progress_dialog = QProgressDialog(
+                "Preparing functional-frame calculations...",
+                None,
+                0,
+                0,
+                self,
+            )
+            progress_dialog.setWindowTitle("Updating functional-frame calculations")
+            progress_dialog.setWindowModality(qt_window_modal)
+            progress_dialog.setCancelButton(None)
+            progress_dialog.setMinimumDuration(0)
+            progress_dialog.show()
+
+            def progress_callback(message: str) -> None:
+                progress_dialog.setLabelText(message)
+                progress_dialog.show()
+                QApplication.processEvents()
+
+            progress_callback("Preparing functional-frame calculations...")
             return progress_dialog, progress_callback
 
         def _auto_assign_c3d_files_from_folder(self, load_main: bool = True, progress_callback=None) -> None:
@@ -4215,6 +4331,7 @@ def launch_model_editor() -> None:
             self.technical_frame_slider.setMaximum(max(frame_count - 1, 0))
             self.technical_frame_slider.setValue(0)
             self.technical_frame_slider.blockSignals(False)
+            self._sync_workflow_frame_play_button(self.technical_frame_slider)
             self._update_technical_segment_preview()
 
         def _configure_anatomical_frame_slider(self) -> None:
@@ -4225,6 +4342,7 @@ def launch_model_editor() -> None:
             self.anatomical_frame_slider.setMaximum(max(frame_count - 1, 0))
             self.anatomical_frame_slider.setValue(0)
             self.anatomical_frame_slider.blockSignals(False)
+            self._sync_workflow_frame_play_button(self.anatomical_frame_slider)
             self._update_segment_axis_preview()
 
         def _configure_segment_settings_frame_slider(self) -> None:
@@ -4235,6 +4353,7 @@ def launch_model_editor() -> None:
             self.segment_settings_frame_slider.setMaximum(max(frame_count - 1, 0))
             self.segment_settings_frame_slider.setValue(0)
             self.segment_settings_frame_slider.blockSignals(False)
+            self._sync_workflow_frame_play_button(self.segment_settings_frame_slider)
             self._update_segment_settings_preview()
 
         def _update_technical_segment_preview(self, *_args) -> None:
@@ -4824,6 +4943,7 @@ def launch_model_editor() -> None:
             self.virtual_marker_frame_slider.setMaximum(max(frame_count - 1, 0))
             self.virtual_marker_frame_slider.setValue(current_frame)
             self.virtual_marker_frame_slider.blockSignals(False)
+            self._sync_workflow_frame_play_button(self.virtual_marker_frame_slider)
             if frame_count == 0:
                 self.virtual_marker_frame_label.setText("Frame 0/0")
             else:
@@ -4997,6 +5117,19 @@ def launch_model_editor() -> None:
                 self.virtual_marker_whole_body_preview_checkbox.isChecked(),
                 self.use_diverse_functional_frames_checkbox.isChecked(),
             )
+
+        def _update_diverse_functional_frame_calculations(self, *_args) -> None:
+            progress_dialog, progress_callback = self._functional_frame_calculation_progress_reporter()
+            try:
+                mode = "enabled" if self.use_diverse_functional_frames_checkbox.isChecked() else "disabled"
+                progress_callback(f"Diverse functional frames {mode}; updating virtual marker preview...")
+                self._update_virtual_marker_preview()
+                progress_callback("Updating anatomical segment axes preview...")
+                self._update_segment_axis_preview()
+                progress_callback("Computing functional trial quality metrics...")
+                self._update_generation_log()
+            finally:
+                progress_dialog.close()
 
         def _functional_trial_quality_lines(self) -> tuple[str, ...]:
             lines = ["", "Functional trial quality:"]
