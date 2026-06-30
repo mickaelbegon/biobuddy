@@ -47,9 +47,7 @@ def test_upper_limb_template_reports_virtual_marker_references():
 
 def test_upper_limb_model_template_exposes_virtual_feature_placeholders():
     template = upper_limb_template()
-    requirement_names = {
-        requirement.name for requirement in upper_limb_virtual_feature_requirements()
-    }
+    requirement_names = {requirement.name for requirement in upper_limb_virtual_feature_requirements()}
 
     assert template.root_segment_name == "Pelvis"
     assert [segment.name for segment in template.segments] == [
@@ -68,9 +66,7 @@ def test_upper_limb_model_template_exposes_virtual_feature_placeholders():
     assert upper_limb_virtual_point_name("Hand", 5) in requirement_names
 
     required_markers = set(required_static_markers(template))
-    clavicle_axis_start, clavicle_axis_end = upper_limb_virtual_axis_endpoint_names(
-        "Clavicule", "u_axis"
-    )
+    clavicle_axis_start, clavicle_axis_end = upper_limb_virtual_axis_endpoint_names("Clavicule", "u_axis")
     assert upper_limb_virtual_point_name("Thorax", 7) in required_markers
     assert clavicle_axis_start in required_markers
     assert clavicle_axis_end in required_markers
@@ -81,43 +77,28 @@ def test_upper_limb_inertia_parameters_match_reference_values():
 
     assert inertia["Pelvis"]["mass"] is None
     assert inertia["Thorax"]["mass"] == 48.71
-    np.testing.assert_allclose(
-        inertia["Thorax"]["center_of_mass"], np.array([-0.000676, 0.016992, 0.123972])
-    )
-    np.testing.assert_allclose(
-        np.diag(inertia["Arm"]["inertia"]), np.array([0.001835, 0.001605, 0.000520])
-    )
+    np.testing.assert_allclose(inertia["Thorax"]["center_of_mass"], np.array([-0.000676, 0.016992, 0.123972]))
+    np.testing.assert_allclose(np.diag(inertia["Arm"]["inertia"]), np.array([0.001835, 0.001605, 0.000520]))
     np.testing.assert_allclose(
         inertia["LowerArm2"]["center_of_mass"],
         np.array([-0.018328, 0.010440, -0.002528]),
     )
-    np.testing.assert_allclose(
-        inertia["Hand"]["center_of_mass"], np.array([-0.001984, -0.016656, -0.047286])
-    )
+    np.testing.assert_allclose(inertia["Hand"]["center_of_mass"], np.array([-0.001984, -0.016656, -0.047286]))
 
 
 def test_upper_limb_reference_model_matches_template_when_available():
-    filepath = Path(
-        "/Volumes/10.89.24.15/BackUp/F/Data/Shoulder/Lib/IRSST_EmiDd/Model_2/Model.s2mMod"
-    )
+    filepath = Path("/Volumes/10.89.24.15/BackUp/F/Data/Shoulder/Lib/IRSST_EmiDd/Model_2/Model.s2mMod")
     if not filepath.exists():
-        pytest.skip(
-            "Upper-limb reference Model.s2mMod file is not available on this machine."
-        )
+        pytest.skip("Upper-limb reference Model.s2mMod file is not available on this machine.")
 
     reference_segments = parse_s2m_model(filepath)
-    template_segments = {
-        segment.name: segment for segment in upper_limb_segment_specs()
-    }
+    template_segments = {segment.name: segment for segment in upper_limb_segment_specs()}
 
     assert len(reference_segments) == 8
     assert sum(len(segment.markers) for segment in reference_segments) == 43
     for reference_segment in reference_segments:
         template_segment = template_segments[reference_segment.name]
         assert reference_segment.parent_name == template_segment.parent_name
-        assert (
-            tuple(marker.name for marker in reference_segment.markers)
-            == template_segment.marker_names
-        )
+        assert tuple(marker.name for marker in reference_segment.markers) == template_segment.marker_names
         assert reference_segment.translations == template_segment.translations
         assert reference_segment.rotations == template_segment.rotations
