@@ -9,10 +9,10 @@ import numpy as np
 
 from ..utils.marker_data import C3dData, MarkerData
 from .c3d_model_creation import C3dModelPreset, c3d_model_preset_virtual_features
-from .full_body_bela_template import (
-    bela_segment_specs,
-    full_body_bela_functional_c3d_filenames,
-    full_body_bela_template,
+from .full_body_model202_template import (
+    model202_segment_specs,
+    full_body_model202_functional_c3d_filenames,
+    full_body_model202_template,
     rotations_from_matlab_dof,
     translations_from_matlab_dof,
 )
@@ -380,7 +380,7 @@ def _template_for_axis_prefill(preset: C3dModelPreset) -> ModelTemplate | None:
     if preset == C3dModelPreset.UPPER_LIMB:
         return upper_limb_template()
     if preset == C3dModelPreset.FULL_BODY:
-        return full_body_bela_template(use_functional=True)
+        return full_body_model202_template(use_functional=True)
     if preset == C3dModelPreset.MOTIVE_57:
         return motive_57_template(use_functional=True)
     return None
@@ -501,7 +501,7 @@ def _functional_axis_virtual_axis_name(spec: FunctionalAxisSpec) -> str:
 
 
 def _full_body_virtual_center_name_from_trial(trial_name: str) -> str | None:
-    for segment in bela_segment_specs():
+    for segment in model202_segment_specs():
         score_trial = f"{segment.name.lower()}_{segment.parent_name.lower()}_score"
         sara_trial = f"{segment.name.lower()}_{segment.parent_name.lower()}_sara"
         if trial_name in {score_trial, sara_trial} and segment.parent_name not in {
@@ -514,7 +514,7 @@ def _full_body_virtual_center_name_from_trial(trial_name: str) -> str | None:
 
 
 def _full_body_virtual_axis_name_from_trial(trial_name: str) -> str | None:
-    for segment in bela_segment_specs():
+    for segment in model202_segment_specs():
         sara_trial = f"{segment.name.lower()}_{segment.parent_name.lower()}_sara"
         if trial_name == sara_trial and segment.parent_name not in {"", "base", "root"}:
             return f"Axis_{segment.name}_SARA"
@@ -1860,7 +1860,7 @@ def c3d_file_roles_for_preset(preset: C3dModelPreset) -> tuple[C3dFileRole, ...]
             ),
         )
     if preset == C3dModelPreset.FULL_BODY:
-        filenames = full_body_bela_functional_c3d_filenames()
+        filenames = full_body_model202_functional_c3d_filenames()
         roles = [
             C3dFileRole(
                 "main",
@@ -1907,7 +1907,7 @@ def c3d_segment_marker_groups_for_preset(
                 "anatomical",
                 tuple(segment.marker_names),
             )
-            for segment in bela_segment_specs()
+            for segment in model202_segment_specs()
         )
     raise ValueError(f"Unsupported C3D model preset: {preset}.")
 
@@ -2028,7 +2028,7 @@ def _expected_marker_names_for_preset(preset: C3dModelPreset) -> set[str]:
             *required_functional_markers(template).values()
         )
     if preset == C3dModelPreset.FULL_BODY:
-        template = full_body_bela_template(use_functional=True)
+        template = full_body_model202_template(use_functional=True)
         return set(required_static_markers(template)) | set().union(
             *required_functional_markers(template).values()
         )
@@ -2162,7 +2162,7 @@ def _initial_segment_settings(
                 rotations=rotations_from_matlab_dof(segment) or "",
                 child_translation=translations_from_matlab_dof(segment) is not None,
             )
-            for segment in bela_segment_specs()
+            for segment in model202_segment_specs()
         )
     if preset == C3dModelPreset.FROM_SCRATCH:
         return ()

@@ -3,16 +3,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from biobuddy.gui.full_body_bela_template import (
-    bela_inertia_by_segment,
-    bela_marker_attachments,
-    bela_marker_names,
-    bela_segment_specs,
-    bela_unresolved_marker_references,
+from biobuddy.gui.full_body_model202_template import (
+    model202_inertia_by_segment,
+    model202_marker_attachments,
+    model202_marker_names,
+    model202_segment_specs,
+    model202_unresolved_marker_references,
     guse_inertia_by_segment,
-    full_body_bela_functional_c3d_filenames,
-    full_body_bela_functional_trials,
-    full_body_bela_template,
+    full_body_model202_functional_c3d_filenames,
+    full_body_model202_functional_trials,
+    full_body_model202_template,
     parse_s2m_model,
     rotations_from_matlab_dof,
     signed_marker_groups,
@@ -22,8 +22,8 @@ from biobuddy.gui.full_body_bela_template import (
 from biobuddy.gui.model_builder import build_generic_model, required_functional_markers
 
 
-def test_bela_template_contains_expected_full_body_chain():
-    segments = bela_segment_specs()
+def test_model202_template_contains_expected_full_body_chain():
+    segments = model202_segment_specs()
 
     assert len(segments) == 17
     assert segments[0].name == "Pelvis"
@@ -34,9 +34,9 @@ def test_bela_template_contains_expected_full_body_chain():
     assert segments[-1].parent_name == "JambeG"
 
 
-def test_bela_markers_follow_matlab_order_and_segment_ownership():
-    marker_names = bela_marker_names()
-    attachments = bela_marker_attachments()
+def test_model202_markers_follow_matlab_order_and_segment_ownership():
+    marker_names = model202_marker_names()
+    attachments = model202_marker_attachments()
 
     assert len(marker_names) == 94
     assert marker_names[:6] == ("EIASD", "CID", "EIPSD", "EIPSG", "CIG", "EIASG")
@@ -54,8 +54,8 @@ def test_bela_markers_follow_matlab_order_and_segment_ownership():
     assert attachments[0].segment_names == ("Pelvis",)
 
 
-def test_bela_inertial_parameters_are_available_by_segment_name():
-    inertia = bela_inertia_by_segment()
+def test_model202_inertial_parameters_are_available_by_segment_name():
+    inertia = model202_inertia_by_segment()
 
     assert inertia["Pelvis"]["mass"] == pytest.approx(11.5688)
     np.testing.assert_allclose(
@@ -83,11 +83,11 @@ def test_bela_inertial_parameters_are_available_by_segment_name():
     )
 
 
-def test_full_body_bela_template_builds_functional_model202_template():
-    template = full_body_bela_template(use_functional=True)
+def test_full_body_model202_template_builds_functional_model202_template():
+    template = full_body_model202_template(use_functional=True)
     model = build_generic_model(template)
     functional_markers = required_functional_markers(template)
-    filenames = full_body_bela_functional_c3d_filenames()
+    filenames = full_body_model202_functional_c3d_filenames()
 
     assert template.root_segment_name == "Pelvis"
     assert model.segment_names[1:4] == ["Pelvis", "Thorax", "Tete"]
@@ -100,8 +100,8 @@ def test_full_body_bela_template_builds_functional_model202_template():
     assert filenames["jambed_cuissed_sara"] == "Test_func_right_shank_right_thigh.c3d"
 
 
-def test_full_body_bela_functional_trials_expose_score_and_sara_requirements():
-    trials = {trial.name: trial for trial in full_body_bela_functional_trials()}
+def test_full_body_model202_functional_trials_expose_score_and_sara_requirements():
+    trials = {trial.name: trial for trial in full_body_model202_functional_trials()}
 
     assert trials["thorax_pelvis_score"].file_pattern == "Test_func_thorax_pelvis.c3d"
     assert trials["thorax_pelvis_score"].method.value == "score"
@@ -115,7 +115,7 @@ def test_full_body_bela_functional_trials_expose_score_and_sara_requirements():
 
 
 def test_matlab_dof_signs_do_not_change_model_axes():
-    segments = {segment.name: segment for segment in bela_segment_specs()}
+    segments = {segment.name: segment for segment in model202_segment_specs()}
 
     assert translations_from_matlab_dof(segments["Pelvis"]) == "xyz"
     assert rotations_from_matlab_dof(segments["Pelvis"]) == "xyz"
@@ -127,10 +127,10 @@ def test_matlab_dof_signs_do_not_change_model_axes():
 
 
 def test_guse_inertial_parameters_use_the_same_segments_with_subject_values():
-    bela_inertia = subject_inertia_by_segment("BeLa")
+    reference_inertia = subject_inertia_by_segment("BeLa")
     guse_inertia = guse_inertia_by_segment()
 
-    assert set(guse_inertia) == set(bela_inertia)
+    assert set(guse_inertia) == set(reference_inertia)
     assert guse_inertia["Pelvis"]["mass"] == pytest.approx(9.5842)
     np.testing.assert_allclose(
         guse_inertia["Pelvis"]["center_of_mass"], np.array([0.0, 0.0, 0.0918])
@@ -141,11 +141,11 @@ def test_guse_inertial_parameters_use_the_same_segments_with_subject_values():
     np.testing.assert_allclose(
         guse_inertia["EpauleG"]["center_of_mass"], np.array([-0.0858, 0.0, 0.0])
     )
-    assert bela_inertia["Pelvis"]["mass"] != guse_inertia["Pelvis"]["mass"]
+    assert reference_inertia["Pelvis"]["mass"] != guse_inertia["Pelvis"]["mass"]
 
 
 def test_signed_marker_groups_convert_matlab_axis_indices_when_all_markers_are_raw():
-    pelvis = bela_segment_specs()[0]
+    pelvis = model202_segment_specs()[0]
 
     start_markers, end_markers = signed_marker_groups(pelvis, pelvis.u_indices)
 
@@ -154,7 +154,7 @@ def test_signed_marker_groups_convert_matlab_axis_indices_when_all_markers_are_r
 
 
 def test_unresolved_marker_references_report_virtual_or_functional_points():
-    unresolved = bela_unresolved_marker_references()
+    unresolved = model202_unresolved_marker_references()
 
     assert "Pelvis" not in unresolved
     assert unresolved["Thorax"] == (7,)
@@ -162,7 +162,7 @@ def test_unresolved_marker_references_report_virtual_or_functional_points():
     assert unresolved["JambeD"] == (7, 8, 9)
     with pytest.raises(ValueError, match="references marker index 7"):
         signed_marker_groups(
-            bela_segment_specs()[1], bela_segment_specs()[1].origin_indices
+            model202_segment_specs()[1], model202_segment_specs()[1].origin_indices
         )
 
 
@@ -209,13 +209,13 @@ endmarker
     assert segments[0].markers[0].position == (0.1, 0.2, 0.3)
 
 
-def test_bela_s2m_model_is_consistent_with_matlab_chain_when_available():
+def test_model202_s2m_model_is_consistent_with_matlab_chain_when_available():
     filepath = Path("/Users/mickaelbegon/Downloads/BeLa_2.s2mMod")
     if not filepath.exists():
         pytest.skip("Historical BeLa .s2mMod file is not available on this machine.")
 
     s2m_segments = parse_s2m_model(filepath)
-    matlab_segments = {segment.name: segment for segment in bela_segment_specs()}
+    matlab_segments = {segment.name: segment for segment in model202_segment_specs()}
 
     assert len(s2m_segments) == 17
     assert sum(len(segment.markers) for segment in s2m_segments) == 94
@@ -230,14 +230,14 @@ def test_bela_s2m_model_is_consistent_with_matlab_chain_when_available():
         assert s2m_segment.rotations == rotations_from_matlab_dof(matlab_segment)
 
 
-def test_bela_biomod_reference_is_consistent_with_template_when_available():
+def test_model202_biomod_reference_is_consistent_with_template_when_available():
     filepath = Path("/Users/mickaelbegon/Downloads/BeLa.bioMod")
     if not filepath.exists():
         pytest.skip("Reference BeLa .bioMod file is not available on this machine.")
 
     reference_segments = parse_s2m_model(filepath)
-    matlab_segments = {segment.name: segment for segment in bela_segment_specs()}
-    inertia = bela_inertia_by_segment()
+    matlab_segments = {segment.name: segment for segment in model202_segment_specs()}
+    inertia = model202_inertia_by_segment()
 
     assert len(reference_segments) == 17
     assert sum(len(segment.markers) for segment in reference_segments) == 94

@@ -7,9 +7,9 @@ from pathlib import Path
 
 from ..components.real.biomechanical_model_real import BiomechanicalModelReal
 from ..utils.marker_data import C3dData, MarkerData
-from .full_body_bela_template import (
-    bela_segment_specs,
-    full_body_bela_template,
+from .full_body_model202_template import (
+    model202_segment_specs,
+    full_body_model202_template,
 )
 from .lower_limb_template import lower_limb_template
 from .motive_57_template import (
@@ -313,8 +313,8 @@ def _full_body_score_sara_virtual_features() -> tuple[C3dPresetVirtualFeature, .
     Return full-body Model202 functional centers and axes reconstructed from generic C3D trials.
     """
     features: list[C3dPresetVirtualFeature] = []
-    segments_by_name = {segment.name: segment for segment in bela_segment_specs()}
-    for segment in bela_segment_specs():
+    segments_by_name = {segment.name: segment for segment in model202_segment_specs()}
+    for segment in model202_segment_specs():
         if segment.parent_name in {"", "base", "root"}:
             continue
         parent = segments_by_name[segment.parent_name]
@@ -380,7 +380,7 @@ def _full_body_aor_expected_axis(segment) -> tuple[str, str]:
         return "CONDINTG", "CONEXTG"
     parent = next(
         candidate
-        for candidate in bela_segment_specs()
+        for candidate in model202_segment_specs()
         if candidate.name == segment.parent_name
     )
     return (
@@ -403,7 +403,7 @@ def template_for_c3d_model_preset(preset: C3dModelPreset) -> ModelTemplate:
             "DoFs, and virtual markers in the GUI, then export a reusable template before generating a BioMod model."
         )
     if preset == C3dModelPreset.FULL_BODY:
-        return full_body_bela_template(use_functional=True)
+        return full_body_model202_template(use_functional=True)
     if preset == C3dModelPreset.MOTIVE_57:
         return motive_57_template(use_functional=True)
     if preset == C3dModelPreset.UPPER_LIMB:
@@ -552,7 +552,9 @@ def create_model_from_marker_data(
         point_definitions=static_virtual_points,
         axis_definitions=static_virtual_axes,
     )
-    _notify_progress(progress_callback, "Applying virtual markers to functional data...")
+    _notify_progress(
+        progress_callback, "Applying virtual markers to functional data..."
+    )
     functional_data = _functional_data_with_virtual_features(
         functional_data=functional_data,
         point_definitions_by_trial=functional_virtual_points,
