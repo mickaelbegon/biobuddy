@@ -6,10 +6,42 @@ import os
 import pandas as pd
 import pickle
 
-from biobuddy.utils.marker_data import MarkerData, CsvData, C3dData, DictData, ReferenceFrame
+from biobuddy.utils.marker_data import (
+    MarkerData,
+    CsvData,
+    C3dData,
+    DictData,
+    ReferenceFrame,
+    c3d_point_unit_meter_divisor,
+    marker_data_with_stripped_prefixes,
+)
 
 
 # ------- CsvData ------- #
+def test_c3d_point_unit_meter_divisor_accepts_cm_units():
+    assert c3d_point_unit_meter_divisor("mm") == 1000.0
+    assert c3d_point_unit_meter_divisor("cm") == 100.0
+    assert c3d_point_unit_meter_divisor("m") == 1.0
+    assert c3d_point_unit_meter_divisor("CM") == 100.0
+
+
+def test_marker_data_with_stripped_prefixes_remaps_marker_names():
+    data = DictData(
+        {
+            "Skeleton_001_A": np.asarray([[1.0], [2.0], [3.0], [1.0]]),
+            "Skeleton_001_B": np.asarray([[4.0], [5.0], [6.0], [1.0]]),
+        }
+    )
+
+    remapped = marker_data_with_stripped_prefixes(data, ("Skeleton_001_",))
+
+    assert remapped.marker_names == ["A", "B"]
+    npt.assert_allclose(
+        remapped.get_position(("B", "A"))[:, :, 0],
+        np.asarray(((4.0, 1.0), (5.0, 2.0), (6.0, 3.0), (1.0, 1.0))),
+    )
+
+
 def test_csv_data_initialization():
     current_path_file = Path(__file__).parent
     csv_path = f"{current_path_file}/../examples/data/static.csv"
@@ -53,26 +85,32 @@ def test_csv_data_initialization():
         csv_data_frame = pd.read_csv(csv_path)
         # Test the first marker
         npt.assert_almost_equal(
-            np.array(csv_data_frame[" WRA"])[1:].astype(float), marker_data.all_marker_positions[0, 0, :] * 100
+            np.array(csv_data_frame[" WRA"])[1:].astype(float),
+            marker_data.all_marker_positions[0, 0, :] * 100,
         )  # Convert back to cm for comparison
         npt.assert_almost_equal(
-            np.array(csv_data_frame["Unnamed: 1"])[1:].astype(float), marker_data.all_marker_positions[1, 0, :] * 100
+            np.array(csv_data_frame["Unnamed: 1"])[1:].astype(float),
+            marker_data.all_marker_positions[1, 0, :] * 100,
         )  # Convert back to cm for comparison
         npt.assert_almost_equal(
-            np.array(csv_data_frame["Unnamed: 2"])[1:].astype(float), marker_data.all_marker_positions[2, 0, :] * 100
+            np.array(csv_data_frame["Unnamed: 2"])[1:].astype(float),
+            marker_data.all_marker_positions[2, 0, :] * 100,
         )  # Convert back to cm for comparison
         npt.assert_almost_equal(
             np.ones((marker_data.nb_frames,)), marker_data.all_marker_positions[3, 0, :]
         )  # Convert back to cm for comparison
         # Test the 9th marker
         npt.assert_almost_equal(
-            np.array(csv_data_frame["H_1"])[1:].astype(float), marker_data.all_marker_positions[0, 8, :] * 100
+            np.array(csv_data_frame["H_1"])[1:].astype(float),
+            marker_data.all_marker_positions[0, 8, :] * 100,
         )
         npt.assert_almost_equal(
-            np.array(csv_data_frame["Unnamed: 25"])[1:].astype(float), marker_data.all_marker_positions[1, 8, :] * 100
+            np.array(csv_data_frame["Unnamed: 25"])[1:].astype(float),
+            marker_data.all_marker_positions[1, 8, :] * 100,
         )
         npt.assert_almost_equal(
-            np.array(csv_data_frame["Unnamed: 26"])[1:].astype(float), marker_data.all_marker_positions[2, 8, :] * 100
+            np.array(csv_data_frame["Unnamed: 26"])[1:].astype(float),
+            marker_data.all_marker_positions[2, 8, :] * 100,
         )
         npt.assert_almost_equal(
             np.ones((marker_data.nb_frames,)), marker_data.all_marker_positions[3, 8, :]
@@ -251,7 +289,21 @@ def test_csv_data_get_position_with_frame_range():
     assert position.shape == (4, 1, 11)
     npt.assert_almost_equal(
         position[0, 0, :],
-        np.array([2.63646, 2.63647, 2.63646, 2.63648, 2.63648, 2.63645, 2.63647, 2.63647, 2.63649, 2.63651, 2.63648]),
+        np.array(
+            [
+                2.63646,
+                2.63647,
+                2.63646,
+                2.63648,
+                2.63648,
+                2.63645,
+                2.63647,
+                2.63647,
+                2.63649,
+                2.63651,
+                2.63648,
+            ]
+        ),
     )
 
 
@@ -359,13 +411,19 @@ def test_csv_data_all_marker_positions_setter_wrong_shape():
 
     marker_data = CsvData(csv_path=csv_path)
 
-    with pytest.raises(ValueError, match=r"Expected shape \(4, 21, 28\), got \(3, 21, 28\)."):
+    with pytest.raises(
+        ValueError, match=r"Expected shape \(4, 21, 28\), got \(3, 21, 28\)."
+    ):
         marker_data.all_marker_positions = np.zeros((3, 21, 28))
 
-    with pytest.raises(ValueError, match=r"Expected shape \(4, 21, 28\), got \(4, 10, 28\)."):
+    with pytest.raises(
+        ValueError, match=r"Expected shape \(4, 21, 28\), got \(4, 10, 28\)."
+    ):
         marker_data.all_marker_positions = np.zeros((4, 10, 28))
 
-    with pytest.raises(ValueError, match=r"Expected shape \(4, 21, 28\), got \(4, 21, 10\)."):
+    with pytest.raises(
+        ValueError, match=r"Expected shape \(4, 21, 28\), got \(4, 21, 10\)."
+    ):
         marker_data.all_marker_positions = np.zeros((4, 21, 10))
 
 
@@ -422,7 +480,9 @@ def test_csv_data_change_ref_frame_z_up_to_y_up():
     # Z should become -Y
     npt.assert_array_almost_equal(new_positions[2, :, :], -original_positions[1, :, :])
     # Should have ones on the last row
-    npt.assert_array_almost_equal(new_positions[3, :, :], np.ones_like(new_positions[3, :, :]))
+    npt.assert_array_almost_equal(
+        new_positions[3, :, :], np.ones_like(new_positions[3, :, :])
+    )
 
 
 def test_csv_data_change_ref_frame_y_up_to_z_up():
@@ -442,7 +502,9 @@ def test_csv_data_change_ref_frame_y_up_to_z_up():
     # Z should become Y
     npt.assert_array_almost_equal(new_positions[2, :, :], original_positions[1, :, :])
     # Should have ones on the last row
-    npt.assert_array_almost_equal(new_positions[3, :, :], np.ones_like(new_positions[3, :, :]))
+    npt.assert_array_almost_equal(
+        new_positions[3, :, :], np.ones_like(new_positions[3, :, :])
+    )
 
 
 def test_csv_data_change_ref_frame_same_frame():
@@ -466,7 +528,9 @@ def test_csv_data_change_ref_frame_invalid():
 
     # This should raise an error for unsupported conversion
     # Since only Z_UP <-> Y_UP are supported
-    with pytest.raises(ValueError, match="Cannot change from bad_value to ReferenceFrame.Z_UP."):
+    with pytest.raises(
+        ValueError, match="Cannot change from bad_value to ReferenceFrame.Z_UP."
+    ):
         # Create a mock invalid conversion by trying something not implemented
         marker_data.change_ref_frame("bad_value", ReferenceFrame.Z_UP)
         # Actually, same frame returns early, so let's not test this way
@@ -483,7 +547,9 @@ def test_csv_data_save():
 
     # Load the saved file and compare (marker names and positions is enough)
     loaded_marker_data = CsvData(csv_path=tmp_path)
-    npt.assert_array_almost_equal(marker_data.all_marker_positions, loaded_marker_data.all_marker_positions)
+    npt.assert_array_almost_equal(
+        marker_data.all_marker_positions, loaded_marker_data.all_marker_positions
+    )
     assert marker_data.marker_names == loaded_marker_data.marker_names
 
     if os.path.exists(tmp_path):
@@ -523,6 +589,7 @@ def test_c3d_data_initialization():
     assert marker_data.last_frame == 137
     assert marker_data.nb_frames == 138
     assert marker_data.nb_markers == 49
+    assert marker_data.frame_rate == 100.0
     assert len(marker_data.marker_names) == marker_data.nb_markers
     marker_names = marker_data.marker_names
     expected_marker_names = [
@@ -1016,7 +1083,9 @@ def test_c3d_data_initialization():
             ]
         ),
     )
-    npt.assert_almost_equal(np.ones((marker_data.nb_frames,)), marker_data.all_marker_positions[3, 0, :])
+    npt.assert_almost_equal(
+        np.ones((marker_data.nb_frames,)), marker_data.all_marker_positions[3, 0, :]
+    )
     # Test the 5th marker
     npt.assert_almost_equal(
         marker_data.all_marker_positions[0, 4, :],
@@ -1453,7 +1522,9 @@ def test_c3d_data_initialization():
             ]
         ),
     )
-    npt.assert_almost_equal(np.ones((marker_data.nb_frames,)), marker_data.all_marker_positions[3, 4, :])
+    npt.assert_almost_equal(
+        np.ones((marker_data.nb_frames,)), marker_data.all_marker_positions[3, 4, :]
+    )
 
 
 def test_c3d_data_initialization_with_frame_range():
@@ -2312,13 +2383,19 @@ def test_c3d_data_all_marker_positions_setter_wrong_shape():
 
     marker_data = C3dData(c3d_path=c3d_path)
 
-    with pytest.raises(ValueError, match=rf"Expected shape \(4, 49, 138\), got \(3, 49, 138\)."):
+    with pytest.raises(
+        ValueError, match=rf"Expected shape \(4, 49, 138\), got \(3, 49, 138\)."
+    ):
         marker_data.all_marker_positions = np.zeros((3, 49, 138))
 
-    with pytest.raises(ValueError, match=rf"Expected shape \(4, 49, 138\), got \(4, 10, 138\)."):
+    with pytest.raises(
+        ValueError, match=rf"Expected shape \(4, 49, 138\), got \(4, 10, 138\)."
+    ):
         marker_data.all_marker_positions = np.zeros((4, 10, 138))
 
-    with pytest.raises(ValueError, match=rf"Expected shape \(4, 49, 138\), got \(4, 49, 10\)."):
+    with pytest.raises(
+        ValueError, match=rf"Expected shape \(4, 49, 138\), got \(4, 49, 10\)."
+    ):
         marker_data.all_marker_positions = np.zeros((4, 49, 10))
 
 
@@ -2379,7 +2456,9 @@ def test_c3d_data_change_ref_frame_z_up_to_y_up():
     # Z should become -Y
     npt.assert_array_almost_equal(new_positions[2, :, :], -original_positions[1, :, :])
     # Should have ones on the last row
-    npt.assert_array_almost_equal(new_positions[3, :, :], np.ones_like(new_positions[3, :, :]))
+    npt.assert_array_almost_equal(
+        new_positions[3, :, :], np.ones_like(new_positions[3, :, :])
+    )
 
 
 def test_c3d_data_change_ref_frame_y_up_to_z_up():
@@ -2399,7 +2478,9 @@ def test_c3d_data_change_ref_frame_y_up_to_z_up():
     # Z should become Y
     npt.assert_array_almost_equal(new_positions[2, :, :], original_positions[1, :, :])
     # Should have ones on the last row
-    npt.assert_array_almost_equal(new_positions[3, :, :], np.ones_like(new_positions[3, :, :]))
+    npt.assert_array_almost_equal(
+        new_positions[3, :, :], np.ones_like(new_positions[3, :, :])
+    )
 
 
 def test_c3d_data_change_ref_frame_same_frame():
@@ -2422,7 +2503,9 @@ def test_c3d_data_change_ref_frame_invalid():
     marker_data = C3dData(c3d_path=c3d_path)
 
     # This should raise an error for unsupported conversion
-    with pytest.raises(ValueError, match="Cannot change from bad_value to ReferenceFrame.Z_UP."):
+    with pytest.raises(
+        ValueError, match="Cannot change from bad_value to ReferenceFrame.Z_UP."
+    ):
         marker_data.change_ref_frame("bad_value", ReferenceFrame.Z_UP)
 
 
@@ -2437,7 +2520,9 @@ def test_c3d_data_save():
 
     # Load the saved file and compare (marker names and positions is enough)
     loaded_marker_data = C3dData(c3d_path=tmp_path)
-    npt.assert_array_almost_equal(marker_data.all_marker_positions, loaded_marker_data.all_marker_positions)
+    npt.assert_array_almost_equal(
+        marker_data.all_marker_positions, loaded_marker_data.all_marker_positions
+    )
     assert marker_data.marker_names == loaded_marker_data.marker_names
 
     if os.path.exists(tmp_path):
@@ -2525,7 +2610,9 @@ def test_dict_data_initialization_with_frame_range():
 def test_dict_data_initialization_wrong_shape():
     # Test with wrong first dimension
     marker_dict = {
-        "marker1": np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]),  # Only 3 rows instead of 4
+        "marker1": np.array(
+            [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]
+        ),  # Only 3 rows instead of 4
     }
 
     with pytest.raises(
@@ -2585,8 +2672,17 @@ def test_dict_data_marker_indices():
 
 def test_dict_data_get_position_single_marker():
     marker_dict = {
-        "marker1": np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [1.0, 1.0, 1.0]]),
-        "marker2": np.array([[10.0, 11.0, 12.0], [13.0, 14.0, 15.0], [16.0, 17.0, 18.0], [1.0, 1.0, 1.0]]),
+        "marker1": np.array(
+            [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [1.0, 1.0, 1.0]]
+        ),
+        "marker2": np.array(
+            [
+                [10.0, 11.0, 12.0],
+                [13.0, 14.0, 15.0],
+                [16.0, 17.0, 18.0],
+                [1.0, 1.0, 1.0],
+            ]
+        ),
     }
 
     marker_data = DictData(marker_dict=marker_dict)
@@ -2621,7 +2717,10 @@ def test_dict_data_get_position_invalid_marker():
 
     marker_data = DictData(marker_dict=marker_dict)
 
-    with pytest.raises(ValueError, match=r"Marker name 'invalid_marker' not found in the marker dictionary."):
+    with pytest.raises(
+        ValueError,
+        match=r"Marker name 'invalid_marker' not found in the marker dictionary.",
+    ):
         marker_data.get_position(["invalid_marker"])
 
 
@@ -2641,21 +2740,34 @@ def test_dict_data_all_marker_positions():
 
 def test_dict_data_markers_center_position():
     marker_dict = {
-        "marker1": np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [1.0, 1.0, 1.0]]),
-        "marker2": np.array([[10.0, 11.0, 12.0], [13.0, 14.0, 15.0], [16.0, 17.0, 18.0], [1.0, 1.0, 1.0]]),
+        "marker1": np.array(
+            [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [1.0, 1.0, 1.0]]
+        ),
+        "marker2": np.array(
+            [
+                [10.0, 11.0, 12.0],
+                [13.0, 14.0, 15.0],
+                [16.0, 17.0, 18.0],
+                [1.0, 1.0, 1.0],
+            ]
+        ),
     }
 
     marker_data = DictData(marker_dict=marker_dict)
     center = marker_data.markers_center_position(["marker1", "marker2"])
 
-    expected_center = np.nanmean(marker_data.get_position(["marker1", "marker2"]), axis=1)
+    expected_center = np.nanmean(
+        marker_data.get_position(["marker1", "marker2"]), axis=1
+    )
     assert center.shape == (4, 3)
     npt.assert_array_equal(center, expected_center)
 
 
 def test_dict_data_mean_marker_position():
     marker_dict = {
-        "marker1": np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [1.0, 1.0, 1.0]]),
+        "marker1": np.array(
+            [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [1.0, 1.0, 1.0]]
+        ),
     }
 
     marker_data = DictData(marker_dict=marker_dict)
@@ -2668,7 +2780,9 @@ def test_dict_data_mean_marker_position():
 
 def test_dict_data_std_marker_position():
     marker_dict = {
-        "marker1": np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [1.0, 1.0, 1.0]]),
+        "marker1": np.array(
+            [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [1.0, 1.0, 1.0]]
+        ),
     }
 
     marker_data = DictData(marker_dict=marker_dict)

@@ -6,14 +6,20 @@ from enum import Enum
 from pathlib import Path
 
 from ..components.real.biomechanical_model_real import BiomechanicalModelReal
-from ..utils.marker_data import C3dData, MarkerData
+from ..utils.marker_data import (
+    C3dData,
+    MarkerData,
+    marker_data_with_stripped_prefixes,
+)
 from .full_body_model202_template import (
     model202_segment_specs,
     full_body_model202_template,
 )
 from .lower_limb_template import lower_limb_template
+from .lower_limb_template import LOWER_LIMB_KNEE_SARA_MAX_STATIC_AXIS_DEVIATION_DEGREES
 from .motive_57_template import (
     MOTIVE_57_FUNCTIONAL_C3D_FILENAMES,
+    MOTIVE_57_KNEE_SARA_MAX_STATIC_AXIS_DEVIATION_DEGREES,
     motive_57_functional_trials,
     motive_57_template,
 )
@@ -34,9 +40,20 @@ from .virtual_points import (
     VirtualAxisDefinition,
     VirtualPointDefinition,
     marker_data_with_virtual_features,
+    predictive_rab2002_shoulder_cor,
 )
 
 ProgressCallback = Callable[[str], None]
+
+DEFAULT_STATIC_C3D_PATTERNS = (
+    "Test_anato.c3d",
+    "Test_main.c3d",
+    "main_markers.c3d",
+    "*static*.c3d",
+    "*Static*.c3d",
+    "*func_anat.c3d",
+    "anatomical_posture.c3d",
+)
 
 
 class C3dModelPreset(Enum):
@@ -103,6 +120,54 @@ def supported_c3d_model_presets() -> tuple[C3dModelPreset, ...]:
         C3dModelPreset.LOWER_LIMBS_ANATOMICAL,
         C3dModelPreset.UPPER_LIMB,
     )
+
+
+def c3d_model_preset_from_cli_value(value: str | C3dModelPreset) -> C3dModelPreset:
+    """
+    Resolve a command-line preset value to a C3D model preset.
+    """
+    if isinstance(value, C3dModelPreset):
+        return value
+    raw_value = value.strip().lower()
+    for preset in C3dModelPreset:
+        if raw_value == preset.value.lower():
+            return preset
+    normalized_value = value.strip().lower().replace("_", "-")
+    aliases = {
+        "full-body": C3dModelPreset.FULL_BODY,
+        "model202": C3dModelPreset.FULL_BODY,
+        "motive-57": C3dModelPreset.MOTIVE_57,
+        "biobuddy-motive-57": C3dModelPreset.MOTIVE_57,
+        "biomech-motive-57": C3dModelPreset.MOTIVE_57,
+        "biomech-motive": C3dModelPreset.MOTIVE_57,
+        "lower-limbs": C3dModelPreset.LOWER_LIMBS_ANATOMICAL,
+        "lower-limbs-anatomical": C3dModelPreset.LOWER_LIMBS_ANATOMICAL,
+        "lower-limbs-functional": C3dModelPreset.LOWER_LIMBS,
+        "upper-limb": C3dModelPreset.UPPER_LIMB,
+        "from-scratch": C3dModelPreset.FROM_SCRATCH,
+    }
+    if normalized_value in aliases:
+        return aliases[normalized_value]
+    available_values = ", ".join(
+        sorted(set(aliases) | {preset.value for preset in C3dModelPreset})
+    )
+    raise ValueError(
+        f"Unsupported C3D model preset '{value}'. Available aliases: {available_values}."
+    )
+
+
+def default_static_virtual_points_for_c3d_model_preset(
+    preset: C3dModelPreset,
+) -> tuple[VirtualPointDefinition, ...]:
+    """
+    Return static virtual points required by a preset before model generation.
+    """
+    if preset == C3dModelPreset.MOTIVE_57:
+        return (
+            predictive_rab2002_shoulder_cor("LGJC", "LCAJ", "LHME", "LHLE"),
+            predictive_rab2002_shoulder_cor("RGJC", "RCAJ", "RHME", "RHLE"),
+        )
+    return ()
 
 
 def c3d_model_preset_virtual_features(
@@ -219,7 +284,8 @@ def _lower_limb_score_virtual_features() -> tuple[C3dPresetVirtualFeature, ...]:
             description=(
                 f"trial={trial_name}; parent markers={','.join(parent_markers)}; "
                 f"child markers={','.join(child_markers)}; expected axis={','.join(expected_axis)}; "
-                f"origin markers={','.join(expected_axis)}"
+                f"origin markers={','.join(expected_axis)}; "
+                f"max static deviation={LOWER_LIMB_KNEE_SARA_MAX_STATIC_AXIS_DEVIATION_DEGREES:g}"
             ),
         )
         for name, segment_name, trial_name, parent_markers, child_markers, expected_axis in sara_specs
@@ -284,7 +350,8 @@ def _motive_57_virtual_features() -> tuple[C3dPresetVirtualFeature, ...]:
                     description=(
                         f"trial={label}_knee_sara; parent markers={side}FTC,{side}TH,{side}FLE,{side}FME; "
                         f"child markers={side}FAX,{side}SK,{side}TTC,{side}FAL,{side}TAM; "
-                        f"expected axis={_motive_57_knee_axis_markers(side)}; origin markers={side}FLE,{side}FME"
+                        f"expected axis={_motive_57_knee_axis_markers(side)}; origin markers={side}FLE,{side}FME; "
+                        f"max static deviation={MOTIVE_57_KNEE_SARA_MAX_STATIC_AXIS_DEVIATION_DEGREES:g}"
                     ),
                 ),
                 C3dPresetVirtualFeature(
@@ -385,7 +452,11 @@ def _full_body_aor_expected_axis(segment) -> tuple[str, str]:
         return "CONDEXTD", "CONDINTD"
     if segment.name == "JambeG":
         return "CONDINTG", "CONEXTG"
-    parent = next(candidate for candidate in model202_segment_specs() if candidate.name == segment.parent_name)
+    parent = next(
+        candidate
+        for candidate in model202_segment_specs()
+        if candidate.name == segment.parent_name
+    )
     return (
         parent.marker_names[segment.functional_axis_indices[0] - 1],
         parent.marker_names[segment.functional_axis_indices[1] - 1],
@@ -417,19 +488,14 @@ def template_for_c3d_model_preset(preset: C3dModelPreset) -> ModelTemplate:
 def create_model_from_c3d_folder(
     calibration_folder: Path,
     preset: C3dModelPreset = C3dModelPreset.LOWER_LIMBS,
-    static_patterns: tuple[str, ...] = (
-        "Test_anato.c3d",
-        "Test_main.c3d",
-        "main_markers.c3d",
-        "*static*.c3d",
-        "*Static*.c3d",
-        "*func_anat.c3d",
-        "anatomical_posture.c3d",
-    ),
+    static_patterns: tuple[str, ...] = DEFAULT_STATIC_C3D_PATTERNS,
     static_virtual_points: tuple[VirtualPointDefinition, ...] = (),
     static_virtual_axes: tuple[VirtualAxisDefinition, ...] = (),
-    functional_virtual_points: dict[str, tuple[VirtualPointDefinition, ...]] | None = None,
+    functional_virtual_points: (
+        dict[str, tuple[VirtualPointDefinition, ...]] | None
+    ) = None,
     functional_virtual_axes: dict[str, tuple[VirtualAxisDefinition, ...]] | None = None,
+    marker_name_prefixes_to_strip: tuple[str, ...] = (),
     progress_callback: ProgressCallback | None = None,
 ) -> C3dModelCreationResult:
     """
@@ -441,10 +507,14 @@ def create_model_from_c3d_folder(
     static_file = find_static_c3d_file(calibration_folder, static_patterns)
     _notify_progress(progress_callback, f"Loading static C3D: {static_file.name}")
     static_data = C3dData(str(static_file))
+    static_data = marker_data_with_stripped_prefixes(
+        static_data, marker_name_prefixes_to_strip
+    )
     _notify_progress(progress_callback, "Loading functional C3D trials...")
     functional_data = load_functional_c3d_trials(
         template=template,
         calibration_folder=calibration_folder,
+        marker_name_prefixes_to_strip=marker_name_prefixes_to_strip,
         progress_callback=progress_callback,
     )
     return create_model_from_marker_data(
@@ -463,23 +533,19 @@ def create_model_from_c3d_folder(
 
 def create_lower_limb_model_variants_from_c3d_folder(
     calibration_folder: Path,
-    static_patterns: tuple[str, ...] = (
-        "Test_anato.c3d",
-        "Test_main.c3d",
-        "main_markers.c3d",
-        "*static*.c3d",
-        "*Static*.c3d",
-        "*func_anat.c3d",
-        "anatomical_posture.c3d",
-    ),
+    static_patterns: tuple[str, ...] = DEFAULT_STATIC_C3D_PATTERNS,
 ) -> C3dModelCreationVariantResults:
     """
     Create lower-limb models with functional SCoRE/SARA enabled and disabled from a C3D folder.
     """
-    static_data = C3dData(str(find_static_c3d_file(calibration_folder, static_patterns)))
+    static_data = C3dData(
+        str(find_static_c3d_file(calibration_folder, static_patterns))
+    )
     score_template = lower_limb_template(use_functional=True)
     no_score_template = lower_limb_template(use_functional=False)
-    functional_data = load_functional_c3d_trials(template=score_template, calibration_folder=calibration_folder)
+    functional_data = load_functional_c3d_trials(
+        template=score_template, calibration_folder=calibration_folder
+    )
     return create_lower_limb_model_variants_from_marker_data(
         static_data=static_data,
         functional_data=functional_data,
@@ -497,8 +563,16 @@ def create_lower_limb_model_variants_from_marker_data(
     """
     Create lower-limb model variants matching ``use_score=True`` and ``use_score=False`` workflows.
     """
-    score_template = lower_limb_template(use_functional=True) if score_template is None else score_template
-    no_score_template = lower_limb_template(use_functional=False) if no_score_template is None else no_score_template
+    score_template = (
+        lower_limb_template(use_functional=True)
+        if score_template is None
+        else score_template
+    )
+    no_score_template = (
+        lower_limb_template(use_functional=False)
+        if no_score_template is None
+        else no_score_template
+    )
     return C3dModelCreationVariantResults(
         score=create_model_from_marker_data(
             template=score_template,
@@ -525,7 +599,9 @@ def create_model_from_marker_data(
     output_filename: str | None = None,
     static_virtual_points: tuple[VirtualPointDefinition, ...] = (),
     static_virtual_axes: tuple[VirtualAxisDefinition, ...] = (),
-    functional_virtual_points: dict[str, tuple[VirtualPointDefinition, ...]] | None = None,
+    functional_virtual_points: (
+        dict[str, tuple[VirtualPointDefinition, ...]] | None
+    ) = None,
     functional_virtual_axes: dict[str, tuple[VirtualAxisDefinition, ...]] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> C3dModelCreationResult:
@@ -539,16 +615,22 @@ def create_model_from_marker_data(
         point_definitions=static_virtual_points,
         axis_definitions=static_virtual_axes,
     )
-    _notify_progress(progress_callback, "Applying virtual markers to functional data...")
+    _notify_progress(
+        progress_callback, "Applying virtual markers to functional data..."
+    )
     functional_data = _functional_data_with_virtual_features(
         functional_data=functional_data,
         point_definitions_by_trial=functional_virtual_points,
         axis_definitions_by_trial=functional_virtual_axes,
     )
     _notify_progress(progress_callback, "Checking marker availability...")
-    marker_reports = template_marker_availability(template, static_data, functional_data)
+    marker_reports = template_marker_availability(
+        template, static_data, functional_data
+    )
     _notify_progress(progress_callback, "Building biomechanical model...")
-    model = build_real_model(template=template, static_data=static_data, functional_data=functional_data)
+    model = build_real_model(
+        template=template, static_data=static_data, functional_data=functional_data
+    )
     _notify_progress(progress_callback, "Computing frame quality metrics...")
     frame_quality = compute_frame_quality(template, static_data)
     _notify_progress(progress_callback, "Finalizing generated model...")
@@ -574,15 +656,7 @@ def _notify_progress(progress_callback: ProgressCallback | None, message: str) -
 
 def find_static_c3d_file(
     calibration_folder: Path,
-    static_patterns: tuple[str, ...] = (
-        "Test_anato.c3d",
-        "Test_main.c3d",
-        "main_markers.c3d",
-        "*static*.c3d",
-        "*Static*.c3d",
-        "*func_anat.c3d",
-        "anatomical_posture.c3d",
-    ),
+    static_patterns: tuple[str, ...] = DEFAULT_STATIC_C3D_PATTERNS,
 ) -> Path:
     """
     Find the static/anatomical C3D used to instantiate marker-defined frames.
@@ -592,9 +666,13 @@ def find_static_c3d_file(
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
-            raise RuntimeError(f"Expected one static trial matching '{static_pattern}', found {len(matches)}.")
+            raise RuntimeError(
+                f"Expected one static trial matching '{static_pattern}', found {len(matches)}."
+            )
     patterns = ", ".join(static_patterns)
-    raise RuntimeError(f"No static trial found. Expected one file matching one of: {patterns}.")
+    raise RuntimeError(
+        f"No static trial found. Expected one file matching one of: {patterns}."
+    )
 
 
 def _default_output_filename(preset: C3dModelPreset) -> str:
@@ -621,8 +699,12 @@ def _functional_data_with_virtual_features(
     """
     Apply trial-specific virtual features to functional C3D marker data.
     """
-    point_definitions_by_trial = {} if point_definitions_by_trial is None else point_definitions_by_trial
-    axis_definitions_by_trial = {} if axis_definitions_by_trial is None else axis_definitions_by_trial
+    point_definitions_by_trial = (
+        {} if point_definitions_by_trial is None else point_definitions_by_trial
+    )
+    axis_definitions_by_trial = (
+        {} if axis_definitions_by_trial is None else axis_definitions_by_trial
+    )
     augmented_data = {}
     for trial_name, data in functional_data.items():
         augmented_data[trial_name] = marker_data_with_virtual_features(

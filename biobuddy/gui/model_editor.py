@@ -8,7 +8,9 @@ import numpy as np
 
 try:
     from scipy.spatial.transform import Rotation as _ScipyRotation
-except ImportError:  # pragma: no cover - SciPy is available in the GUI environment, but keep a tiny fallback.
+except (
+    ImportError
+):  # pragma: no cover - SciPy is available in the GUI environment, but keep a tiny fallback.
     _ScipyRotation = None
 
 from ..validation import MuscleValidator
@@ -56,6 +58,7 @@ from .validation_panel import validate_model_for_editor
 from .c3d_model_creation import (
     C3dModelCreationResult,
     C3dModelPreset,
+    c3d_model_preset_from_cli_value,
     create_model_from_marker_data,
     create_model_from_c3d_folder,
     supported_c3d_model_presets,
@@ -102,13 +105,50 @@ PREVIEW_AXIS_COLORS = {"x": "#dc2626", "y": "#16a34a", "z": "#2563eb"}
 PREVIEW_NEUTRAL_COLOR = "#6b7280"
 VIRTUAL_MARKER_METHOD_DISPLAY_LABELS = {"axis_projection": "projection on axis"}
 SARA_DIRECTION_METHODS = {"sara", "sara_direction"}
+WORKFLOW_PLAYBACK_DEFAULT_FPS = 30.0
+DEFAULT_SARA_STATIC_AXIS_DEVIATION_LIMIT_DEGREES = 30.0
 
 
 def _is_sara_direction_method(method: str) -> bool:
     return method in SARA_DIRECTION_METHODS
 
 
-def launch_model_editor() -> None:
+def _c3d_frame_rate(c3d_data) -> float | None:
+    """
+    Return a finite positive C3D marker frame rate when available.
+    """
+    if c3d_data is None:
+        return None
+    frame_rate = getattr(c3d_data, "frame_rate", None)
+    if callable(frame_rate):
+        frame_rate = frame_rate()
+    try:
+        frame_rate = float(frame_rate)
+    except (TypeError, ValueError):
+        return None
+    return frame_rate if np.isfinite(frame_rate) and frame_rate > 0 else None
+
+
+def _workflow_playback_fps(c3d_data) -> float:
+    """
+    Return the playback fps for a preview C3D, with a conservative fallback.
+    """
+    return _c3d_frame_rate(c3d_data) or WORKFLOW_PLAYBACK_DEFAULT_FPS
+
+
+def _workflow_playback_timer_interval_ms(c3d_data) -> int:
+    """
+    Return the timer interval needed to follow the C3D frame rate.
+    """
+    return max(1, int(round(1000.0 / _workflow_playback_fps(c3d_data))))
+
+
+def launch_model_editor(
+    *,
+    c3d_preset: str | C3dModelPreset | None = None,
+    c3d_folder: str | Path | None = None,
+    open_c3d_dialog: bool = False,
+) -> None:
     """
     Launch the Qt desktop model editor.
     """
@@ -159,6 +199,9 @@ def launch_model_editor() -> None:
         qt_open_hand_cursor = Qt.CursorShape.OpenHandCursor
         qt_closed_hand_cursor = Qt.CursorShape.ClosedHandCursor
         qt_right_button = Qt.MouseButton.RightButton
+        qt_shift_modifier = Qt.KeyboardModifier.ShiftModifier
+        qt_control_modifier = Qt.KeyboardModifier.ControlModifier
+        qt_meta_modifier = Qt.KeyboardModifier.MetaModifier
         qt_window_modal = Qt.WindowModality.WindowModal
         qpaint_antialiasing = QPainter.RenderHint.Antialiasing
         get_event_position = lambda event: event.position()
@@ -212,6 +255,9 @@ def launch_model_editor() -> None:
             qt_open_hand_cursor = Qt.OpenHandCursor
             qt_closed_hand_cursor = Qt.ClosedHandCursor
             qt_right_button = Qt.RightButton
+            qt_shift_modifier = Qt.ShiftModifier
+            qt_control_modifier = Qt.ControlModifier
+            qt_meta_modifier = Qt.MetaModifier
             qt_window_modal = Qt.WindowModal
             qpaint_antialiasing = QPainter.Antialiasing
             get_event_position = lambda event: event.localPos()
@@ -222,8 +268,23 @@ def launch_model_editor() -> None:
                 "The model editor requires a working Qt binding. Install BioBuddy with `pip install biobuddy[gui]` "
                 "or use an environment where PyQt5 is available."
             ) from error
+    try:
+        try:
+            from matplotlib.backends.backend_qtagg import (
+                FigureCanvasQTAgg as FigureCanvas,
+            )
+        except ImportError:
+            from matplotlib.backends.backend_qt5agg import (
+                FigureCanvasQTAgg as FigureCanvas,
+            )
+        from matplotlib.figure import Figure
+    except ImportError:
+        FigureCanvas = None
+        Figure = None
 
-    def _draw_legend_point(painter, center, color, label: str, text_x: int, text_y: int) -> None:
+    def _draw_legend_point(
+        painter, center, color, label: str, text_x: int, text_y: int
+    ) -> None:
         """
         Draw one point-style legend entry.
         """
@@ -294,6 +355,208 @@ def launch_model_editor() -> None:
         button.setMaximumWidth(34)
         button.setMinimumWidth(34)
         return button
+
+    class FunctionalFrameRangeBar(QWidget):
+        """
+        Lightweight frame-interval paint selector for functional trials.
+        """
+
+        def __init__(self):
+            super().__init__()
+            self.setMinimumHeight(18)
+            self.setMaximumHeight(22)
+            self.setEnabled(False)
+            self.setToolTip(
+                "Drag on the timeline to add or remove functional frames. Blue frames are used for SCoRE/SARA calculations."
+            )
+            self.frame_count = 0
+            self.start_frame = 0
+            self.end_frame = 0
+            self.selection_ranges = ()
+            self._dragging = False
+            self._drag_anchor = 0
+            self._drag_base_ranges = ()
+            self._drag_selecting = True
+            self.on_frame_dragged = None
+            self.on_selection_changed = None
+
+        def set_frame_count(self, frame_count: int) -> None:
+            frame_count = max(0, int(frame_count))
+            if frame_count == self.frame_count:
+                return
+            self.frame_count = frame_count
+            self.setEnabled(frame_count > 1)
+            self.start_frame = 0
+            self.end_frame = max(frame_count - 1, 0)
+            self.selection_ranges = ((0, frame_count - 1),) if frame_count > 0 else ()
+            self.update()
+
+        def selected_indices(self) -> tuple[int, ...]:
+            if not self.isEnabled() or self.frame_count <= 0:
+                return ()
+            return tuple(
+                index
+                for start, end in self.selection_ranges
+                for index in range(start, end + 1)
+            )
+
+        def set_selection(
+            self, start_frame: int, end_frame: int, *, notify: bool = True
+        ) -> None:
+            if self.frame_count <= 0:
+                return
+            start_frame = max(0, min(int(start_frame), self.frame_count - 1))
+            end_frame = max(0, min(int(end_frame), self.frame_count - 1))
+            self.start_frame = start_frame
+            self.end_frame = end_frame
+            self._set_selection_ranges(
+                self._normalized_ranges(((start_frame, end_frame),)),
+                notify=notify,
+            )
+
+        def paintEvent(self, event) -> None:
+            painter = QPainter(self)
+            _set_preview_render_hints(self, painter)
+            track_rect = self.rect().adjusted(8, 5, -8, -5)
+            painter.setPen(QPen(QColor("#cbd5e1"), 1))
+            painter.setBrush(QColor("#e2e8f0"))
+            painter.drawRect(track_rect)
+            if self.frame_count <= 1:
+                return
+            painter.setPen(QPen(QColor("#2563eb"), 1))
+            painter.setBrush(QColor("#2563eb"))
+            for start_frame, end_frame in self.selection_ranges:
+                left_x = self._x_from_frame(start_frame)
+                right_x = self._x_from_frame(end_frame + 1)
+                painter.drawRect(
+                    left_x,
+                    track_rect.top(),
+                    max(1, right_x - left_x),
+                    track_rect.height(),
+                )
+
+        def mousePressEvent(self, event) -> None:
+            if self.frame_count <= 1:
+                return
+            frame = self._frame_from_x(get_event_position(event).x())
+            self._dragging = True
+            self._drag_anchor = frame
+            self._drag_base_ranges = self.selection_ranges
+            self._drag_selecting = not self._frame_is_selected(frame)
+            self._set_drag_selection(frame, notify=False)
+            self._notify_drag_frame(frame)
+            event.accept()
+
+        def mouseMoveEvent(self, event) -> None:
+            if not self._dragging or self.frame_count <= 1:
+                return
+            frame = self._frame_from_x(get_event_position(event).x())
+            self._set_drag_selection(frame, notify=False)
+            self._notify_drag_frame(frame)
+            event.accept()
+
+        def mouseReleaseEvent(self, event) -> None:
+            if not self._dragging:
+                return
+            frame = self._frame_from_x(get_event_position(event).x())
+            self._set_drag_selection(frame, notify=True)
+            self._notify_drag_frame(frame)
+            self._dragging = False
+            event.accept()
+
+        def mouseDoubleClickEvent(self, event) -> None:
+            if self.frame_count <= 1:
+                return
+            self.set_selection(0, self.frame_count - 1, notify=True)
+            event.accept()
+
+        def _set_drag_selection(self, frame: int, *, notify: bool) -> None:
+            self.start_frame = self._drag_anchor
+            self.end_frame = frame
+            self._set_selection_ranges(
+                self._ranges_after_paint(
+                    self._drag_base_ranges,
+                    min(self._drag_anchor, frame),
+                    max(self._drag_anchor, frame),
+                    self._drag_selecting,
+                ),
+                notify=notify,
+            )
+
+        def _set_selection_ranges(
+            self, ranges: tuple[tuple[int, int], ...], *, notify: bool
+        ) -> None:
+            normalized_ranges = self._normalized_ranges(ranges)
+            if len(normalized_ranges) == 0 and self.frame_count > 0:
+                normalized_ranges = self.selection_ranges or (
+                    (0, self.frame_count - 1),
+                )
+            changed = normalized_ranges != self.selection_ranges
+            self.selection_ranges = normalized_ranges
+            self.update()
+            if changed and notify and self.on_selection_changed is not None:
+                self.on_selection_changed()
+
+        def _normalized_ranges(
+            self, ranges: tuple[tuple[int, int], ...]
+        ) -> tuple[tuple[int, int], ...]:
+            normalized = []
+            for start_frame, end_frame in ranges:
+                if self.frame_count <= 0:
+                    continue
+                start = max(0, min(int(start_frame), int(end_frame)))
+                end = min(self.frame_count - 1, max(int(start_frame), int(end_frame)))
+                normalized.append((start, end))
+            normalized.sort()
+            merged = []
+            for start, end in normalized:
+                if len(merged) == 0 or start > merged[-1][1] + 1:
+                    merged.append([start, end])
+                else:
+                    merged[-1][1] = max(merged[-1][1], end)
+            return tuple((start, end) for start, end in merged)
+
+        def _ranges_after_paint(
+            self,
+            ranges: tuple[tuple[int, int], ...],
+            start_frame: int,
+            end_frame: int,
+            selecting: bool,
+        ) -> tuple[tuple[int, int], ...]:
+            if selecting:
+                return self._normalized_ranges(ranges + ((start_frame, end_frame),))
+            updated_ranges = []
+            for start, end in self._normalized_ranges(ranges):
+                if end < start_frame or start > end_frame:
+                    updated_ranges.append((start, end))
+                    continue
+                if start < start_frame:
+                    updated_ranges.append((start, start_frame - 1))
+                if end > end_frame:
+                    updated_ranges.append((end_frame + 1, end))
+            return self._normalized_ranges(tuple(updated_ranges))
+
+        def _frame_is_selected(self, frame: int) -> bool:
+            return any(start <= frame <= end for start, end in self.selection_ranges)
+
+        def _notify_drag_frame(self, frame: int) -> None:
+            if self.on_frame_dragged is not None:
+                self.on_frame_dragged(frame)
+
+        def _x_from_frame(self, frame: int) -> int:
+            rect = self.rect().adjusted(8, 5, -8, -5)
+            if self.frame_count <= 1 or rect.width() <= 0:
+                return rect.left()
+            ratio = max(0.0, min(float(frame) / float(self.frame_count), 1.0))
+            return int(round(rect.left() + ratio * rect.width()))
+
+        def _frame_from_x(self, x_position: float) -> int:
+            rect = self.rect().adjusted(8, 5, -8, -5)
+            if self.frame_count <= 1 or rect.width() <= 0:
+                return 0
+            ratio = (float(x_position) - rect.left()) / float(rect.width())
+            ratio = max(0.0, min(ratio, 1.0))
+            return max(0, min(int(ratio * self.frame_count), self.frame_count - 1))
 
     def _marker_list_widget(
         *,
@@ -397,6 +660,96 @@ def launch_model_editor() -> None:
         layout.setColumnStretch(1, 1)
         return layout
 
+    class FunctionalReconstructionPlotWidget(QWidget):
+        """
+        Matplotlib panel for knee rotation DoF reconstructed from a functional trial.
+        """
+
+        def __init__(self):
+            super().__init__()
+            self.setMinimumHeight(260)
+            layout = QVBoxLayout(self)
+            _configure_panel_layout(layout, margin=0, spacing=0)
+            if FigureCanvas is None or Figure is None:
+                self.figure = None
+                self.canvas = None
+                self.fallback_label = _muted_label(
+                    "Matplotlib is not available; rotation DoF figure cannot be shown."
+                )
+                self.fallback_label.setAlignment(qt_alignment_center)
+                layout.addWidget(self.fallback_label)
+                return
+            self.figure = Figure(figsize=(5.0, 2.7), tight_layout=True)
+            self.canvas = FigureCanvas(self.figure)
+            self.fallback_label = None
+            layout.addWidget(self.canvas)
+            self.clear()
+
+        def clear(
+            self,
+            message: str = "Run a reconstruction diagnostic to plot knee rotations.",
+        ) -> None:
+            if self.canvas is None or self.figure is None:
+                if self.fallback_label is not None:
+                    self.fallback_label.setText(message)
+                return
+            self.figure.clear()
+            axes = self.figure.add_subplot(111)
+            axes.text(
+                0.5,
+                0.5,
+                message,
+                ha="center",
+                va="center",
+                transform=axes.transAxes,
+                color="#64748b",
+            )
+            axes.set_axis_off()
+            self.canvas.draw_idle()
+
+        def set_rotation_series(self, plot_data: dict[str, object] | None) -> None:
+            if not plot_data:
+                self.clear()
+                return
+            if self.canvas is None or self.figure is None:
+                if self.fallback_label is not None:
+                    self.fallback_label.setText(
+                        "Matplotlib is not available; rotation DoF figure cannot be shown."
+                    )
+                return
+            time = np.asarray(plot_data.get("time", ()), dtype=float)
+            series = tuple(plot_data.get("series", ()))
+            if time.size == 0 or len(series) == 0:
+                self.clear()
+                return
+            self.figure.clear()
+            axes = self.figure.add_subplot(111)
+            colors = ("#dc2626", "#16a34a", "#2563eb")
+            for series_index, series_item in enumerate(series):
+                if len(series_item) == 3:
+                    label, values, line_style = series_item
+                else:
+                    label, values = series_item
+                    line_style = "-"
+                values = np.asarray(values, dtype=float)
+                if values.size != time.size:
+                    continue
+                axes.plot(
+                    time,
+                    values,
+                    color=colors[series_index % len(colors)],
+                    linewidth=1.8,
+                    linestyle=line_style,
+                    label=label,
+                )
+            axes.axhline(0.0, color="#94a3b8", linewidth=0.8)
+            axes.set_title(str(plot_data.get("title", "Rotation DoF")))
+            axes.set_xlabel("Time (s)")
+            axes.set_ylabel("Rotation (deg)")
+            axes.grid(True, color="#e2e8f0", linewidth=0.8)
+            axes.legend(loc="best", frameon=False)
+            self.canvas.draw_idle()
+
     def _draw_preview_marker(
         painter,
         center,
@@ -427,7 +780,9 @@ def launch_model_editor() -> None:
                 )
             )
         elif shape == "square":
-            painter.drawRect(int(center.x()) - size // 2, int(center.y()) - size // 2, size, size)
+            painter.drawRect(
+                int(center.x()) - size // 2, int(center.y()) - size // 2, size, size
+            )
         else:
             painter.drawEllipse(center, size, size)
 
@@ -449,7 +804,9 @@ def launch_model_editor() -> None:
         painter.setPen(QPen(QColor("#111827"), 1))
         painter.drawText(text_x, text_y, label)
 
-    def _draw_preview_orientation_axes(painter, width: int, height: int, yaw: float, pitch: float) -> None:
+    def _draw_preview_orientation_axes(
+        painter, width: int, height: int, yaw: float, pitch: float
+    ) -> None:
         """
         Draw a small RGB orientation triad in a 3D preview corner.
         """
@@ -498,7 +855,9 @@ def launch_model_editor() -> None:
         scroll_area.setWidgetResizable(True)
         return scroll_area
 
-    def _resize_window_to_available_screen(window, application, preferred_width: int, preferred_height: int) -> None:
+    def _resize_window_to_available_screen(
+        window, application, preferred_width: int, preferred_height: int
+    ) -> None:
         """
         Resize a top-level window so it fits inside the usable area of the screen where it is displayed.
         """
@@ -512,7 +871,8 @@ def launch_model_editor() -> None:
         window.resize(width, height)
         window.move(
             available_geometry.x() + max((available_geometry.width() - width) // 2, 0),
-            available_geometry.y() + max((available_geometry.height() - height) // 2, 0),
+            available_geometry.y()
+            + max((available_geometry.height() - height) // 2, 0),
         )
 
     class _CallbackSignal:
@@ -556,7 +916,9 @@ def launch_model_editor() -> None:
 
         def text(self) -> str:
             sequence = "".join(
-                combo.currentText().lower() for combo in self._combos if combo.currentText().lower() in self._axes
+                combo.currentText().lower()
+                for combo in self._combos
+                if combo.currentText().lower() in self._axes
             )
             return sequence
 
@@ -571,8 +933,12 @@ def launch_model_editor() -> None:
             sequence = sequence[:3]
             self._syncing = True
             for index, combo in enumerate(self._combos):
-                current = sequence[index] if index < len(sequence) else self._empty_label
-                self._set_combo_items(combo, self._items_for_index(index, sequence), current)
+                current = (
+                    sequence[index] if index < len(sequence) else self._empty_label
+                )
+                self._set_combo_items(
+                    combo, self._items_for_index(index, sequence), current
+                )
             self._syncing = False
             self._refresh_items()
             self.textChanged.emit(self.text())
@@ -587,21 +953,43 @@ def launch_model_editor() -> None:
             values = [combo.currentText().lower() for combo in self._combos]
             self._syncing = True
             for index, combo in enumerate(self._combos):
-                current = values[index] if values[index] in self._axes else self._empty_label
-                self._set_combo_items(combo, self._items_for_index(index, values), current)
+                current = (
+                    values[index] if values[index] in self._axes else self._empty_label
+                )
+                self._set_combo_items(
+                    combo, self._items_for_index(index, values), current
+                )
             self._syncing = False
 
         def _items_for_index(self, index: int, values: list[str]) -> list[str]:
-            values = (values + [self._empty_label] * len(self._combos))[: len(self._combos)]
+            values = (values + [self._empty_label] * len(self._combos))[
+                : len(self._combos)
+            ]
             if self.allow_first_third_repeat:
-                blocked = {values[1]} if index in {0, 2} and values[1] in self._axes else set()
+                blocked = (
+                    {values[1]}
+                    if index in {0, 2} and values[1] in self._axes
+                    else set()
+                )
                 if index == 1:
-                    blocked = {axis for axis in (values[0], values[2]) if axis in self._axes}
+                    blocked = {
+                        axis for axis in (values[0], values[2]) if axis in self._axes
+                    }
             else:
-                blocked = {axis for i, axis in enumerate(values) if i != index and axis in self._axes}
-            current = values[index] if index < len(values) and values[index] in self._axes else None
+                blocked = {
+                    axis
+                    for i, axis in enumerate(values)
+                    if i != index and axis in self._axes
+                }
+            current = (
+                values[index]
+                if index < len(values) and values[index] in self._axes
+                else None
+            )
             items = [self._empty_label]
-            items.extend(axis for axis in self._axes if axis == current or axis not in blocked)
+            items.extend(
+                axis for axis in self._axes if axis == current or axis not in blocked
+            )
             return items
 
         @staticmethod
@@ -616,7 +1004,11 @@ def launch_model_editor() -> None:
         """
         Return the Qt accepted dialog value for PySide6 and PyQt5.
         """
-        return QDialog.DialogCode.Accepted if hasattr(QDialog, "DialogCode") else QDialog.Accepted
+        return (
+            QDialog.DialogCode.Accepted
+            if hasattr(QDialog, "DialogCode")
+            else QDialog.Accepted
+        )
 
     def _dialog_button(button_name: str):
         """
@@ -679,7 +1071,9 @@ def launch_model_editor() -> None:
             ],
             dtype=float,
         )
-        return np.eye(3) + math.sin(angle) * skew + (1.0 - math.cos(angle)) * (skew @ skew)
+        return (
+            np.eye(3) + math.sin(angle) * skew + (1.0 - math.cos(angle)) * (skew @ skew)
+        )
 
     def _initialize_preview_camera(widget) -> None:
         """
@@ -693,10 +1087,14 @@ def launch_model_editor() -> None:
         widget._preview_update_pending = False
         widget._preview_update_timer = QTimer(widget)
         widget._preview_update_timer.setSingleShot(True)
-        widget._preview_update_timer.timeout.connect(lambda: _flush_preview_camera_update(widget))
+        widget._preview_update_timer.timeout.connect(
+            lambda: _flush_preview_camera_update(widget)
+        )
         widget.setMouseTracking(True)
         widget.setCursor(qt_open_hand_cursor)
-        widget.setToolTip("Drag to rotate, use the mouse wheel to zoom, and double-click to reset the view.")
+        widget.setToolTip(
+            "Drag to rotate, use the mouse wheel to zoom, and double-click to reset the view."
+        )
 
     def _request_preview_camera_update(widget) -> None:
         """
@@ -718,7 +1116,9 @@ def launch_model_editor() -> None:
         """
         Use cheaper rendering while dragging, then restore antialiasing when the mouse is released.
         """
-        painter.setRenderHint(qpaint_antialiasing, not getattr(widget, "_is_preview_dragging", False))
+        painter.setRenderHint(
+            qpaint_antialiasing, not getattr(widget, "_is_preview_dragging", False)
+        )
 
     def _should_draw_preview_labels(widget) -> bool:
         """
@@ -728,11 +1128,24 @@ def launch_model_editor() -> None:
 
     def _functional_frame_selection_options(
         enabled: bool,
+        manual_frame_indices: tuple[int, ...] = (),
     ) -> FunctionalFrameSelectionOptions:
         """
         Return the default diverse-frame selection options used by the C3D workflow.
         """
-        return FunctionalFrameSelectionOptions(enabled=enabled)
+        return FunctionalFrameSelectionOptions(
+            enabled=enabled and len(manual_frame_indices) == 0,
+            manual_frame_indices=tuple(int(index) for index in manual_frame_indices),
+        )
+
+    def _uses_selected_functional_frames(report) -> bool:
+        options = getattr(report, "options", None)
+        if options is None:
+            return False
+        return (
+            bool(getattr(options, "enabled", False))
+            or len(getattr(options, "manual_frame_indices", ())) != 0
+        )
 
     def _reset_preview_camera(widget) -> None:
         """
@@ -761,7 +1174,9 @@ def launch_model_editor() -> None:
         delta_x = position.x() - widget._last_mouse_position.x()
         delta_y = position.y() - widget._last_mouse_position.y()
         rotation_vector = np.asarray([delta_y, delta_x, 0.0], dtype=float) * 0.006
-        widget.yaw = _rotation_matrix_from_rotvec(rotation_vector) @ np.asarray(widget.yaw, dtype=float)
+        widget.yaw = _rotation_matrix_from_rotvec(rotation_vector) @ np.asarray(
+            widget.yaw, dtype=float
+        )
         widget._last_mouse_position = position
         _request_preview_camera_update(widget)
 
@@ -799,6 +1214,8 @@ def launch_model_editor() -> None:
         add_end_button = _small_button("+")
         remove_start_button = _small_button("-")
         remove_end_button = _small_button("-")
+        swap_button = _small_button("<->")
+        swap_button.setToolTip("Swap start and end markers")
         return {
             "start_list": start_list,
             "end_list": end_list,
@@ -810,13 +1227,16 @@ def launch_model_editor() -> None:
             "add_end_button": add_end_button,
             "remove_start_button": remove_start_button,
             "remove_end_button": remove_end_button,
+            "swap_button": swap_button,
         }
 
     def _axis_vector_layout(index: int, controls: dict[str, object]):
         """
         Build the layout for one repeated anatomical frame vector.
         """
-        group = QGroupBox(f"Vector {index + 1}: mean(start markers) -> mean(end markers)")
+        group = QGroupBox(
+            f"Vector {index + 1}: mean(start markers) -> mean(end markers)"
+        )
         group.setMaximumWidth(520)
         layout = QVBoxLayout(group)
         marker_row = QHBoxLayout()
@@ -845,6 +1265,12 @@ def launch_model_editor() -> None:
             row.addWidget(marker_list)
             column.addLayout(row)
             marker_row.addLayout(column)
+        swap_column = QVBoxLayout()
+        swap_column.addWidget(QLabel(""))
+        swap_column.addStretch()
+        swap_column.addWidget(controls["swap_button"])
+        swap_column.addStretch()
+        marker_row.insertLayout(1, swap_column)
         layout.addLayout(marker_row)
         options = QHBoxLayout()
         options.addWidget(QLabel("Axis"))
@@ -879,13 +1305,16 @@ def launch_model_editor() -> None:
             self.virtual_markers = ()
             self.virtual_feature_c3d_data = {}
             self.use_diverse_functional_frames = False
+            self.manual_functional_frame_indices = ()
             self._score_solution_cache = {}
             self.current_vectors = ()
             self.current_origin_markers = ()
             self.frame_index = 0
             _initialize_preview_camera(self)
             self._sara_axis_line_cache = {}
+            self._sara_axis_solution_cache = {}
             self._source_position_cache = {}
+            self._axis_preview_context_cache_key = None
 
         def set_context(
             self,
@@ -895,13 +1324,32 @@ def launch_model_editor() -> None:
             segment_marker_groups: tuple[object, ...],
             selected_segment_name: str,
             axes: tuple[object, ...],
-            current_vectors: tuple[tuple[str, tuple[str, ...], tuple[str, ...], bool], ...],
+            current_vectors: tuple[
+                tuple[str, tuple[str, ...], tuple[str, ...], bool], ...
+            ],
             virtual_markers: tuple[object, ...] = (),
             virtual_feature_c3d_data: dict[str, object] | None = None,
             current_origin_markers: tuple[str, ...] = (),
             frame_index: int = 0,
             use_diverse_functional_frames: bool = False,
+            manual_functional_frame_indices: tuple[int, ...] = (),
         ) -> None:
+            manual_functional_frame_indices = tuple(
+                int(index) for index in manual_functional_frame_indices
+            )
+            context_cache_key = (
+                id(c3d_data),
+                id(virtual_feature_c3d_data),
+                id(segment_marker_groups),
+                id(axes),
+                id(virtual_markers),
+                use_diverse_functional_frames,
+                manual_functional_frame_indices,
+            )
+            if context_cache_key != self._axis_preview_context_cache_key:
+                self._sara_axis_line_cache.clear()
+                self._sara_axis_solution_cache.clear()
+                self._axis_preview_context_cache_key = context_cache_key
             self.c3d_data = c3d_data
             self.marker_names = marker_names
             self.label_marker_names = label_marker_names
@@ -909,12 +1357,14 @@ def launch_model_editor() -> None:
             self.selected_segment_name = selected_segment_name
             self.axes = axes
             self.virtual_markers = virtual_markers
-            self.virtual_feature_c3d_data = {} if virtual_feature_c3d_data is None else virtual_feature_c3d_data
+            self.virtual_feature_c3d_data = (
+                {} if virtual_feature_c3d_data is None else virtual_feature_c3d_data
+            )
             self.use_diverse_functional_frames = use_diverse_functional_frames
+            self.manual_functional_frame_indices = manual_functional_frame_indices
             self.current_vectors = current_vectors
             self.current_origin_markers = current_origin_markers
             self.frame_index = frame_index
-            self._sara_axis_line_cache.clear()
             self._source_position_cache.clear()
             self.update()
 
@@ -932,11 +1382,18 @@ def launch_model_editor() -> None:
             marker_records = []
             seen_records = set()
             for segment_index, group in enumerate(self.segment_marker_groups):
-                marker_names = tuple(dict.fromkeys(group.marker_names + group.technical_marker_names))
+                marker_names = tuple(
+                    dict.fromkeys(group.marker_names + group.technical_marker_names)
+                )
                 for marker_name in marker_names:
-                    if marker_name not in self.marker_names or marker_name not in self.c3d_data.marker_names:
+                    if (
+                        marker_name not in self.marker_names
+                        or marker_name not in self.c3d_data.marker_names
+                    ):
                         continue
-                    point = _marker_frame_position(self.c3d_data, marker_name, self.frame_index)
+                    point = _marker_frame_position(
+                        self.c3d_data, marker_name, self.frame_index
+                    )
                     record_key = (group.segment_name, marker_name)
                     if point is None or record_key in seen_records:
                         continue
@@ -951,10 +1408,14 @@ def launch_model_editor() -> None:
                         )
                     )
             if not getattr(self, "_is_preview_dragging", False):
-                for marker_name in _unassigned_marker_names(self.marker_names, self.segment_marker_groups):
+                for marker_name in _unassigned_marker_names(
+                    self.marker_names, self.segment_marker_groups
+                ):
                     if marker_name not in self.c3d_data.marker_names:
                         continue
-                    point = _marker_frame_position(self.c3d_data, marker_name, self.frame_index)
+                    point = _marker_frame_position(
+                        self.c3d_data, marker_name, self.frame_index
+                    )
                     record_key = ("unassigned", marker_name)
                     if point is None or record_key in seen_records:
                         continue
@@ -963,7 +1424,10 @@ def launch_model_editor() -> None:
             referenced_virtual_marker_names = self._referenced_virtual_marker_names()
             virtual_marker_records = []
             for marker in self.virtual_markers:
-                if getattr(self, "_is_preview_dragging", False) and marker.segment_name != self.selected_segment_name:
+                if (
+                    getattr(self, "_is_preview_dragging", False)
+                    and marker.segment_name != self.selected_segment_name
+                ):
                     continue
                 if (
                     marker.segment_name != self.selected_segment_name
@@ -973,13 +1437,18 @@ def launch_model_editor() -> None:
                 point = self._virtual_marker_position(marker)
                 if point is None:
                     continue
-                virtual_marker_records.append((marker.name, point, marker.segment_name, False, -1))
+                virtual_marker_records.append(
+                    (marker.name, point, marker.segment_name, False, -1)
+                )
             marker_records.extend(virtual_marker_records)
             virtual_axis_segments = []
             for axis in self.axes:
                 if not _is_virtual_feature_axis(axis):
                     continue
-                if getattr(self, "_is_preview_dragging", False) and axis.segment_name != self.selected_segment_name:
+                if (
+                    getattr(self, "_is_preview_dragging", False)
+                    and axis.segment_name != self.selected_segment_name
+                ):
                     continue
                 start, end = self._line_points_from_axis_definition(axis)
                 if start is not None and end is not None:
@@ -988,7 +1457,9 @@ def launch_model_editor() -> None:
             for axis in self.axes:
                 if _is_virtual_feature_axis(axis):
                     continue
-                start, end = self._line_points_from_axis_sources(axis.start_markers, axis.end_markers)
+                start, end = self._line_points_from_axis_sources(
+                    axis.start_markers, axis.end_markers
+                )
                 if start is not None and end is not None:
                     axis_segments.append((axis.axis, axis.keep_vector, start, end))
             saved_origins = []
@@ -1003,7 +1474,9 @@ def launch_model_editor() -> None:
                 end_markers,
                 keep_vector,
             ) in self.current_vectors:
-                start, end = self._line_points_from_axis_sources(start_markers, end_markers)
+                start, end = self._line_points_from_axis_sources(
+                    start_markers, end_markers
+                )
                 if start is not None and end is not None:
                     temporary_segments.append((axis_name, keep_vector, start, end))
             temporary_origin = self._mean_source_position(self.current_origin_markers)
@@ -1024,8 +1497,12 @@ def launch_model_editor() -> None:
                     "No visible marker for the selected segment",
                 )
                 return
-            projected_points = [_rotate_preview_point(point, self.yaw, self.pitch) for point in points]
-            transform = _fit_projection(projected_points, self.width(), self.height(), QPointF, self.zoom)
+            projected_points = [
+                _rotate_preview_point(point, self.yaw, self.pitch) for point in points
+            ]
+            transform = _fit_projection(
+                projected_points, self.width(), self.height(), QPointF, self.zoom
+            )
 
             _set_preview_label_font(painter)
             label_marker_names = set(self.label_marker_names)
@@ -1037,10 +1514,18 @@ def launch_model_editor() -> None:
                 color = (
                     QColor("#000000")
                     if segment_index == -2
-                    else (QColor("#7c3aed") if segment_index == -1 else QColor(_segment_preview_color(segment_index)))
+                    else (
+                        QColor("#7c3aed")
+                        if segment_index == -1
+                        else QColor(_segment_preview_color(segment_index))
+                    )
                 )
                 center = transform(_rotate_preview_point(point, self.yaw, self.pitch))
-                radius = 4 if segment_index == -2 else (7 if segment_index == -1 else (6 if is_selected else 4))
+                radius = (
+                    4
+                    if segment_index == -2
+                    else (7 if segment_index == -1 else (6 if is_selected else 4))
+                )
                 _draw_preview_marker(
                     painter,
                     center,
@@ -1050,7 +1535,11 @@ def launch_model_editor() -> None:
                     pen_width=3 if is_selected else 1,
                     marker_shape="diamond" if segment_index == -2 else None,
                 )
-                if _should_draw_preview_labels(self) and is_selected and marker_name in label_marker_names:
+                if (
+                    _should_draw_preview_labels(self)
+                    and is_selected
+                    and marker_name in label_marker_names
+                ):
                     painter.drawText(center.x() + 5, center.y() - 5, marker_name)
 
             for axis_name, keep_vector, start, end in axis_segments:
@@ -1071,7 +1560,9 @@ def launch_model_editor() -> None:
                 pen = QPen(QColor("#7c3aed"), 2)
                 pen.setStyle(qt_dash_line)
                 painter.setPen(pen)
-                start_screen = transform(_rotate_preview_point(start, self.yaw, self.pitch))
+                start_screen = transform(
+                    _rotate_preview_point(start, self.yaw, self.pitch)
+                )
                 end_screen = transform(_rotate_preview_point(end, self.yaw, self.pitch))
                 painter.drawLine(start_screen, end_screen)
                 painter.setPen(QPen(QColor("#7c3aed"), 1))
@@ -1087,15 +1578,23 @@ def launch_model_editor() -> None:
             if temporary_origin is not None:
                 painter.setBrush(QColor("#f59e0b"))
                 painter.setPen(QPen(QColor("#f59e0b"), 2))
-                center = transform(_rotate_preview_point(temporary_origin, self.yaw, self.pitch))
+                center = transform(
+                    _rotate_preview_point(temporary_origin, self.yaw, self.pitch)
+                )
                 painter.drawRect(int(center.x()) - 5, int(center.y()) - 5, 10, 10)
-                self._draw_local_frame(painter, transform, temporary_origin, temporary_segments, points)
-            _draw_preview_orientation_axes(painter, self.width(), self.height(), self.yaw, self.pitch)
+                self._draw_local_frame(
+                    painter, transform, temporary_origin, temporary_segments, points
+                )
+            _draw_preview_orientation_axes(
+                painter, self.width(), self.height(), self.yaw, self.pitch
+            )
             _draw_preview_interaction_hint(painter, self.width())
 
         def _line_points_from_axis_sources(
             self, start_markers: tuple[str, ...], end_markers: tuple[str, ...]
-        ) -> tuple[tuple[float, float, float] | None, tuple[float, float, float] | None]:
+        ) -> tuple[
+            tuple[float, float, float] | None, tuple[float, float, float] | None
+        ]:
             reference_axis = _virtual_axis_from_source_names(start_markers, self.axes)
             if reference_axis is not None:
                 return self._line_points_from_axis_definition(reference_axis)
@@ -1106,7 +1605,9 @@ def launch_model_editor() -> None:
 
         def _line_points_from_axis_definition(
             self, axis
-        ) -> tuple[tuple[float, float, float] | None, tuple[float, float, float] | None]:
+        ) -> tuple[
+            tuple[float, float, float] | None, tuple[float, float, float] | None
+        ]:
             if _is_virtual_feature_axis(axis):
                 sara_line = self._sara_axis_line(axis)
                 if sara_line != (None, None):
@@ -1121,11 +1622,17 @@ def launch_model_editor() -> None:
             vector = np.asarray(start, dtype=float) - np.asarray(origin, dtype=float)
             if np.linalg.norm(vector) < 1e-12:
                 return start, end
-            end = tuple(float(value) for value in np.asarray(origin, dtype=float) + vector)
+            end = tuple(
+                float(value) for value in np.asarray(origin, dtype=float) + vector
+            )
             return origin, end
 
-        def _mean_source_position(self, source_names: tuple[str, ...]) -> tuple[float, float, float] | None:
-            points = [self._source_position(source_name) for source_name in source_names]
+        def _mean_source_position(
+            self, source_names: tuple[str, ...]
+        ) -> tuple[float, float, float] | None:
+            points = [
+                self._source_position(source_name) for source_name in source_names
+            ]
             points = [point for point in points if point is not None]
             if len(points) == 0:
                 return None
@@ -1134,17 +1641,25 @@ def launch_model_editor() -> None:
                 return None
             return tuple(float(value) for value in point)
 
-        def _source_position(self, source_name: str) -> tuple[float, float, float] | None:
+        def _source_position(
+            self, source_name: str
+        ) -> tuple[float, float, float] | None:
             if source_name in self._source_position_cache:
                 return self._source_position_cache[source_name]
             if self.c3d_data is None or source_name == "":
                 return None
             if source_name in self.c3d_data.marker_names:
-                point = _marker_frame_position(self.c3d_data, source_name, self.frame_index)
+                point = _marker_frame_position(
+                    self.c3d_data, source_name, self.frame_index
+                )
                 self._source_position_cache[source_name] = point
                 return point
             virtual_marker = next(
-                (marker for marker in self.virtual_markers if marker.name == source_name),
+                (
+                    marker
+                    for marker in self.virtual_markers
+                    if marker.name == source_name
+                ),
                 None,
             )
             if virtual_marker is None:
@@ -1155,21 +1670,42 @@ def launch_model_editor() -> None:
 
         def _virtual_marker_position(self, marker) -> tuple[float, float, float] | None:
             if marker.name in self.c3d_data.marker_names:
-                return _marker_frame_position(self.c3d_data, marker.name, self.frame_index)
+                return _marker_frame_position(
+                    self.c3d_data, marker.name, self.frame_index
+                )
             if marker.method == "marker_mean":
                 return self._mean_source_position(_split_marker_names(marker.source))
             if marker.method == "axis_projection":
                 return self._axis_projection_marker_position(marker)
             if marker.method == "score":
                 return self._score_virtual_marker_position(marker)
+            if marker.method == "rab2002_shoulder":
+                geometry = _rab2002_geometry(
+                    self.c3d_data,
+                    marker.source,
+                    marker.name,
+                    marker.segment_name,
+                    self.frame_index,
+                )
+                return None if geometry is None else geometry[2]
             return self._functional_marker_preview_fallback(marker)
 
-        def _axis_projection_marker_position(self, marker) -> tuple[float, float, float] | None:
-            point = self._mean_source_position(_axis_projection_point_markers_from_payload(marker.source))
-            axis_name, axis_start_markers, axis_end_markers = _axis_projection_axis_from_payload(marker.equation)
+        def _axis_projection_marker_position(
+            self, marker
+        ) -> tuple[float, float, float] | None:
+            point = self._mean_source_position(
+                _axis_projection_point_markers_from_payload(marker.source)
+            )
+            axis_name, axis_start_markers, axis_end_markers = (
+                _axis_projection_axis_from_payload(marker.equation)
+            )
             if axis_name:
                 axis = next(
-                    (candidate for candidate in self.axes if candidate.name == axis_name),
+                    (
+                        candidate
+                        for candidate in self.axes
+                        if candidate.name == axis_name
+                    ),
                     None,
                 )
                 if axis is None:
@@ -1191,7 +1727,9 @@ def launch_model_editor() -> None:
             )
             return tuple(float(value) for value in projected)
 
-        def _functional_marker_preview_fallback(self, marker) -> tuple[float, float, float] | None:
+        def _functional_marker_preview_fallback(
+            self, marker
+        ) -> tuple[float, float, float] | None:
             payload = _key_value_payload(marker.source)
             for key in ("fallback", "point"):
                 marker_names = _split_marker_names(payload.get(key, ""))
@@ -1200,7 +1738,9 @@ def launch_model_editor() -> None:
                     return point
             return None
 
-        def _score_virtual_marker_position(self, marker) -> tuple[float, float, float] | None:
+        def _score_virtual_marker_position(
+            self, marker
+        ) -> tuple[float, float, float] | None:
             payload = _key_value_payload(marker.source)
             parent_marker_names = _split_marker_names(payload.get("parent markers", ""))
             child_marker_names = _split_marker_names(payload.get("child markers", ""))
@@ -1216,7 +1756,8 @@ def launch_model_editor() -> None:
             ):
                 return None
             if any(
-                marker_name not in preview_data.marker_names for marker_name in parent_marker_names + child_marker_names
+                marker_name not in preview_data.marker_names
+                for marker_name in parent_marker_names + child_marker_names
             ):
                 return None
             cache_key = (
@@ -1225,9 +1766,15 @@ def launch_model_editor() -> None:
                 parent_marker_names,
                 child_marker_names,
                 self.use_diverse_functional_frames,
+                self.manual_functional_frame_indices,
             )
             if cache_key in self._score_solution_cache:
-                cor_parent_local, cor_child_local = self._score_solution_cache[cache_key]
+                (
+                    cor_parent_local,
+                    cor_child_local,
+                    rt_parent_preview,
+                    rt_child_preview,
+                ) = self._score_solution_cache[cache_key]
             else:
                 try:
                     from ..components.generic.rigidbody.segment_coordinate_system import (
@@ -1235,10 +1782,18 @@ def launch_model_editor() -> None:
                     )
                     from ..model_modifiers.joint_center_tool import Score
 
-                    parent_functional_marker_data = functional_data.get_partial_dict_data(parent_marker_names)
-                    child_functional_marker_data = functional_data.get_partial_dict_data(child_marker_names)
-                    parent_preview_marker_data = preview_data.get_partial_dict_data(parent_marker_names)
-                    child_preview_marker_data = preview_data.get_partial_dict_data(child_marker_names)
+                    parent_functional_marker_data = (
+                        functional_data.get_partial_dict_data(parent_marker_names)
+                    )
+                    child_functional_marker_data = (
+                        functional_data.get_partial_dict_data(child_marker_names)
+                    )
+                    parent_preview_marker_data = preview_data.get_partial_dict_data(
+                        parent_marker_names
+                    )
+                    child_preview_marker_data = preview_data.get_partial_dict_data(
+                        child_marker_names
+                    )
                     rt_parent_func = SegmentCoordinateSystemUtils.rigidify(
                         functional_data=parent_functional_marker_data,
                         static_data=parent_preview_marker_data,
@@ -1250,43 +1805,52 @@ def launch_model_editor() -> None:
                     rt_parent_func, rt_child_func, _ = prepare_functional_rt_pair(
                         rt_parent_func,
                         rt_child_func,
-                        _functional_frame_selection_options(self.use_diverse_functional_frames),
+                        _functional_frame_selection_options(
+                            self.use_diverse_functional_frames,
+                            self.manual_functional_frame_indices,
+                        ),
                     )
-                    _, cor_parent_local, cor_child_local, _, _ = Score.perform_algorithm(rt_parent_func, rt_child_func)
+                    _, cor_parent_local, cor_child_local, _, _ = (
+                        Score.perform_algorithm(rt_parent_func, rt_child_func)
+                    )
+                    rt_parent_preview = SegmentCoordinateSystemUtils.rigidify(
+                        parent_preview_marker_data
+                    )
+                    rt_child_preview = SegmentCoordinateSystemUtils.rigidify(
+                        child_preview_marker_data
+                    )
                     self._score_solution_cache[cache_key] = (
                         cor_parent_local,
                         cor_child_local,
+                        rt_parent_preview,
+                        rt_child_preview,
                     )
                 except Exception:
                     return None
-            try:
-                from ..components.generic.rigidbody.segment_coordinate_system import (
-                    SegmentCoordinateSystemUtils,
-                )
-
-                parent_preview_marker_data = preview_data.get_partial_dict_data(parent_marker_names)
-                child_preview_marker_data = preview_data.get_partial_dict_data(child_marker_names)
-                rt_parent_preview = SegmentCoordinateSystemUtils.rigidify(parent_preview_marker_data)
-                rt_child_preview = SegmentCoordinateSystemUtils.rigidify(child_preview_marker_data)
-            except Exception:
-                return None
             frame_index = max(0, min(self.frame_index, len(rt_parent_preview) - 1))
             parent_cor = (
-                rt_parent_preview[frame_index] @ np.hstack((np.asarray(cor_parent_local).reshape(3), 1))
+                rt_parent_preview[frame_index]
+                @ np.hstack((np.asarray(cor_parent_local).reshape(3), 1))
             ).reshape(4)[:3]
             child_cor = (
-                rt_child_preview[frame_index] @ np.hstack((np.asarray(cor_child_local).reshape(3), 1))
+                rt_child_preview[frame_index]
+                @ np.hstack((np.asarray(cor_child_local).reshape(3), 1))
             ).reshape(4)[:3]
             cor = 0.5 * (parent_cor + child_cor)
             return tuple(float(value) for value in cor)
 
-        def _sara_axis_line(self, axis) -> tuple[tuple[float, float, float] | None, tuple[float, float, float] | None]:
+        def _sara_axis_line(
+            self, axis
+        ) -> tuple[
+            tuple[float, float, float] | None, tuple[float, float, float] | None
+        ]:
             cache_key = (
                 axis.name,
                 id(self.c3d_data),
                 id(self._feature_c3d_data(axis.source)),
                 self.frame_index,
                 self.use_diverse_functional_frames,
+                self.manual_functional_frame_indices,
             )
             if cache_key in self._sara_axis_line_cache:
                 return self._sara_axis_line_cache[cache_key]
@@ -1298,86 +1862,156 @@ def launch_model_editor() -> None:
             parent_marker_names = _split_marker_names(payload.get("parent markers", ""))
             child_marker_names = _split_marker_names(payload.get("child markers", ""))
             expected_start_markers = (
-                tuple(axis.start_markers) or _split_marker_names(payload.get("expected axis", ""))[:1]
+                tuple(axis.start_markers)
+                or _split_marker_names(payload.get("expected axis", ""))[:1]
             )
-            expected_end_markers = tuple(axis.end_markers) or _split_marker_names(payload.get("expected axis", ""))[1:]
-            origin_markers = tuple(axis.origin_markers) or _split_marker_names(payload.get("origin markers", ""))
+            expected_end_markers = (
+                tuple(axis.end_markers)
+                or _split_marker_names(payload.get("expected axis", ""))[1:]
+            )
+            origin_markers = tuple(axis.origin_markers) or _split_marker_names(
+                payload.get("origin markers", "")
+            )
             if len(parent_marker_names) == 0 or len(child_marker_names) == 0:
                 return (None, None)
             required_functional_markers = (
-                parent_marker_names + child_marker_names + expected_start_markers + expected_end_markers
+                parent_marker_names
+                + child_marker_names
+                + expected_start_markers
+                + expected_end_markers
             )
-            if any(marker_name not in functional_data.marker_names for marker_name in required_functional_markers):
+            if any(
+                marker_name not in functional_data.marker_names
+                for marker_name in required_functional_markers
+            ):
                 return (None, None)
             if any(
                 marker_name not in preview_data.marker_names
-                for marker_name in origin_markers + expected_start_markers + expected_end_markers
+                for marker_name in origin_markers
+                + expected_start_markers
+                + expected_end_markers
             ):
                 return (None, None)
-            try:
-                from ..components.generic.rigidbody.segment_coordinate_system import (
-                    SegmentCoordinateSystemUtils,
-                )
-                from ..model_modifiers.joint_center_tool import Sara
+            solution_cache_key = (
+                axis.name,
+                id(preview_data),
+                id(functional_data),
+                parent_marker_names,
+                child_marker_names,
+                expected_start_markers,
+                expected_end_markers,
+                origin_markers,
+                self.use_diverse_functional_frames,
+                self.manual_functional_frame_indices,
+            )
+            solution = self._sara_axis_solution_cache.get(solution_cache_key)
+            if solution is None:
+                try:
+                    from ..components.generic.rigidbody.segment_coordinate_system import (
+                        SegmentCoordinateSystemUtils,
+                    )
+                    from ..model_modifiers.joint_center_tool import Sara
 
-                parent_preview_marker_data = preview_data.get_partial_dict_data(parent_marker_names)
-                child_preview_marker_data = preview_data.get_partial_dict_data(child_marker_names)
-                parent_functional_marker_data = functional_data.get_partial_dict_data(parent_marker_names)
-                child_functional_marker_data = functional_data.get_partial_dict_data(child_marker_names)
-                rt_parent_func = SegmentCoordinateSystemUtils.rigidify(
-                    functional_data=parent_functional_marker_data,
-                    static_data=parent_preview_marker_data,
-                )
-                rt_child_func = SegmentCoordinateSystemUtils.rigidify(
-                    functional_data=child_functional_marker_data,
-                    static_data=child_preview_marker_data,
-                )
-                rt_parent_func, rt_child_func, frame_selection_report = prepare_functional_rt_pair(
-                    rt_parent_func,
-                    rt_child_func,
-                    _functional_frame_selection_options(self.use_diverse_functional_frames),
-                )
-                original_axis_global = np.nanmean(
-                    _mean_marker_series(
-                        functional_data,
-                        expected_end_markers,
+                    parent_preview_marker_data = preview_data.get_partial_dict_data(
+                        parent_marker_names
                     )
-                    - _mean_marker_series(functional_data, expected_start_markers),
-                    axis=1,
-                )
-                origin_positions_global = (
-                    functional_data.markers_center_position(origin_markers) if len(origin_markers) != 0 else None
-                )
-                if self.use_diverse_functional_frames and origin_positions_global is not None:
-                    origin_positions_global = subset_points_by_frame(
-                        origin_positions_global, frame_selection_report.selected_indices
+                    child_preview_marker_data = preview_data.get_partial_dict_data(
+                        child_marker_names
                     )
-                (
-                    _aor_mean_global,
-                    aor_parent_local,
-                    _aor_child_local,
-                    _cor_mean_global,
-                    cor_parent_local,
-                    _cor_child_local,
-                    rt_parent_valid,
-                    _rt_child_valid,
-                ) = Sara.perform_algorithm(
-                    rt_parent=rt_parent_func,
-                    rt_child=rt_child_func,
-                    original_axis_global=original_axis_global,
-                    origin_positions_global=origin_positions_global,
-                )
-            except Exception:
-                return (None, None)
-            frame_index = max(0, min(self.frame_index, len(rt_parent_valid) - 1))
+                    parent_functional_marker_data = (
+                        functional_data.get_partial_dict_data(parent_marker_names)
+                    )
+                    child_functional_marker_data = (
+                        functional_data.get_partial_dict_data(child_marker_names)
+                    )
+                    rt_parent_func = SegmentCoordinateSystemUtils.rigidify(
+                        functional_data=parent_functional_marker_data,
+                        static_data=parent_preview_marker_data,
+                    )
+                    rt_child_func = SegmentCoordinateSystemUtils.rigidify(
+                        functional_data=child_functional_marker_data,
+                        static_data=child_preview_marker_data,
+                    )
+                    rt_parent_func, rt_child_func, frame_selection_report = (
+                        prepare_functional_rt_pair(
+                            rt_parent_func,
+                            rt_child_func,
+                            _functional_frame_selection_options(
+                                self.use_diverse_functional_frames,
+                                self.manual_functional_frame_indices,
+                            ),
+                        )
+                    )
+                    original_axis_global = np.nanmean(
+                        _mean_marker_series(
+                            functional_data,
+                            expected_end_markers,
+                        )
+                        - _mean_marker_series(functional_data, expected_start_markers),
+                        axis=1,
+                    )
+                    origin_positions_global = (
+                        functional_data.markers_center_position(origin_markers)
+                        if len(origin_markers) != 0
+                        else None
+                    )
+                    if (
+                        _uses_selected_functional_frames(frame_selection_report)
+                        and origin_positions_global is not None
+                    ):
+                        origin_positions_global = subset_points_by_frame(
+                            origin_positions_global,
+                            frame_selection_report.selected_indices,
+                        )
+                    (
+                        _aor_mean_global,
+                        aor_parent_local,
+                        _aor_child_local,
+                        _cor_mean_global,
+                        cor_parent_local,
+                        _cor_child_local,
+                        _rt_parent_valid,
+                        _rt_child_valid,
+                    ) = Sara.perform_algorithm(
+                        rt_parent=rt_parent_func,
+                        rt_child=rt_child_func,
+                        original_axis_global=original_axis_global,
+                        origin_positions_global=origin_positions_global,
+                        recursive_outlier_removal=False,
+                    )
+                    rt_parent_preview = SegmentCoordinateSystemUtils.rigidify(
+                        parent_preview_marker_data
+                    )
+                    solution = (rt_parent_preview, aor_parent_local, cor_parent_local)
+                    self._sara_axis_solution_cache[solution_cache_key] = solution
+                except Exception:
+                    return (None, None)
+            rt_parent_preview, aor_parent_local, cor_parent_local = solution
+            frame_index = max(0, min(self.frame_index, len(rt_parent_preview) - 1))
             start_global = (
-                rt_parent_valid[frame_index] @ np.hstack((np.asarray(cor_parent_local).reshape(3), 1.0))
+                rt_parent_preview[frame_index]
+                @ np.hstack((np.asarray(cor_parent_local).reshape(3), 1.0))
             ).reshape(4)[:3]
             direction_global = (
-                rt_parent_valid[frame_index] @ np.hstack((np.asarray(aor_parent_local).reshape(3), 0.0))
+                rt_parent_preview[frame_index]
+                @ np.hstack((np.asarray(aor_parent_local).reshape(3), 0.0))
             ).reshape(4)[:3]
+            fallback_line = _sara_static_fallback_axis_line(
+                preview_data,
+                payload,
+                expected_start_markers,
+                expected_end_markers,
+                direction_global,
+                frame_index,
+                required_functional_markers,
+            )
+            if fallback_line is not None:
+                self._sara_axis_line_cache[cache_key] = fallback_line
+                return fallback_line
             start_point = tuple(float(value) for value in start_global)
-            raw_end_point = tuple(float(value) for value in start_global + direction_global)
+            raw_end_point = tuple(
+                float(value) for value in start_global + direction_global
+            )
             end_point = _scaled_axis_end_point(
                 preview_data,
                 start_point,
@@ -1409,22 +2043,36 @@ def launch_model_editor() -> None:
                 referenced_names.update(axis.origin_markers)
                 referenced_names.update(axis.start_markers)
                 referenced_names.update(axis.end_markers)
-            return {marker.name for marker in self.virtual_markers if marker.name in referenced_names}
+            return {
+                marker.name
+                for marker in self.virtual_markers
+                if marker.name in referenced_names
+            }
 
-        def _draw_local_frame(self, painter, transform, origin, temporary_segments, scene_points) -> None:
+        def _draw_local_frame(
+            self, painter, transform, origin, temporary_segments, scene_points
+        ) -> None:
             local_axes = _orthonormal_axes_from_vector_segments(temporary_segments)
             if len(local_axes) == 0:
                 return
             positions = np.asarray(scene_points, dtype=float)
-            scene_span = float(np.nanmax(np.ptp(positions, axis=0))) if positions.size != 0 else 1.0
+            scene_span = (
+                float(np.nanmax(np.ptp(positions, axis=0)))
+                if positions.size != 0
+                else 1.0
+            )
             axis_length = max(scene_span * 0.18, 1e-6)
             origin_array = np.asarray(origin, dtype=float)
-            origin_screen = transform(_rotate_preview_point(tuple(origin_array), self.yaw, self.pitch))
+            origin_screen = transform(
+                _rotate_preview_point(tuple(origin_array), self.yaw, self.pitch)
+            )
             for axis_name in ("x", "y", "z"):
                 if axis_name not in local_axes:
                     continue
                 endpoint = origin_array + axis_length * local_axes[axis_name]
-                endpoint_screen = transform(_rotate_preview_point(tuple(endpoint), self.yaw, self.pitch))
+                endpoint_screen = transform(
+                    _rotate_preview_point(tuple(endpoint), self.yaw, self.pitch)
+                )
                 painter.setPen(QPen(QColor(255, 255, 255, 220), 7))
                 painter.drawLine(origin_screen, endpoint_screen)
                 painter.setPen(QPen(QColor(_preview_axis_color(axis_name)), 5))
@@ -1466,15 +2114,22 @@ def launch_model_editor() -> None:
             self.groups = ()
             self.axes = ()
             self.virtual_markers = ()
+            self._empty_virtual_feature_c3d_data = {}
+            self.virtual_feature_c3d_data = self._empty_virtual_feature_c3d_data
             self.selected_marker_name = ""
             self.selected_method = "pointing"
             self.proximal_segment_name = ""
             self.distal_segment_name = ""
             self.frame_index = 0
             self.show_whole_body = False
+            self.show_kinematic_chain = False
+            self.fast_playback_preview = False
             self.use_diverse_functional_frames = False
+            self.manual_functional_frame_indices = ()
             self._score_solution_cache = {}
+            self._sara_axis_solution_cache = {}
             self._solution_preview_cache = {}
+            self._source_position_cache = {}
             _initialize_preview_camera(self)
 
         def set_context(
@@ -1485,6 +2140,7 @@ def launch_model_editor() -> None:
             groups: tuple[object, ...],
             axes: tuple[object, ...],
             virtual_markers: tuple[object, ...],
+            virtual_feature_c3d_data: dict[str, object] | None,
             selected_marker_name: str,
             selected_method: str,
             proximal_segment_name: str,
@@ -1492,27 +2148,52 @@ def launch_model_editor() -> None:
             frame_index: int,
             show_whole_body: bool,
             use_diverse_functional_frames: bool = False,
+            manual_functional_frame_indices: tuple[int, ...] = (),
+            show_kinematic_chain: bool = False,
+            fast_playback_preview: bool = False,
         ) -> None:
-            if (
+            manual_functional_frame_indices = tuple(
+                int(index) for index in manual_functional_frame_indices
+            )
+            normalized_virtual_feature_c3d_data = (
+                self._empty_virtual_feature_c3d_data
+                if virtual_feature_c3d_data is None
+                or len(virtual_feature_c3d_data) == 0
+                else virtual_feature_c3d_data
+            )
+            context_changed = (
                 c3d_data is not self.c3d_data
                 or solution_c3d_data is not self.solution_c3d_data
+                or normalized_virtual_feature_c3d_data
+                is not self.virtual_feature_c3d_data
                 or use_diverse_functional_frames != self.use_diverse_functional_frames
-            ):
+                or manual_functional_frame_indices
+                != self.manual_functional_frame_indices
+            )
+            frame_changed = frame_index != self.frame_index
+            if context_changed:
                 self._score_solution_cache.clear()
+                self._sara_axis_solution_cache.clear()
                 self._solution_preview_cache.clear()
+            if context_changed or frame_changed:
+                self._source_position_cache.clear()
             self.c3d_data = c3d_data
             self.solution_c3d_data = solution_c3d_data
             self.preview_source_label = preview_source_label
             self.groups = groups
             self.axes = axes
             self.virtual_markers = virtual_markers
+            self.virtual_feature_c3d_data = normalized_virtual_feature_c3d_data
             self.selected_marker_name = selected_marker_name
             self.selected_method = selected_method
             self.proximal_segment_name = proximal_segment_name
             self.distal_segment_name = distal_segment_name
             self.frame_index = frame_index
             self.show_whole_body = show_whole_body
+            self.show_kinematic_chain = show_kinematic_chain
+            self.fast_playback_preview = fast_playback_preview
             self.use_diverse_functional_frames = use_diverse_functional_frames
+            self.manual_functional_frame_indices = manual_functional_frame_indices
             self.update()
 
         def paintEvent(self, event) -> None:
@@ -1534,11 +2215,15 @@ def launch_model_editor() -> None:
             highlighted_marker_names = set()
             technical_marker_names = set()
             segment_by_marker = {}
-            segment_index_by_name = {group.segment_name: index for index, group in enumerate(self.groups)}
+            segment_index_by_name = {
+                group.segment_name: index for index, group in enumerate(self.groups)
+            }
             for group in self.groups:
                 if group.segment_name not in highlighted_segments:
                     continue
-                marker_names = tuple(dict.fromkeys(group.marker_names + group.technical_marker_names))
+                marker_names = tuple(
+                    dict.fromkeys(group.marker_names + group.technical_marker_names)
+                )
                 highlighted_marker_names.update(marker_names)
                 technical_marker_names.update(group.technical_marker_names)
                 for marker_name in marker_names:
@@ -1552,7 +2237,9 @@ def launch_model_editor() -> None:
                 getattr(self, "_is_preview_dragging", False),
             )
             for marker_name in marker_names_to_draw:
-                point = _marker_frame_position(self.c3d_data, marker_name, self.frame_index)
+                point = _marker_frame_position(
+                    self.c3d_data, marker_name, self.frame_index
+                )
                 if point is None:
                     continue
                 segment_name = segment_by_marker.get(marker_name, "")
@@ -1567,21 +2254,30 @@ def launch_model_editor() -> None:
                     )
                 )
 
+            chain_scene = self._kinematic_chain_scene()
+            chain_origins = chain_scene["segment_origins"]
+            chain_links = chain_scene["links"]
+            chain_frames = chain_scene["segment_frames"]
+            chain_frame_length = chain_scene["frame_length"]
             virtual_points = []
             selected_virtual_markers = [
-                marker for marker in self.virtual_markers if marker.name == self.selected_marker_name
+                marker
+                for marker in self.virtual_markers
+                if marker.name == self.selected_marker_name
             ]
             for marker in selected_virtual_markers:
+                if self.fast_playback_preview:
+                    continue
                 if marker.method not in {"marker_mean", "axis_projection"}:
                     continue
-                point = _mean_frame_position(
-                    self.c3d_data,
-                    (
-                        _axis_projection_point_markers_from_payload(marker.source)
-                        if marker.method == "axis_projection"
-                        else _split_marker_names(marker.source)
-                    ),
-                    self.frame_index,
+                point = (
+                    self._axis_projection_marker_position(marker)
+                    if marker.method == "axis_projection"
+                    else _mean_frame_position(
+                        self.c3d_data,
+                        _split_marker_names(marker.source),
+                        self.frame_index,
+                    )
                 )
                 if point is not None:
                     virtual_points.append((marker.name, point, marker.segment_name))
@@ -1589,20 +2285,57 @@ def launch_model_editor() -> None:
             solution_points = []
             solution_axes = []
             if self.selected_method == "score":
-                solution_points.extend(
-                    self._score_solution_points(self.proximal_segment_name, self.distal_segment_name)
-                )
+                if not self.fast_playback_preview:
+                    solution_points.extend(
+                        self._score_solution_points(
+                            self.proximal_segment_name, self.distal_segment_name
+                        )
+                    )
             elif _is_sara_direction_method(self.selected_method):
-                solution_axes.extend(self._sara_axis_solution_lines())
+                if not self.fast_playback_preview:
+                    solution_axes.extend(self._sara_axis_solution_lines())
             elif self.selected_method in set(PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS):
-                proximal_point = self._technical_segment_center(self.proximal_segment_name)
-                distal_point = self._technical_segment_center(self.distal_segment_name)
-                if proximal_point is not None:
-                    solution_points.append(("parent", proximal_point))
-                if distal_point is not None:
-                    solution_points.append(("segment", distal_point))
+                selected_marker = next(
+                    (
+                        marker
+                        for marker in self.virtual_markers
+                        if marker.name == self.selected_marker_name
+                    ),
+                    None,
+                )
+                if (
+                    self.selected_method == "rab2002_shoulder"
+                    and selected_marker is not None
+                ):
+                    geometry = _rab2002_geometry(
+                        self.c3d_data,
+                        selected_marker.source,
+                        selected_marker.name,
+                        selected_marker.segment_name,
+                        self.frame_index,
+                    )
+                    if geometry is not None:
+                        caj, epicondyle_mid, gjc = geometry
+                        solution_points.extend(
+                            (("caj", caj), ("mid", epicondyle_mid), ("mean", gjc))
+                        )
+                else:
+                    proximal_point = self._technical_segment_center(
+                        self.proximal_segment_name
+                    )
+                    distal_point = self._technical_segment_center(
+                        self.distal_segment_name
+                    )
+                    if proximal_point is not None:
+                        solution_points.append(("parent", proximal_point))
+                    if distal_point is not None:
+                        solution_points.append(("segment", distal_point))
 
             points = [record[1] for record in marker_records]
+            points.extend(chain_origins.values())
+            for _, _, start_point, end_point in chain_links:
+                points.extend((start_point, end_point))
+            points.extend(chain_scene["points"])
             points.extend(point for _, point, _ in virtual_points)
             points.extend(point for _, point in solution_points)
             for _, _, start_point, end_point in solution_axes:
@@ -1620,11 +2353,30 @@ def launch_model_editor() -> None:
             focus_points.extend(point for _, point in solution_points)
             for _, _, start_point, end_point in solution_axes:
                 focus_points.extend((start_point, end_point))
-            points_to_fit = points if self.show_whole_body or len(focus_points) == 0 else focus_points
-            projected_points = [_rotate_preview_point(point, self.yaw, self.pitch) for point in points_to_fit]
-            transform = _fit_projection(projected_points, self.width(), self.height(), QPointF, self.zoom)
+            points_to_fit = (
+                points
+                if self.show_whole_body
+                or self.show_kinematic_chain
+                or len(focus_points) == 0
+                else focus_points
+            )
+            projected_points = [
+                _rotate_preview_point(point, self.yaw, self.pitch)
+                for point in points_to_fit
+            ]
+            transform = _fit_projection(
+                projected_points, self.width(), self.height(), QPointF, self.zoom
+            )
 
             _set_preview_label_font(painter)
+            self._draw_kinematic_chain(
+                painter,
+                transform,
+                chain_origins,
+                chain_links,
+                chain_frames,
+                chain_frame_length,
+            )
             for (
                 marker_name,
                 point,
@@ -1636,18 +2388,27 @@ def launch_model_editor() -> None:
                 marker_records,
                 key=lambda record: _preview_depth(record[1], self.yaw, self.pitch),
             ):
-                color = QColor(_segment_preview_color(segment_index)) if is_highlighted else QColor("#cbd5e1")
+                color = (
+                    QColor(_segment_preview_color(segment_index))
+                    if is_highlighted
+                    else QColor("#cbd5e1")
+                )
                 center = transform(_rotate_preview_point(point, self.yaw, self.pitch))
                 if is_technical:
                     size = 8 if is_highlighted else 5
-                    _draw_preview_marker(painter, center, color, is_square=True, size=size)
+                    _draw_preview_marker(
+                        painter, center, color, is_square=True, size=size
+                    )
                 else:
                     radius = 4 if is_highlighted else 2
-                    _draw_preview_marker(painter, center, color, is_square=False, size=radius)
+                    _draw_preview_marker(
+                        painter, center, color, is_square=False, size=radius
+                    )
                 if (
                     _should_draw_preview_labels(self)
                     and is_highlighted
-                    and segment_name in {self.proximal_segment_name, self.distal_segment_name}
+                    and segment_name
+                    in {self.proximal_segment_name, self.distal_segment_name}
                 ):
                     painter.drawText(center.x() + 5, center.y() - 5, marker_name)
 
@@ -1666,38 +2427,69 @@ def launch_model_editor() -> None:
                 "parent": "#f97316",
                 "segment": "#0891b2",
                 "child": "#0891b2",
+                "caj": "#f97316",
+                "mid": "#0891b2",
                 "mean": "#111827",
+                "fallback": "#64748b",
             }
             solution_offsets = {
                 "parent": (10, -12),
                 "segment": (10, 6),
+                "caj": (10, -12),
+                "mid": (10, 6),
                 "mean": (10, 24),
+            }
+            solution_labels = {
+                "caj": "CAJ",
+                "mid": "mid epicondyles",
+                "mean": "GJC" if self.selected_method == "rab2002_shoulder" else "mean",
             }
             for label, point in solution_points:
                 center = transform(_rotate_preview_point(point, self.yaw, self.pitch))
                 painter.setPen(QPen(QColor(solution_colors[label]), 3))
                 painter.setBrush(QColor("white"))
                 painter.drawEllipse(center, 8, 8)
-                prefix = "SCoRE" if self.selected_method == "score" else "center"
+                prefix = (
+                    "SCoRE"
+                    if self.selected_method == "score"
+                    else (
+                        "Rab"
+                        if self.selected_method == "rab2002_shoulder"
+                        else "center"
+                    )
+                )
                 offset_x, offset_y = solution_offsets.get(label, (8, -8))
                 if _should_draw_preview_labels(self):
                     painter.drawText(
                         center.x() + offset_x,
                         center.y() + offset_y,
-                        f"{prefix} {label}",
+                        f"{prefix} {solution_labels.get(label, label)}",
                     )
             if len(solution_points) >= 2:
                 painter.setPen(QPen(QColor("#111827"), 1))
                 painter.drawLine(
-                    transform(_rotate_preview_point(solution_points[0][1], self.yaw, self.pitch)),
-                    transform(_rotate_preview_point(solution_points[1][1], self.yaw, self.pitch)),
+                    transform(
+                        _rotate_preview_point(
+                            solution_points[0][1], self.yaw, self.pitch
+                        )
+                    ),
+                    transform(
+                        _rotate_preview_point(
+                            solution_points[1][1], self.yaw, self.pitch
+                        )
+                    ),
                 )
 
             for role, axis_name, start_point, end_point in solution_axes:
-                start = transform(_rotate_preview_point(start_point, self.yaw, self.pitch))
+                start = transform(
+                    _rotate_preview_point(start_point, self.yaw, self.pitch)
+                )
                 end = transform(_rotate_preview_point(end_point, self.yaw, self.pitch))
                 line_color = QColor(solution_colors.get(role, "#111827"))
-                painter.setPen(QPen(line_color, 4 if role == "mean" else 2))
+                axis_pen = QPen(line_color, 4 if role == "mean" else 2)
+                if role == "fallback":
+                    axis_pen.setStyle(qt_dash_line)
+                painter.setPen(axis_pen)
                 painter.drawLine(start, end)
                 painter.setBrush(QColor("white"))
                 painter.setPen(QPen(line_color, 3))
@@ -1705,28 +2497,471 @@ def launch_model_editor() -> None:
                 painter.setBrush(line_color)
                 painter.drawEllipse(end, 4, 4)
                 if _should_draw_preview_labels(self):
-                    painter.drawText(end.x() + 8, end.y() - 8, f"SARA {role} {axis_name}")
+                    prefix = "Static fallback" if role == "fallback" else "SARA"
+                    painter.drawText(
+                        end.x() + 8, end.y() - 8, f"{prefix} {role} {axis_name}"
+                    )
 
             painter.setPen(QPen(QColor("#111827"), 1))
             if _should_draw_preview_labels(self) and self.preview_source_label:
-                painter.drawText(12, self.height() - 12, f"Preview: {self.preview_source_label}")
-            _draw_preview_orientation_axes(painter, self.width(), self.height(), self.yaw, self.pitch)
+                painter.drawText(
+                    12, self.height() - 12, f"Preview: {self.preview_source_label}"
+                )
+            _draw_preview_orientation_axes(
+                painter, self.width(), self.height(), self.yaw, self.pitch
+            )
             _draw_preview_interaction_hint(painter, self.width())
             if _should_draw_preview_labels(self):
                 self._draw_legend(painter)
 
-        def _technical_segment_center(self, segment_name: str) -> tuple[float, float, float] | None:
+        def _kinematic_chain_scene(self) -> dict[str, object]:
+            if not self.show_kinematic_chain or self.c3d_data is None:
+                return {
+                    "segment_origins": {},
+                    "segment_frames": {},
+                    "links": [],
+                    "frame_length": 1.0,
+                    "points": [],
+                }
+            origins: dict[str, tuple[float, float, float]] = {}
+            frames: dict[str, dict[str, np.ndarray]] = {}
+            points: list[tuple[float, float, float]] = []
+            for group in self.groups:
+                point = self._segment_origin(group)
+                if point is not None:
+                    origins[group.segment_name] = point
+                    # Keep chain origins anatomical during fast playback; only skip
+                    # local frame axes and functional overlays to keep animation fluid.
+                    frames[group.segment_name] = (
+                        {}
+                        if self.fast_playback_preview
+                        else self._segment_local_axes(group.segment_name)
+                    )
+                    points.append(point)
+            links = []
+            for group in self.groups:
+                parent_name = group.parent_name
+                if parent_name in {"", "root"}:
+                    continue
+                start = origins.get(parent_name)
+                end = origins.get(group.segment_name)
+                if start is None or end is None:
+                    continue
+                links.append((parent_name, group.segment_name, start, end))
+                points.extend((start, end))
+            frame_length = max(self._scene_span(points) * 0.12, 1e-6)
+            highlighted_segments = {
+                self.proximal_segment_name,
+                self.distal_segment_name,
+            }
+            for segment_name, origin in origins.items():
+                if segment_name not in highlighted_segments:
+                    continue
+                origin_array = np.asarray(origin, dtype=float)
+                for axis_vector in frames.get(segment_name, {}).values():
+                    endpoint = origin_array + frame_length * axis_vector
+                    points.append(tuple(float(value) for value in endpoint))
+            return {
+                "segment_origins": origins,
+                "segment_frames": frames,
+                "links": links,
+                "frame_length": frame_length,
+                "points": points,
+            }
+
+        def _draw_kinematic_chain(
+            self,
+            painter,
+            transform,
+            origins: dict[str, tuple[float, float, float]],
+            links: list[
+                tuple[str, str, tuple[float, float, float], tuple[float, float, float]]
+            ],
+            frames: dict[str, dict[str, np.ndarray]],
+            frame_length: float,
+        ) -> None:
+            if not origins:
+                return
+            highlighted_segments = {
+                self.proximal_segment_name,
+                self.distal_segment_name,
+            }
+            for _parent_name, child_name, start_point, end_point in links:
+                highlighted = child_name in highlighted_segments
+                painter.setPen(
+                    QPen(
+                        QColor("#334155" if highlighted else "#94a3b8"),
+                        4 if highlighted else 2,
+                    )
+                )
+                painter.drawLine(
+                    transform(_rotate_preview_point(start_point, self.yaw, self.pitch)),
+                    transform(_rotate_preview_point(end_point, self.yaw, self.pitch)),
+                )
+            for segment_name, origin in origins.items():
+                highlighted = segment_name in highlighted_segments
+                center = transform(_rotate_preview_point(origin, self.yaw, self.pitch))
+                painter.setBrush(QColor("#ffffff" if highlighted else "#e2e8f0"))
+                painter.setPen(QPen(QColor("#0f172a"), 3 if highlighted else 1))
+                painter.drawEllipse(
+                    center, 6 if highlighted else 4, 6 if highlighted else 4
+                )
+                if _should_draw_preview_labels(self):
+                    painter.drawText(center.x() + 7, center.y() - 7, segment_name)
+                if highlighted:
+                    self._draw_chain_segment_frame(
+                        painter,
+                        transform,
+                        origin,
+                        frames.get(segment_name, {}),
+                        frame_length,
+                    )
+
+        def _draw_chain_segment_frame(
+            self,
+            painter,
+            transform,
+            origin: tuple[float, float, float],
+            axes: dict[str, np.ndarray],
+            frame_length: float,
+        ) -> None:
+            if len(axes) == 0:
+                return
+            origin_array = np.asarray(origin, dtype=float)
+            origin_screen = transform(
+                _rotate_preview_point(origin, self.yaw, self.pitch)
+            )
+            for axis_name in ("x", "y", "z"):
+                axis_vector = axes.get(axis_name)
+                if axis_vector is None:
+                    continue
+                endpoint = origin_array + frame_length * axis_vector
+                endpoint_screen = transform(
+                    _rotate_preview_point(tuple(endpoint), self.yaw, self.pitch)
+                )
+                painter.setPen(QPen(QColor(255, 255, 255, 220), 7))
+                painter.drawLine(origin_screen, endpoint_screen)
+                painter.setPen(QPen(QColor(_preview_axis_color(axis_name)), 4))
+                painter.drawLine(origin_screen, endpoint_screen)
+                if _should_draw_preview_labels(self):
+                    painter.drawText(
+                        endpoint_screen.x() + 4,
+                        endpoint_screen.y() - 4,
+                        axis_name.upper(),
+                    )
+
+        def _segment_origin(self, group) -> tuple[float, float, float] | None:
+            for axis in self._local_frame_axes(group.segment_name):
+                origin = self._mean_source_position(axis.origin_markers)
+                if origin is not None:
+                    return origin
+            marker_names = tuple(
+                dict.fromkeys(group.marker_names + group.technical_marker_names)
+            )
+            return self._mean_source_position(marker_names)
+
+        def _segment_local_axes(self, segment_name: str) -> dict[str, np.ndarray]:
+            vector_segments = []
+            for axis in self._local_frame_axes(segment_name)[:2]:
+                start, end = self._line_points_from_axis_sources(
+                    axis.start_markers, axis.end_markers
+                )
+                if start is not None and end is not None:
+                    vector_segments.append((axis.axis, axis.keep_vector, start, end))
+            return _orthonormal_axes_from_vector_segments(tuple(vector_segments))
+
+        def _local_frame_axes(self, segment_name: str):
+            return tuple(
+                axis
+                for axis in self.axes
+                if axis.segment_name == segment_name
+                and not _is_virtual_feature_axis(axis)
+            )
+
+        def _line_points_from_axis_sources(
+            self, start_markers: tuple[str, ...], end_markers: tuple[str, ...]
+        ) -> tuple[
+            tuple[float, float, float] | None, tuple[float, float, float] | None
+        ]:
+            reference_axis = _virtual_axis_from_source_names(start_markers, self.axes)
+            if reference_axis is not None:
+                return self._line_points_from_axis_definition(reference_axis)
+            return (
+                self._mean_source_position(start_markers),
+                self._mean_source_position(end_markers),
+            )
+
+        def _line_points_from_axis_definition(
+            self, axis
+        ) -> tuple[
+            tuple[float, float, float] | None, tuple[float, float, float] | None
+        ]:
+            if _is_virtual_feature_axis(axis):
+                lines = self._sara_axis_solution_lines_for_axis(axis)
+                mean_line = next((line for line in lines if line[0] == "mean"), None)
+                if mean_line is not None:
+                    return mean_line[2], mean_line[3]
+                if len(lines) != 0:
+                    return lines[0][2], lines[0][3]
+            start = self._mean_source_position(axis.start_markers)
+            end = self._mean_source_position(axis.end_markers)
+            if start is not None and end is not None:
+                return start, end
+            origin = self._mean_source_position(axis.origin_markers)
+            if origin is None or start is None:
+                return start, end
+            vector = np.asarray(start, dtype=float) - np.asarray(origin, dtype=float)
+            if np.linalg.norm(vector) < 1e-12:
+                return start, end
+            end = tuple(
+                float(value) for value in np.asarray(origin, dtype=float) + vector
+            )
+            return origin, end
+
+        def _mean_source_position(
+            self, source_names: tuple[str, ...]
+        ) -> tuple[float, float, float] | None:
+            points = [
+                self._source_position(source_name) for source_name in source_names
+            ]
+            points = [point for point in points if point is not None]
+            if len(points) == 0:
+                return None
+            point = np.nanmean(np.asarray(points, dtype=float), axis=0)
+            if np.any(~np.isfinite(point)):
+                return None
+            return tuple(float(value) for value in point)
+
+        def _source_position(
+            self, source_name: str
+        ) -> tuple[float, float, float] | None:
+            if source_name in self._source_position_cache:
+                return self._source_position_cache[source_name]
+            if self.c3d_data is None or source_name == "":
+                return None
+            if source_name in self.c3d_data.marker_names:
+                point = _marker_frame_position(
+                    self.c3d_data, source_name, self.frame_index
+                )
+                self._source_position_cache[source_name] = point
+                return point
+            virtual_marker = next(
+                (
+                    marker
+                    for marker in self.virtual_markers
+                    if marker.name == source_name
+                ),
+                None,
+            )
+            if virtual_marker is None:
+                return None
+            point = self._virtual_marker_position(virtual_marker)
+            self._source_position_cache[source_name] = point
+            return point
+
+        def _virtual_marker_position(self, marker) -> tuple[float, float, float] | None:
+            if marker.name in self.c3d_data.marker_names:
+                return _marker_frame_position(
+                    self.c3d_data, marker.name, self.frame_index
+                )
+            if marker.method == "marker_mean":
+                return self._mean_source_position(_split_marker_names(marker.source))
+            if marker.method == "axis_projection":
+                return self._axis_projection_marker_position(marker)
+            if marker.method == "score":
+                return self._score_virtual_marker_position(marker)
+            if marker.method == "rab2002_shoulder":
+                geometry = _rab2002_geometry(
+                    self.c3d_data,
+                    marker.source,
+                    marker.name,
+                    marker.segment_name,
+                    self.frame_index,
+                )
+                return None if geometry is None else geometry[2]
+            return self._functional_marker_preview_fallback(marker)
+
+        @staticmethod
+        def _scene_span(points: list[tuple[float, float, float]]) -> float:
+            if len(points) == 0:
+                return 1.0
+            positions = np.asarray(points, dtype=float)
+            span = float(np.nanmax(np.ptp(positions, axis=0)))
+            return span if np.isfinite(span) and span > 0 else 1.0
+
+        def _functional_marker_preview_fallback(
+            self, marker
+        ) -> tuple[float, float, float] | None:
+            payload = _key_value_payload(marker.source)
+            for key in ("fallback", "point"):
+                marker_names = _split_marker_names(payload.get(key, ""))
+                point = self._mean_source_position(marker_names)
+                if point is not None:
+                    return point
+            return None
+
+        def _score_virtual_marker_position(
+            self, marker
+        ) -> tuple[float, float, float] | None:
+            payload = _key_value_payload(marker.source)
+            parent_marker_names = _split_marker_names(payload.get("parent markers", ""))
+            child_marker_names = _split_marker_names(payload.get("child markers", ""))
+            functional_data = self._feature_c3d_data(marker.source)
+            preview_data = self.c3d_data
+            if functional_data is None or preview_data is None:
+                return None
+            if len(parent_marker_names) == 0 or len(child_marker_names) == 0:
+                return None
+            if any(
+                marker_name not in functional_data.marker_names
+                for marker_name in parent_marker_names + child_marker_names
+            ):
+                return None
+            if any(
+                marker_name not in preview_data.marker_names
+                for marker_name in parent_marker_names + child_marker_names
+            ):
+                return None
+            cache_key = (
+                id(functional_data),
+                id(preview_data),
+                parent_marker_names,
+                child_marker_names,
+                self.use_diverse_functional_frames,
+                self.manual_functional_frame_indices,
+            )
+            if cache_key in self._score_solution_cache:
+                (
+                    cor_parent_local,
+                    cor_child_local,
+                    rt_parent_preview,
+                    rt_child_preview,
+                ) = self._score_solution_cache[cache_key]
+            else:
+                try:
+                    from ..components.generic.rigidbody.segment_coordinate_system import (
+                        SegmentCoordinateSystemUtils,
+                    )
+                    from ..model_modifiers.joint_center_tool import Score
+
+                    parent_functional_marker_data = (
+                        functional_data.get_partial_dict_data(parent_marker_names)
+                    )
+                    child_functional_marker_data = (
+                        functional_data.get_partial_dict_data(child_marker_names)
+                    )
+                    parent_preview_marker_data = preview_data.get_partial_dict_data(
+                        parent_marker_names
+                    )
+                    child_preview_marker_data = preview_data.get_partial_dict_data(
+                        child_marker_names
+                    )
+                    rt_parent_func = SegmentCoordinateSystemUtils.rigidify(
+                        functional_data=parent_functional_marker_data,
+                        static_data=parent_preview_marker_data,
+                    )
+                    rt_child_func = SegmentCoordinateSystemUtils.rigidify(
+                        functional_data=child_functional_marker_data,
+                        static_data=child_preview_marker_data,
+                    )
+                    rt_parent_func, rt_child_func, _ = prepare_functional_rt_pair(
+                        rt_parent_func,
+                        rt_child_func,
+                        _functional_frame_selection_options(
+                            self.use_diverse_functional_frames,
+                            self.manual_functional_frame_indices,
+                        ),
+                    )
+                    _, cor_parent_local, cor_child_local, _, _ = (
+                        Score.perform_algorithm(rt_parent_func, rt_child_func)
+                    )
+                    rt_parent_preview = SegmentCoordinateSystemUtils.rigidify(
+                        parent_preview_marker_data
+                    )
+                    rt_child_preview = SegmentCoordinateSystemUtils.rigidify(
+                        child_preview_marker_data
+                    )
+                    self._score_solution_cache[cache_key] = (
+                        cor_parent_local,
+                        cor_child_local,
+                        rt_parent_preview,
+                        rt_child_preview,
+                    )
+                except Exception:
+                    return None
+            frame_index = max(0, min(self.frame_index, len(rt_parent_preview) - 1))
+            parent_cor = (
+                rt_parent_preview[frame_index]
+                @ np.hstack((np.asarray(cor_parent_local).reshape(3), 1))
+            ).reshape(4)[:3]
+            child_cor = (
+                rt_child_preview[frame_index]
+                @ np.hstack((np.asarray(cor_child_local).reshape(3), 1))
+            ).reshape(4)[:3]
+            cor = 0.5 * (parent_cor + child_cor)
+            return tuple(float(value) for value in cor)
+
+        def _feature_c3d_data(self, source: str):
+            c3d_name = _c3d_source_name_from_virtual_feature_source(source)
+            if c3d_name and c3d_name in self.virtual_feature_c3d_data:
+                return self.virtual_feature_c3d_data[c3d_name]
+            trial_name = _trial_name_from_virtual_feature_source(source)
+            if trial_name and trial_name in self.virtual_feature_c3d_data:
+                return self.virtual_feature_c3d_data[trial_name]
+            if self.solution_c3d_data is not None:
+                return self.solution_c3d_data
+            return None
+
+        def _technical_segment_center(
+            self, segment_name: str
+        ) -> tuple[float, float, float] | None:
             for group in self.groups:
                 if group.segment_name == segment_name:
-                    marker_names = group.technical_marker_names if group.technical_marker_names else group.marker_names
-                    return _mean_frame_position(self.c3d_data, marker_names, self.frame_index)
+                    marker_names = (
+                        group.technical_marker_names
+                        if group.technical_marker_names
+                        else group.marker_names
+                    )
+                    return _mean_frame_position(
+                        self.c3d_data, marker_names, self.frame_index
+                    )
             return None
 
         def _technical_markers_for_segment(self, segment_name: str) -> tuple[str, ...]:
             for group in self.groups:
                 if group.segment_name == segment_name:
-                    return group.technical_marker_names if group.technical_marker_names else group.marker_names
+                    return (
+                        group.technical_marker_names
+                        if group.technical_marker_names
+                        else group.marker_names
+                    )
             return ()
+
+        def _axis_projection_marker_position(
+            self, marker
+        ) -> tuple[float, float, float] | None:
+            point = self._mean_source_position(
+                _axis_projection_point_markers_from_payload(marker.source)
+            )
+            axis_name, axis_start_markers, axis_end_markers = (
+                _axis_projection_axis_from_payload(marker.equation)
+            )
+            if axis_name:
+                axis = next(
+                    (
+                        candidate
+                        for candidate in self.axes
+                        if candidate.name == axis_name
+                    ),
+                    None,
+                )
+                if axis is None:
+                    return point
+                axis_start, axis_end = self._line_points_from_axis_definition(axis)
+            else:
+                axis_start = self._mean_source_position(axis_start_markers)
+                axis_end = self._mean_source_position(axis_end_markers)
+            return _project_point_on_line(point, axis_start, axis_end)
 
         def _score_solution_points(
             self, parent_segment_name: str, segment_name: str
@@ -1739,10 +2974,13 @@ def launch_model_editor() -> None:
                 segment_name,
                 self.frame_index,
                 self.use_diverse_functional_frames,
+                self.manual_functional_frame_indices,
             )
             if preview_cache_key in self._solution_preview_cache:
                 return self._solution_preview_cache[preview_cache_key]
-            parent_marker_names = self._technical_markers_for_segment(parent_segment_name)
+            parent_marker_names = self._technical_markers_for_segment(
+                parent_segment_name
+            )
             child_marker_names = self._technical_markers_for_segment(segment_name)
             if len(parent_marker_names) == 0 or len(child_marker_names) == 0:
                 return ()
@@ -1751,9 +2989,15 @@ def launch_model_editor() -> None:
             preview_data = self.c3d_data
             if functional_data is None or preview_data is None:
                 return ()
-            if any(marker_name not in functional_data.marker_names for marker_name in marker_names):
+            if any(
+                marker_name not in functional_data.marker_names
+                for marker_name in marker_names
+            ):
                 return ()
-            if any(marker_name not in preview_data.marker_names for marker_name in marker_names):
+            if any(
+                marker_name not in preview_data.marker_names
+                for marker_name in marker_names
+            ):
                 return ()
             cache_key = (
                 id(functional_data),
@@ -1761,9 +3005,15 @@ def launch_model_editor() -> None:
                 parent_marker_names,
                 child_marker_names,
                 self.use_diverse_functional_frames,
+                self.manual_functional_frame_indices,
             )
             if cache_key in self._score_solution_cache:
-                cor_parent_local, cor_child_local = self._score_solution_cache[cache_key]
+                (
+                    cor_parent_local,
+                    cor_child_local,
+                    rt_parent_preview,
+                    rt_child_preview,
+                ) = self._score_solution_cache[cache_key]
             else:
                 try:
                     from ..components.generic.rigidbody.segment_coordinate_system import (
@@ -1771,10 +3021,18 @@ def launch_model_editor() -> None:
                     )
                     from ..model_modifiers.joint_center_tool import Score
 
-                    parent_functional_marker_data = functional_data.get_partial_dict_data(parent_marker_names)
-                    child_functional_marker_data = functional_data.get_partial_dict_data(child_marker_names)
-                    parent_preview_marker_data = preview_data.get_partial_dict_data(parent_marker_names)
-                    child_preview_marker_data = preview_data.get_partial_dict_data(child_marker_names)
+                    parent_functional_marker_data = (
+                        functional_data.get_partial_dict_data(parent_marker_names)
+                    )
+                    child_functional_marker_data = (
+                        functional_data.get_partial_dict_data(child_marker_names)
+                    )
+                    parent_preview_marker_data = preview_data.get_partial_dict_data(
+                        parent_marker_names
+                    )
+                    child_preview_marker_data = preview_data.get_partial_dict_data(
+                        child_marker_names
+                    )
                     rt_parent_func = SegmentCoordinateSystemUtils.rigidify(
                         functional_data=parent_functional_marker_data,
                         static_data=parent_preview_marker_data,
@@ -1786,29 +3044,35 @@ def launch_model_editor() -> None:
                     rt_parent_func, rt_child_func, _ = prepare_functional_rt_pair(
                         rt_parent_func,
                         rt_child_func,
-                        _functional_frame_selection_options(self.use_diverse_functional_frames),
+                        _functional_frame_selection_options(
+                            self.use_diverse_functional_frames,
+                            self.manual_functional_frame_indices,
+                        ),
                     )
-                    _, cor_parent_local, cor_child_local, _, _ = Score.perform_algorithm(rt_parent_func, rt_child_func)
+                    _, cor_parent_local, cor_child_local, _, _ = (
+                        Score.perform_algorithm(rt_parent_func, rt_child_func)
+                    )
+                    rt_parent_preview = SegmentCoordinateSystemUtils.rigidify(
+                        parent_preview_marker_data
+                    )
+                    rt_child_preview = SegmentCoordinateSystemUtils.rigidify(
+                        child_preview_marker_data
+                    )
                     self._score_solution_cache[cache_key] = (
                         cor_parent_local,
                         cor_child_local,
+                        rt_parent_preview,
+                        rt_child_preview,
                     )
                 except Exception:
                     return ()
-            try:
-                from ..components.generic.rigidbody.segment_coordinate_system import (
-                    SegmentCoordinateSystemUtils,
-                )
-
-                parent_preview_marker_data = preview_data.get_partial_dict_data(parent_marker_names)
-                child_preview_marker_data = preview_data.get_partial_dict_data(child_marker_names)
-                rt_parent_preview = SegmentCoordinateSystemUtils.rigidify(parent_preview_marker_data)
-                rt_child_preview = SegmentCoordinateSystemUtils.rigidify(child_preview_marker_data)
-            except Exception:
-                return ()
             frame_index = max(0, min(self.frame_index, len(rt_parent_preview) - 1))
-            parent_cor = (rt_parent_preview[frame_index] @ np.hstack((cor_parent_local, 1))).reshape(4)[:3]
-            child_cor = (rt_child_preview[frame_index] @ np.hstack((cor_child_local, 1))).reshape(4)[:3]
+            parent_cor = (
+                rt_parent_preview[frame_index] @ np.hstack((cor_parent_local, 1))
+            ).reshape(4)[:3]
+            child_cor = (
+                rt_child_preview[frame_index] @ np.hstack((cor_child_local, 1))
+            ).reshape(4)[:3]
             mean_cor = 0.5 * (parent_cor + child_cor)
             solution_points = (
                 ("parent", tuple(float(value) for value in parent_cor)),
@@ -1820,10 +3084,19 @@ def launch_model_editor() -> None:
 
         def _sara_axis_solution_lines(
             self,
-        ) -> tuple[tuple[str, str, tuple[float, float, float], tuple[float, float, float]], ...]:
+        ) -> tuple[
+            tuple[str, str, tuple[float, float, float], tuple[float, float, float]], ...
+        ]:
             axis = self._selected_sara_axis()
             if axis is None:
                 return ()
+            return self._sara_axis_solution_lines_for_axis(axis)
+
+        def _sara_axis_solution_lines_for_axis(
+            self, axis
+        ) -> tuple[
+            tuple[str, str, tuple[float, float, float], tuple[float, float, float]], ...
+        ]:
             preview_cache_key = (
                 "sara",
                 id(self.c3d_data),
@@ -1831,6 +3104,7 @@ def launch_model_editor() -> None:
                 axis.name,
                 self.frame_index,
                 self.use_diverse_functional_frames,
+                self.manual_functional_frame_indices,
             )
             if preview_cache_key in self._solution_preview_cache:
                 return self._solution_preview_cache[preview_cache_key]
@@ -1842,108 +3116,210 @@ def launch_model_editor() -> None:
             parent_marker_names = _split_marker_names(payload.get("parent markers", ""))
             child_marker_names = _split_marker_names(payload.get("child markers", ""))
             expected_start_markers = (
-                tuple(axis.start_markers) or _split_marker_names(payload.get("expected axis", ""))[:1]
+                tuple(axis.start_markers)
+                or _split_marker_names(payload.get("expected axis", ""))[:1]
             )
-            expected_end_markers = tuple(axis.end_markers) or _split_marker_names(payload.get("expected axis", ""))[1:]
+            expected_end_markers = (
+                tuple(axis.end_markers)
+                or _split_marker_names(payload.get("expected axis", ""))[1:]
+            )
             if len(parent_marker_names) == 0:
-                parent_marker_names = self._technical_markers_for_segment(self.proximal_segment_name)
+                parent_marker_names = self._technical_markers_for_segment(
+                    self.proximal_segment_name
+                )
             if len(child_marker_names) == 0:
-                child_marker_names = self._technical_markers_for_segment(self.distal_segment_name)
-            required_markers = parent_marker_names + child_marker_names + expected_start_markers + expected_end_markers
+                child_marker_names = self._technical_markers_for_segment(
+                    self.distal_segment_name
+                )
+            required_markers = (
+                parent_marker_names
+                + child_marker_names
+                + expected_start_markers
+                + expected_end_markers
+            )
             if any(
                 marker_name not in functional_data.marker_names
                 for marker_name in parent_marker_names + child_marker_names
             ):
                 return ()
-            if any(marker_name not in preview_data.marker_names for marker_name in required_markers):
+            if any(
+                marker_name not in preview_data.marker_names
+                for marker_name in required_markers
+            ):
                 return ()
             if len(expected_start_markers) == 0 or len(expected_end_markers) == 0:
                 return ()
             origin_markers = tuple(axis.origin_markers)
-            try:
-                from ..components.generic.rigidbody.segment_coordinate_system import (
-                    SegmentCoordinateSystemUtils,
-                )
-                from ..model_modifiers.joint_center_tool import Sara
+            solution_cache_key = (
+                axis.name,
+                id(preview_data),
+                id(functional_data),
+                parent_marker_names,
+                child_marker_names,
+                expected_start_markers,
+                expected_end_markers,
+                origin_markers,
+                self.use_diverse_functional_frames,
+                self.manual_functional_frame_indices,
+            )
+            solution = self._sara_axis_solution_cache.get(solution_cache_key)
+            if solution is None:
+                try:
+                    from ..components.generic.rigidbody.segment_coordinate_system import (
+                        SegmentCoordinateSystemUtils,
+                    )
+                    from ..model_modifiers.joint_center_tool import Sara
 
-                parent_preview_marker_data = preview_data.get_partial_dict_data(parent_marker_names)
-                child_preview_marker_data = preview_data.get_partial_dict_data(child_marker_names)
-                parent_functional_marker_data = functional_data.get_partial_dict_data(parent_marker_names)
-                child_functional_marker_data = functional_data.get_partial_dict_data(child_marker_names)
-                rt_parent_func = SegmentCoordinateSystemUtils.rigidify(
-                    functional_data=parent_functional_marker_data,
-                    static_data=parent_preview_marker_data,
-                )
-                rt_child_func = SegmentCoordinateSystemUtils.rigidify(
-                    functional_data=child_functional_marker_data,
-                    static_data=child_preview_marker_data,
-                )
-                rt_parent_func, rt_child_func, frame_selection_report = prepare_functional_rt_pair(
-                    rt_parent_func,
-                    rt_child_func,
-                    _functional_frame_selection_options(self.use_diverse_functional_frames),
-                )
-                original_axis_global = np.nanmean(
-                    _mean_marker_series(
-                        functional_data,
-                        expected_end_markers,
+                    parent_preview_marker_data = preview_data.get_partial_dict_data(
+                        parent_marker_names
                     )
-                    - _mean_marker_series(functional_data, expected_start_markers),
-                    axis=1,
-                )
-                origin_positions_global = None
-                if len(origin_markers) != 0:
-                    if any(marker_name not in functional_data.marker_names for marker_name in origin_markers):
-                        return ()
-                    origin_positions_global = functional_data.markers_center_position(origin_markers)
-                if self.use_diverse_functional_frames and origin_positions_global is not None:
-                    origin_positions_global = subset_points_by_frame(
-                        origin_positions_global, frame_selection_report.selected_indices
+                    child_preview_marker_data = preview_data.get_partial_dict_data(
+                        child_marker_names
                     )
-                (
-                    aor_mean_global,
-                    aor_parent_local,
-                    aor_child_local,
-                    cor_mean_global,
-                    cor_parent_local,
-                    cor_child_local,
-                    rt_parent_valid,
-                    rt_child_valid,
-                ) = Sara.perform_algorithm(
-                    rt_parent=rt_parent_func,
-                    rt_child=rt_child_func,
-                    original_axis_global=original_axis_global,
-                    origin_positions_global=origin_positions_global,
-                )
-            except Exception:
-                return ()
+                    parent_functional_marker_data = (
+                        functional_data.get_partial_dict_data(parent_marker_names)
+                    )
+                    child_functional_marker_data = (
+                        functional_data.get_partial_dict_data(child_marker_names)
+                    )
+                    rt_parent_func = SegmentCoordinateSystemUtils.rigidify(
+                        functional_data=parent_functional_marker_data,
+                        static_data=parent_preview_marker_data,
+                    )
+                    rt_child_func = SegmentCoordinateSystemUtils.rigidify(
+                        functional_data=child_functional_marker_data,
+                        static_data=child_preview_marker_data,
+                    )
+                    rt_parent_func, rt_child_func, frame_selection_report = (
+                        prepare_functional_rt_pair(
+                            rt_parent_func,
+                            rt_child_func,
+                            _functional_frame_selection_options(
+                                self.use_diverse_functional_frames,
+                                self.manual_functional_frame_indices,
+                            ),
+                        )
+                    )
+                    original_axis_global = np.nanmean(
+                        _mean_marker_series(
+                            functional_data,
+                            expected_end_markers,
+                        )
+                        - _mean_marker_series(functional_data, expected_start_markers),
+                        axis=1,
+                    )
+                    origin_positions_global = None
+                    if len(origin_markers) != 0:
+                        if any(
+                            marker_name not in functional_data.marker_names
+                            for marker_name in origin_markers
+                        ):
+                            return ()
+                        origin_positions_global = (
+                            functional_data.markers_center_position(origin_markers)
+                        )
+                    if (
+                        _uses_selected_functional_frames(frame_selection_report)
+                        and origin_positions_global is not None
+                    ):
+                        origin_positions_global = subset_points_by_frame(
+                            origin_positions_global,
+                            frame_selection_report.selected_indices,
+                        )
+                    (
+                        aor_mean_global,
+                        aor_parent_local,
+                        aor_child_local,
+                        cor_mean_global,
+                        cor_parent_local,
+                        cor_child_local,
+                        _rt_parent_valid,
+                        _rt_child_valid,
+                    ) = Sara.perform_algorithm(
+                        rt_parent=rt_parent_func,
+                        rt_child=rt_child_func,
+                        original_axis_global=original_axis_global,
+                        origin_positions_global=origin_positions_global,
+                        recursive_outlier_removal=False,
+                    )
+                    rt_parent_preview = SegmentCoordinateSystemUtils.rigidify(
+                        parent_preview_marker_data
+                    )
+                    rt_child_preview = SegmentCoordinateSystemUtils.rigidify(
+                        child_preview_marker_data
+                    )
+                    solution = (
+                        aor_mean_global,
+                        aor_parent_local,
+                        aor_child_local,
+                        cor_mean_global,
+                        cor_parent_local,
+                        cor_child_local,
+                        rt_parent_preview,
+                        rt_child_preview,
+                    )
+                    self._sara_axis_solution_cache[solution_cache_key] = solution
+                except Exception:
+                    return ()
+            (
+                aor_mean_global,
+                aor_parent_local,
+                aor_child_local,
+                cor_mean_global,
+                cor_parent_local,
+                cor_child_local,
+                rt_parent_preview,
+                rt_child_preview,
+            ) = solution
             frame_index = max(
                 0,
-                min(self.frame_index, min(len(rt_parent_valid), len(rt_child_valid)) - 1),
+                min(
+                    self.frame_index,
+                    min(len(rt_parent_preview), len(rt_child_preview)) - 1,
+                ),
             )
             parent_start = (
-                rt_parent_valid[frame_index] @ np.hstack((np.asarray(cor_parent_local).reshape(3), 1.0))
+                rt_parent_preview[frame_index]
+                @ np.hstack((np.asarray(cor_parent_local).reshape(3), 1.0))
             ).reshape(4)[:3]
             parent_direction = (
-                rt_parent_valid[frame_index] @ np.hstack((np.asarray(aor_parent_local).reshape(3), 0.0))
+                rt_parent_preview[frame_index]
+                @ np.hstack((np.asarray(aor_parent_local).reshape(3), 0.0))
             ).reshape(4)[:3]
             child_start = (
-                rt_child_valid[frame_index] @ np.hstack((np.asarray(cor_child_local).reshape(3), 1.0))
+                rt_child_preview[frame_index]
+                @ np.hstack((np.asarray(cor_child_local).reshape(3), 1.0))
             ).reshape(4)[:3]
             child_direction = (
-                rt_child_valid[frame_index] @ np.hstack((np.asarray(aor_child_local).reshape(3), 0.0))
+                rt_child_preview[frame_index]
+                @ np.hstack((np.asarray(aor_child_local).reshape(3), 0.0))
             ).reshape(4)[:3]
             mean_start = 0.5 * (parent_start + child_start)
             mean_direction = _average_axis_direction(parent_direction, child_direction)
             if np.linalg.norm(mean_direction) <= 1e-12:
                 mean_start = np.asarray(cor_mean_global, dtype=float).reshape(3)
                 mean_direction = np.asarray(aor_mean_global, dtype=float).reshape(3)
+            fallback_line = _sara_static_fallback_axis_line(
+                preview_data,
+                payload,
+                expected_start_markers,
+                expected_end_markers,
+                mean_direction,
+                frame_index,
+                required_markers,
+            )
             parent_start_point = tuple(float(value) for value in parent_start)
-            parent_raw_end_point = tuple(float(value) for value in parent_start + parent_direction)
+            parent_raw_end_point = tuple(
+                float(value) for value in parent_start + parent_direction
+            )
             child_start_point = tuple(float(value) for value in child_start)
-            child_raw_end_point = tuple(float(value) for value in child_start + child_direction)
+            child_raw_end_point = tuple(
+                float(value) for value in child_start + child_direction
+            )
             mean_start_point = tuple(float(value) for value in mean_start)
-            mean_raw_end_point = tuple(float(value) for value in mean_start + mean_direction)
+            mean_raw_end_point = tuple(
+                float(value) for value in mean_start + mean_direction
+            )
             parent_end_point = _scaled_axis_end_point(
                 preview_data,
                 parent_start_point,
@@ -1970,6 +3346,15 @@ def launch_model_editor() -> None:
                 ("child", axis.name, child_start_point, child_end_point),
                 ("mean", axis.name, mean_start_point, mean_end_point),
             )
+            if fallback_line is not None:
+                lines = lines + (
+                    (
+                        "fallback",
+                        f"{axis.name} static fallback",
+                        fallback_line[0],
+                        fallback_line[1],
+                    ),
+                )
             self._solution_preview_cache[preview_cache_key] = lines
             return lines
 
@@ -1978,26 +3363,61 @@ def launch_model_editor() -> None:
                 (item for item in self.axes if item.name == self.selected_marker_name),
                 None,
             )
-            if selected_axis is not None and _is_sara_direction_method(selected_axis.method):
+            if (
+                selected_axis is not None
+                and _is_virtual_feature_axis(selected_axis)
+                and _is_sara_direction_method(selected_axis.method)
+            ):
                 return selected_axis
+            selected_marker = next(
+                (
+                    marker
+                    for marker in self.virtual_markers
+                    if marker.name == self.selected_marker_name
+                ),
+                None,
+            )
+            if (
+                selected_marker is not None
+                and selected_marker.method == "axis_projection"
+            ):
+                axis_name, _, _ = _axis_projection_axis_from_payload(
+                    selected_marker.equation
+                )
+                selected_axis = next(
+                    (axis for axis in self.axes if axis.name == axis_name), None
+                )
+                if (
+                    selected_axis is not None
+                    and _is_virtual_feature_axis(selected_axis)
+                    and _is_sara_direction_method(selected_axis.method)
+                ):
+                    return selected_axis
             segment_axes = [
                 axis
                 for axis in self.axes
-                if _is_sara_direction_method(axis.method) and axis.segment_name == self.distal_segment_name
+                if _is_virtual_feature_axis(axis)
+                and _is_sara_direction_method(axis.method)
+                and axis.segment_name == self.distal_segment_name
             ]
             if len(segment_axes) == 1:
                 return segment_axes[0]
             if len(segment_axes) != 0:
                 return segment_axes[0]
             return next(
-                (axis for axis in self.axes if _is_sara_direction_method(axis.method)),
+                (
+                    axis
+                    for axis in self.axes
+                    if _is_virtual_feature_axis(axis)
+                    and _is_sara_direction_method(axis.method)
+                ),
                 None,
             )
 
         def _draw_legend(self, painter) -> None:
             painter.setPen(QPen(QColor("#111827"), 1))
             painter.setBrush(QColor(255, 255, 255, 225))
-            painter.drawRect(8, 8, 275, 154)
+            painter.drawRect(8, 8, 300, 176)
             painter.drawText(14, 24, "Legend")
             _draw_legend_point(
                 painter,
@@ -2012,7 +3432,9 @@ def launch_model_editor() -> None:
             painter.drawRect(16, 52, 8, 8)
             painter.setPen(QPen(QColor("#111827"), 1))
             painter.drawText(36, 62, "Technical marker")
-            _draw_legend_point(painter, QPointF(20, 74), QColor("#7c3aed"), "Virtual marker", 36, 78)
+            _draw_legend_point(
+                painter, QPointF(20, 74), QColor("#7c3aed"), "Virtual marker", 36, 78
+            )
             _draw_legend_point(
                 painter,
                 QPointF(20, 92),
@@ -2021,9 +3443,21 @@ def launch_model_editor() -> None:
                 36,
                 96,
             )
-            _draw_legend_line(painter, QColor("#f97316"), 2, 14, 112, "SARA parent axis", 50, 116)
-            _draw_legend_line(painter, QColor("#0891b2"), 2, 14, 130, "SARA child axis", 50, 134)
-            _draw_legend_line(painter, QColor("#111827"), 4, 14, 148, "SARA mean axis", 50, 152)
+            _draw_legend_line(
+                painter, QColor("#f97316"), 2, 14, 112, "SARA parent axis", 50, 116
+            )
+            _draw_legend_line(
+                painter, QColor("#0891b2"), 2, 14, 130, "SARA child axis", 50, 134
+            )
+            _draw_legend_line(
+                painter, QColor("#111827"), 4, 14, 148, "SARA mean axis", 50, 152
+            )
+            fallback_pen = QPen(QColor("#64748b"), 2)
+            fallback_pen.setStyle(qt_dash_line)
+            painter.setPen(fallback_pen)
+            painter.drawLine(14, 166, 44, 166)
+            painter.setPen(QPen(QColor("#111827"), 1))
+            painter.drawText(50, 170, "Static fallback axis")
 
         def mousePressEvent(self, event) -> None:
             _start_preview_camera_drag(self, event)
@@ -2039,6 +3473,212 @@ def launch_model_editor() -> None:
 
         def wheelEvent(self, event) -> None:
             _zoom_preview_camera(self, event)
+
+    class FunctionalResidualBoxplotWidget(QWidget):
+        """
+        Draw compact SCoRE/SARA residual boxplots without adding a plotting dependency.
+        """
+
+        def __init__(self):
+            super().__init__()
+            self.boxplots = ()
+            self.setMinimumWidth(860)
+
+        def set_boxplots(self, boxplots: tuple[dict[str, object], ...]) -> None:
+            self.boxplots = boxplots
+            group_count = len({str(plot.get("unit", "")) for plot in self.boxplots})
+            self.setMinimumHeight(
+                max(220, 88 + 32 * len(self.boxplots) + 42 * group_count)
+            )
+            self.update()
+
+        def paintEvent(self, event) -> None:
+            painter = QPainter(self)
+            _set_preview_render_hints(self, painter)
+            painter.fillRect(self.rect(), QColor("white"))
+            if len(self.boxplots) == 0:
+                painter.setPen(QPen(QColor("#111827"), 1))
+                painter.drawText(
+                    self.rect(), qt_alignment_center, "No residual values to display"
+                )
+                return
+
+            label_left = 20
+            plot_left = min(max(270, self.width() // 4), 380)
+            summary_width = 190 if self.width() >= 820 else 0
+            plot_right = self.width() - 28 - summary_width
+            if plot_right < plot_left + 160:
+                plot_left = 180
+                plot_right = self.width() - 28
+                summary_width = 0
+            plot_width = max(1, plot_right - plot_left)
+            top = 28
+            row_height = 32
+            box_color = QColor("#2563eb")
+            median_color = QColor("#111827")
+            axis_color = QColor("#334155")
+            text_color = QColor("#111827")
+            muted_color = QColor("#64748b")
+            outlier_color = QColor("#93c5fd")
+
+            unit_order = []
+            grouped_boxplots = {}
+            for boxplot in self.boxplots:
+                unit = str(boxplot.get("unit", ""))
+                if unit not in grouped_boxplots:
+                    grouped_boxplots[unit] = []
+                    unit_order.append(unit)
+                grouped_boxplots[unit].append(boxplot)
+
+            def finite_values_for(boxplot):
+                values = np.asarray(boxplot.get("values", ()), dtype=float)
+                return values[np.isfinite(values)]
+
+            def x_for_value(value, value_min, value_max):
+                if value_max <= value_min:
+                    return plot_left + plot_width / 2.0
+                return (
+                    plot_left
+                    + (float(value) - value_min) / (value_max - value_min) * plot_width
+                )
+
+            def compact_title(title: str) -> str:
+                marker_match = re.match(r"^([A-Za-z0-9_]+) distance to (.+)$", title)
+                if marker_match:
+                    return f"{marker_match.group(1)} to {marker_match.group(2)}"
+                return title
+
+            y = top
+            for unit in unit_order:
+                plots = grouped_boxplots[unit]
+                all_values = [
+                    finite_values_for(boxplot)
+                    for boxplot in plots
+                    if finite_values_for(boxplot).size > 0
+                ]
+                if len(all_values) == 0:
+                    value_min = 0.0
+                    value_max = 1.0
+                else:
+                    combined = np.concatenate(all_values)
+                    value_min = float(np.nanmin(combined))
+                    value_max = float(np.nanmax(combined))
+                    if np.isclose(value_min, value_max):
+                        padding = max(1.0, abs(value_min) * 0.05)
+                        value_min -= padding
+                        value_max += padding
+
+                unit_label = unit or "value"
+                painter.setPen(QPen(text_color, 1))
+                painter.drawText(plot_left, y, f"Residual distributions ({unit_label})")
+                painter.setPen(QPen(axis_color, 1))
+                axis_y = y + 18 + row_height * len(plots)
+                painter.drawLine(plot_left, axis_y, plot_right, axis_y)
+                painter.drawLine(plot_left, axis_y - 4, plot_left, axis_y + 4)
+                painter.drawLine(plot_right, axis_y - 4, plot_right, axis_y + 4)
+                painter.setPen(QPen(muted_color, 1))
+                painter.drawText(
+                    plot_left, axis_y + 18, f"{value_min:.3g} {unit_label}"
+                )
+                painter.drawText(
+                    plot_right - 104,
+                    axis_y + 18,
+                    f"{value_max:.3g} {unit_label}",
+                )
+
+                row_y = y + 28
+                for boxplot in plots:
+                    values = finite_values_for(boxplot)
+                    title = compact_title(str(boxplot.get("title", "Residual")))
+                    if len(title) > 34:
+                        title = title[:31] + "..."
+                    painter.setPen(QPen(text_color, 1))
+                    painter.drawText(label_left, row_y + 5, title)
+                    if values.size == 0:
+                        painter.setPen(QPen(muted_color, 1))
+                        painter.drawText(plot_left, row_y + 5, "No finite values")
+                        row_y += row_height
+                        continue
+
+                    q1, median, q3 = np.nanpercentile(values, [25, 50, 75])
+                    iqr = q3 - q1
+                    lower_fence = q1 - 1.5 * iqr
+                    upper_fence = q3 + 1.5 * iqr
+                    finite_inliers = values[
+                        (values >= lower_fence) & (values <= upper_fence)
+                    ]
+                    if finite_inliers.size == 0:
+                        whisker_min = float(np.nanmin(values))
+                        whisker_max = float(np.nanmax(values))
+                    else:
+                        whisker_min = float(np.nanmin(finite_inliers))
+                        whisker_max = float(np.nanmax(finite_inliers))
+                    whisker_start = x_for_value(whisker_min, value_min, value_max)
+                    q1_x = x_for_value(q1, value_min, value_max)
+                    median_x = x_for_value(median, value_min, value_max)
+                    q3_x = x_for_value(q3, value_min, value_max)
+                    whisker_end = x_for_value(whisker_max, value_min, value_max)
+                    center_y = row_y
+                    box_top = center_y - 8
+                    box_height = 16
+
+                    painter.setPen(QPen(axis_color, 1))
+                    painter.drawLine(
+                        int(round(whisker_start)),
+                        center_y,
+                        int(round(whisker_end)),
+                        center_y,
+                    )
+                    painter.drawLine(
+                        int(round(whisker_start)),
+                        center_y - 5,
+                        int(round(whisker_start)),
+                        center_y + 5,
+                    )
+                    painter.drawLine(
+                        int(round(whisker_end)),
+                        center_y - 5,
+                        int(round(whisker_end)),
+                        center_y + 5,
+                    )
+                    painter.setPen(QPen(box_color, 1))
+                    painter.setBrush(QColor("#dbeafe"))
+                    painter.drawRect(
+                        int(round(q1_x)),
+                        box_top,
+                        max(1, int(round(q3_x - q1_x))),
+                        box_height,
+                    )
+                    painter.setPen(QPen(median_color, 2))
+                    painter.drawLine(
+                        int(round(median_x)),
+                        box_top,
+                        int(round(median_x)),
+                        box_top + box_height,
+                    )
+
+                    outliers = values[(values < lower_fence) | (values > upper_fence)]
+                    if outliers.size > 80:
+                        indices = np.linspace(0, outliers.size - 1, 80).astype(int)
+                        outliers = outliers[indices]
+                    painter.setPen(QPen(outlier_color, 1))
+                    painter.setBrush(outlier_color)
+                    for value in outliers:
+                        painter.drawEllipse(
+                            QPointF(x_for_value(value, value_min, value_max), center_y),
+                            2,
+                            2,
+                        )
+
+                    if summary_width > 0:
+                        summary = (
+                            f"med={median:.3g}; IQR={(q3 - q1):.3g}; n={values.size}"
+                        )
+                        painter.setPen(QPen(muted_color, 1))
+                        painter.drawText(plot_right + 12, row_y + 5, summary)
+                    row_y += row_height
+
+                y = axis_y + 46
 
     class C3dTechnicalSegmentPreviewWidget(QWidget):
         """
@@ -2082,7 +3722,9 @@ def launch_model_editor() -> None:
             seen_marker_names = set()
             for segment_index, group in enumerate(self.groups):
                 for marker_name in group.marker_names:
-                    point = _marker_frame_position(self.c3d_data, marker_name, self.frame_index)
+                    point = _marker_frame_position(
+                        self.c3d_data, marker_name, self.frame_index
+                    )
                     if point is None:
                         continue
                     marker_records.append(
@@ -2095,10 +3737,14 @@ def launch_model_editor() -> None:
                         )
                     )
                     seen_marker_names.add(marker_name)
-            for marker_name in _unassigned_marker_names(tuple(self.c3d_data.marker_names), self.groups):
+            for marker_name in _unassigned_marker_names(
+                tuple(self.c3d_data.marker_names), self.groups
+            ):
                 if marker_name in seen_marker_names:
                     continue
-                point = _marker_frame_position(self.c3d_data, marker_name, self.frame_index)
+                point = _marker_frame_position(
+                    self.c3d_data, marker_name, self.frame_index
+                )
                 if point is None:
                     continue
                 marker_records.append((marker_name, point, "", False, -2))
@@ -2126,9 +3772,12 @@ def launch_model_editor() -> None:
                 return
 
             projected_points = [
-                _rotate_preview_point(point, self.yaw, self.pitch) for _, point, _, _, _ in marker_records
+                _rotate_preview_point(point, self.yaw, self.pitch)
+                for _, point, _, _, _ in marker_records
             ]
-            transform = _fit_projection(projected_points, self.width(), self.height(), QPointF, self.zoom)
+            transform = _fit_projection(
+                projected_points, self.width(), self.height(), QPointF, self.zoom
+            )
 
             _set_preview_label_font(painter)
             for marker_name, point, segment_name, is_technical, segment_index in sorted(
@@ -2137,7 +3786,11 @@ def launch_model_editor() -> None:
             ):
                 is_selected = segment_name == self.selected_segment_name
                 is_marker_selected = marker_name in self.selected_marker_names
-                color = QColor("#000000") if segment_index == -2 else QColor(_segment_preview_color(segment_index))
+                color = (
+                    QColor("#000000")
+                    if segment_index == -2
+                    else QColor(_segment_preview_color(segment_index))
+                )
                 center = transform(_rotate_preview_point(point, self.yaw, self.pitch))
                 radius = 6 if is_selected else 4
                 if is_marker_selected:
@@ -2149,14 +3802,22 @@ def launch_model_editor() -> None:
                     center,
                     color,
                     is_square=is_technical,
-                    size=(4 if segment_index == -2 else (2 * radius if is_technical else radius)),
+                    size=(
+                        4
+                        if segment_index == -2
+                        else (2 * radius if is_technical else radius)
+                    ),
                     pen_width=4 if is_marker_selected else (3 if is_selected else 1),
                     marker_shape="diamond" if segment_index == -2 else None,
                 )
-                if _should_draw_preview_labels(self) and (is_selected or is_marker_selected):
+                if _should_draw_preview_labels(self) and (
+                    is_selected or is_marker_selected
+                ):
                     painter.drawText(center.x() + 6, center.y() - 6, marker_name)
 
-            _draw_preview_orientation_axes(painter, self.width(), self.height(), self.yaw, self.pitch)
+            _draw_preview_orientation_axes(
+                painter, self.width(), self.height(), self.yaw, self.pitch
+            )
             _draw_preview_interaction_hint(painter, self.width())
             if _should_draw_preview_labels(self):
                 self._draw_legend(painter)
@@ -2208,6 +3869,7 @@ def launch_model_editor() -> None:
             self.selected_setting_segment_name = ""
             self.segment_setting_overrides = {}
             self._settings_scene = None
+            self._settings_scene_cache_key = None
 
         def set_context(
             self,
@@ -2220,7 +3882,20 @@ def launch_model_editor() -> None:
         ) -> None:
             self.workflow_draft = workflow_draft
             self.selected_setting_segment_name = selected_segment_name
-            self.segment_setting_overrides = {} if segment_setting_overrides is None else segment_setting_overrides
+            self.segment_setting_overrides = (
+                {} if segment_setting_overrides is None else segment_setting_overrides
+            )
+            geometry_cache_key = (
+                id(c3d_data),
+                id(workflow_draft),
+                frame_index,
+                id(virtual_feature_c3d_data),
+            )
+            if geometry_cache_key == self._settings_scene_cache_key:
+                self.selected_segment_name = selected_segment_name
+                self.frame_index = frame_index
+                self.update()
+                return
             marker_names = tuple(c3d_data.marker_names) if c3d_data is not None else ()
             super().set_context(
                 c3d_data,
@@ -2236,6 +3911,7 @@ def launch_model_editor() -> None:
                 frame_index,
             )
             self._settings_scene = self._build_settings_scene()
+            self._settings_scene_cache_key = geometry_cache_key
 
         def paintEvent(self, event) -> None:
             painter = QPainter(self)
@@ -2263,7 +3939,10 @@ def launch_model_editor() -> None:
                 )
                 return
             transform = _fit_projection(
-                [_rotate_preview_point(point, self.yaw, self.pitch) for point in points],
+                [
+                    _rotate_preview_point(point, self.yaw, self.pitch)
+                    for point in points
+                ],
                 self.width(),
                 self.height(),
                 QPointF,
@@ -2275,16 +3954,17 @@ def launch_model_editor() -> None:
             settings_by_segment = self._settings_by_segment()
             for _parent_name, child_name, start, end in links:
                 selected = child_name == self.selected_setting_segment_name
-                setting = settings_by_segment.get(child_name)
-                width = 5 if self._has_translation_dof(setting) else 2
-                color = QColor("#2563eb") if selected else QColor("#94a3b8")
+                width = 3 if selected else 2
+                color = QColor("#475569") if selected else QColor("#94a3b8")
                 painter.setPen(QPen(color, width))
                 painter.drawLine(
                     transform(_rotate_preview_point(start, self.yaw, self.pitch)),
                     transform(_rotate_preview_point(end, self.yaw, self.pitch)),
                 )
 
-            for segment_index, group in enumerate(self.workflow_draft.segment_marker_groups):
+            for segment_index, group in enumerate(
+                self.workflow_draft.segment_marker_groups
+            ):
                 origin = segment_origins.get(group.segment_name)
                 if origin is None:
                     continue
@@ -2303,7 +3983,9 @@ def launch_model_editor() -> None:
                     frame_length,
                 )
 
-            _draw_preview_orientation_axes(painter, self.width(), self.height(), self.yaw, self.pitch)
+            _draw_preview_orientation_axes(
+                painter, self.width(), self.height(), self.yaw, self.pitch
+            )
             _draw_preview_interaction_hint(painter, self.width())
             if _should_draw_preview_labels(self):
                 self._draw_settings_legend(painter)
@@ -2348,7 +4030,9 @@ def launch_model_editor() -> None:
             frame_length = max(scene_span * 0.12, 1e-6)
             for segment_name, origin in segment_origins.items():
                 for axis_vector in segment_frames.get(segment_name, {}).values():
-                    endpoint = np.asarray(origin, dtype=float) + frame_length * axis_vector
+                    endpoint = (
+                        np.asarray(origin, dtype=float) + frame_length * axis_vector
+                    )
                     points.append(tuple(float(value) for value in endpoint))
             return {
                 "segment_origins": segment_origins,
@@ -2364,17 +4048,23 @@ def launch_model_editor() -> None:
                 return []
             points = []
             for marker_name in self.c3d_data.marker_names:
-                point = _marker_frame_position(self.c3d_data, marker_name, self.frame_index)
+                point = _marker_frame_position(
+                    self.c3d_data, marker_name, self.frame_index
+                )
                 if point is not None:
                     points.append(point)
             return points
 
-        def _draw_all_c3d_markers(self, painter, transform, marker_points: list[tuple[float, float, float]]) -> None:
+        def _draw_all_c3d_markers(
+            self, painter, transform, marker_points: list[tuple[float, float, float]]
+        ) -> None:
             painter.setPen(QPen(QColor("#cbd5e1"), 1))
             painter.setBrush(QColor("#cbd5e1"))
             for point in sorted(
                 marker_points,
-                key=lambda marker_point: _preview_depth(marker_point, self.yaw, self.pitch),
+                key=lambda marker_point: _preview_depth(
+                    marker_point, self.yaw, self.pitch
+                ),
             ):
                 center = transform(_rotate_preview_point(point, self.yaw, self.pitch))
                 painter.drawEllipse(center, 2, 2)
@@ -2385,13 +4075,17 @@ def launch_model_editor() -> None:
                 origin = self._mean_source_position(axis.origin_markers)
                 if origin is not None:
                     return origin
-            marker_names = tuple(dict.fromkeys(group.marker_names + group.technical_marker_names))
+            marker_names = tuple(
+                dict.fromkeys(group.marker_names + group.technical_marker_names)
+            )
             return self._mean_source_position(marker_names)
 
         def _segment_local_axes(self, segment_name: str) -> dict[str, np.ndarray]:
             vector_segments = []
             for axis in self._local_frame_axes(segment_name)[:2]:
-                start, end = self._line_points_from_axis_sources(axis.start_markers, axis.end_markers)
+                start, end = self._line_points_from_axis_sources(
+                    axis.start_markers, axis.end_markers
+                )
                 if start is not None and end is not None:
                     vector_segments.append((axis.axis, axis.keep_vector, start, end))
             return _orthonormal_axes_from_vector_segments(tuple(vector_segments))
@@ -2400,11 +4094,15 @@ def launch_model_editor() -> None:
             return tuple(
                 axis
                 for axis in self.workflow_draft.axes
-                if axis.segment_name == segment_name and not _is_virtual_feature_axis(axis)
+                if axis.segment_name == segment_name
+                and not _is_virtual_feature_axis(axis)
             )
 
         def _settings_by_segment(self) -> dict[str, object]:
-            settings_by_segment = {setting.segment_name: setting for setting in self.workflow_draft.segment_settings}
+            settings_by_segment = {
+                setting.segment_name: setting
+                for setting in self.workflow_draft.segment_settings
+            }
             settings_by_segment.update(self.segment_setting_overrides)
             return settings_by_segment
 
@@ -2421,26 +4119,48 @@ def launch_model_editor() -> None:
             frame_length: float,
         ) -> None:
             origin_array = np.asarray(origin, dtype=float)
-            origin_screen = transform(_rotate_preview_point(origin, self.yaw, self.pitch))
+            origin_screen = transform(
+                _rotate_preview_point(origin, self.yaw, self.pitch)
+            )
             marker_color = QColor(_segment_preview_color(segment_index))
             painter.setBrush(marker_color if selected else QColor("white"))
             painter.setPen(QPen(marker_color, 3 if selected else 2))
-            painter.drawEllipse(origin_screen, 6 if selected else 4, 6 if selected else 4)
+            painter.drawEllipse(
+                origin_screen, 6 if selected else 4, 6 if selected else 4
+            )
             painter.setPen(QPen(QColor("#111827"), 1))
             if _should_draw_preview_labels(self):
                 painter.setPen(QPen(QColor("#111827"), 1))
-                painter.drawText(origin_screen.x() + 7, origin_screen.y() - 7, segment_name)
+                painter.drawText(
+                    origin_screen.x() + 7, origin_screen.y() - 7, segment_name
+                )
 
-            dof_axes = self._dof_axis_names(setting)
+            translation_axes = self._translation_dof_axis_names(setting)
+            rotation_axes = self._rotation_dof_axis_names(setting)
             for axis_name in ("x", "y", "z"):
                 axis_vector = axes.get(axis_name)
                 if axis_vector is None:
                     continue
                 endpoint = origin_array + frame_length * axis_vector
-                endpoint_screen = transform(_rotate_preview_point(tuple(endpoint), self.yaw, self.pitch))
-                line_width = 5 if axis_name in dof_axes else 2
-                painter.setPen(QPen(QColor(_preview_axis_color(axis_name)), line_width))
+                endpoint_screen = transform(
+                    _rotate_preview_point(tuple(endpoint), self.yaw, self.pitch)
+                )
+                has_rotation_dof = axis_name in rotation_axes
+                has_translation_dof = axis_name in translation_axes
+                axis_width = (
+                    7 if has_rotation_dof else (4 if has_translation_dof else 2)
+                )
+                if selected and axis_width < 4:
+                    axis_width = 4
+                painter.setPen(QPen(QColor(_preview_axis_color(axis_name)), axis_width))
                 painter.drawLine(origin_screen, endpoint_screen)
+                if has_translation_dof:
+                    self._draw_translation_dof_arrow(
+                        painter,
+                        origin_screen,
+                        endpoint_screen,
+                        QColor(_preview_axis_color(axis_name)),
+                    )
                 if _should_draw_preview_labels(self):
                     painter.drawText(
                         endpoint_screen.x() + 4,
@@ -2448,29 +4168,86 @@ def launch_model_editor() -> None:
                         axis_name.upper(),
                     )
 
+        @staticmethod
+        def _draw_translation_dof_arrow(painter, start, end, color) -> None:
+            dx = float(end.x() - start.x())
+            dy = float(end.y() - start.y())
+            norm = math.hypot(dx, dy)
+            if norm <= 1e-9:
+                return
+            ux = dx / norm
+            uy = dy / norm
+            arrow_start = QPointF(start.x() + ux * 9.0, start.y() + uy * 9.0)
+            arrow_end = QPointF(start.x() + dx * 0.86, start.y() + dy * 0.86)
+            painter.setPen(QPen(color, 5))
+            painter.drawLine(arrow_start, arrow_end)
+            head_size = 10.0
+            left = QPointF(
+                arrow_end.x() - ux * head_size - uy * head_size * 0.65,
+                arrow_end.y() - uy * head_size + ux * head_size * 0.65,
+            )
+            right = QPointF(
+                arrow_end.x() - ux * head_size + uy * head_size * 0.65,
+                arrow_end.y() - uy * head_size - ux * head_size * 0.65,
+            )
+            painter.drawLine(arrow_end, left)
+            painter.drawLine(arrow_end, right)
+
         def _draw_settings_legend(self, painter) -> None:
             painter.setPen(QPen(QColor("#111827"), 1))
             painter.setBrush(QColor(255, 255, 255, 230))
-            painter.drawRect(8, 8, 275, 96)
+            painter.drawRect(8, 8, 295, 120)
             painter.drawText(14, 24, "Legend")
             painter.setPen(QPen(QColor("#94a3b8"), 2))
             painter.drawLine(16, 42, 42, 42)
             painter.setPen(QPen(QColor("#111827"), 1))
             painter.drawText(50, 46, "Parent-child translation")
-            painter.setPen(QPen(QColor("#2563eb"), 5))
-            painter.drawLine(16, 62, 42, 62)
             painter.setPen(QPen(QColor("#111827"), 1))
-            painter.drawText(50, 66, "Translation DoF")
-            _draw_legend_line(
-                painter,
-                QColor(PREVIEW_AXIS_COLORS["x"]),
-                5,
-                16,
-                84,
-                "Axis with DoF",
-                50,
-                88,
-            )
+            painter.drawText(16, 66, "Local axes: X/Y/Z = red/green/blue")
+            painter.setPen(QPen(QColor("#dc2626"), 7))
+            painter.drawLine(18, 84, 42, 84)
+            painter.setPen(QPen(QColor("#111827"), 1))
+            painter.drawText(50, 88, "Rotation DoF: thick axis")
+            painter.setPen(QPen(QColor("#2563eb"), 5))
+            painter.drawLine(18, 108, 42, 108)
+            painter.drawLine(QPointF(42, 108), QPointF(35, 104))
+            painter.drawLine(QPointF(42, 108), QPointF(35, 112))
+            painter.setPen(QPen(QColor("#111827"), 1))
+            painter.drawText(50, 112, "Translation DoF: arrow")
+
+        @staticmethod
+        def _axis_names_from_sequence(sequence) -> set[str]:
+            return {
+                axis_name
+                for axis_name in str(sequence).strip().replace("-", "").lower()
+                if axis_name in {"x", "y", "z"}
+            }
+
+        @classmethod
+        def _translation_dof_axis_names(cls, setting) -> set[str]:
+            if setting is None:
+                return set()
+            return cls._axis_names_from_sequence(setting.translations)
+
+        @classmethod
+        def _rotation_dof_axis_names(cls, setting) -> set[str]:
+            if setting is None:
+                return set()
+            return cls._axis_names_from_sequence(setting.rotations)
+
+        @classmethod
+        def _dof_axis_names(cls, setting) -> set[str]:
+            return cls._translation_dof_axis_names(
+                setting
+            ) | cls._rotation_dof_axis_names(setting)
+
+        @classmethod
+        def _has_translation_dof(cls, setting) -> bool:
+            return bool(cls._translation_dof_axis_names(setting))
+
+        @classmethod
+        def _has_rotation_dof(cls, setting) -> bool:
+            return bool(cls._rotation_dof_axis_names(setting))
 
         @staticmethod
         def _scene_span(points: list[tuple[float, float, float]]) -> float:
@@ -2480,42 +4257,40 @@ def launch_model_editor() -> None:
             span = float(np.nanmax(np.ptp(positions, axis=0)))
             return span if np.isfinite(span) and span > 0 else 1.0
 
-        @staticmethod
-        def _has_translation_dof(setting) -> bool:
-            if setting is None:
-                return False
-            return bool(str(setting.translations).strip().replace("-", ""))
-
-        @staticmethod
-        def _dof_axis_names(setting) -> set[str]:
-            if setting is None:
-                return set()
-            return {
-                axis_name
-                for axis_name in str(setting.translations + setting.rotations).lower()
-                if axis_name in {"x", "y", "z"}
-            }
-
     class C3dModelCreationDialog(QDialog):
         """
         Dialog for the C3D-driven model creation workflow.
         """
 
-        def __init__(self):
+        def __init__(
+            self,
+            *,
+            initial_preset: str | C3dModelPreset | None = None,
+            initial_c3d_folder: str | Path | None = None,
+        ):
             super().__init__()
             self.setWindowTitle("New model from C3D")
             self.presets = supported_c3d_model_presets()
             self.c3d_data = None
             self._c3d_data_cache = {}
+            self._virtual_feature_c3d_preview_data_cache = None
+            self._virtual_feature_c3d_preview_data_cache_signature = None
             self._is_auto_assigning_c3d_files = False
             self.c3d_folder_path = ""
             self.workflow_draft = c3d_workflow_draft(self.presets[0])
             self.workflow_marker_pool = _marker_pool_from_draft(self.workflow_draft)
+            self._suspend_anatomical_preview_updates = False
+            self._suspend_segment_settings_preview_updates = False
             self._workflow_playback_slider = None
+            self._workflow_playback_fps = WORKFLOW_PLAYBACK_DEFAULT_FPS
             self._workflow_frame_play_buttons = {}
             self._workflow_playback_timer = QTimer(self)
-            self._workflow_playback_timer.setInterval(60)
-            self._workflow_playback_timer.timeout.connect(self._advance_workflow_frame_playback)
+            self._workflow_playback_timer.setInterval(
+                _workflow_playback_timer_interval_ms(None)
+            )
+            self._workflow_playback_timer.timeout.connect(
+                self._advance_workflow_frame_playback
+            )
 
             self.preset_combo = QComboBox()
             for preset in self.presets:
@@ -2557,88 +4332,157 @@ def launch_model_editor() -> None:
             self.c3d_marker_status_label.setWordWrap(True)
             self.feature_list = QListWidget()
             self.feature_list.setMinimumHeight(180)
-            self.feature_list.itemSelectionChanged.connect(self._load_selected_virtual_marker_into_form)
+            self.feature_list.itemSelectionChanged.connect(
+                self._load_selected_virtual_marker_into_form
+            )
             self.step_list = QListWidget()
             self.marker_list = QListWidget()
             self.marker_list.setSelectionMode(qt_extended_selection)
-            self.marker_list.itemSelectionChanged.connect(self._update_technical_segment_preview)
-            self.marker_mapping_label = QLabel("Load a C3D to check marker names against the selected template.")
+            self.marker_list.itemSelectionChanged.connect(
+                self._update_technical_segment_preview
+            )
+            self.marker_mapping_label = QLabel(
+                "Load a C3D to check marker names against the selected template."
+            )
             self.marker_mapping_label.setObjectName("MutedInfoLabel")
             self.marker_mapping_label.setWordWrap(True)
-            self.strip_participant_prefix_checkbox = QCheckBox("Remove participant prefix before ':'")
+            self.strip_participant_prefix_checkbox = QCheckBox(
+                "Remove participant prefix before ':'"
+            )
             self.strip_participant_prefix_checkbox.setChecked(True)
-            self.strip_participant_prefix_checkbox.stateChanged.connect(self._reload_current_c3d_file)
-            self.show_all_markers_checkbox = QCheckBox("Show markers already used by other segments")
+            self.strip_participant_prefix_checkbox.stateChanged.connect(
+                self._reload_current_c3d_file
+            )
+            self.show_all_markers_checkbox = QCheckBox(
+                "Show markers already used by other segments"
+            )
             self.show_all_markers_checkbox.setChecked(True)
-            self.show_all_markers_checkbox.stateChanged.connect(self._update_available_marker_list)
-            self.show_virtual_markers_in_segments_checkbox = QCheckBox("Show virtual markers")
+            self.show_all_markers_checkbox.stateChanged.connect(
+                self._update_available_marker_list
+            )
+            self.show_virtual_markers_in_segments_checkbox = QCheckBox(
+                "Show virtual markers"
+            )
             self.show_virtual_markers_in_segments_checkbox.setChecked(True)
-            self.show_virtual_markers_in_segments_checkbox.stateChanged.connect(self._update_available_marker_list)
+            self.show_virtual_markers_in_segments_checkbox.stateChanged.connect(
+                self._update_available_marker_list
+            )
             self.segment_marker_list = QListWidget()
-            self.segment_marker_list.itemSelectionChanged.connect(self._update_assigned_marker_list)
+            self.segment_marker_list.itemSelectionChanged.connect(
+                self._update_assigned_marker_list
+            )
             self.technical_segment_preview = C3dTechnicalSegmentPreviewWidget()
             _style_preview_widget(self.technical_segment_preview)
             self.technical_frame_slider = QSlider(qt_horizontal)
             self.technical_frame_slider.setEnabled(False)
-            self.technical_frame_slider.valueChanged.connect(self._update_technical_segment_preview)
+            self.technical_frame_slider.valueChanged.connect(
+                self._update_technical_segment_preview
+            )
             self.technical_frame_label = QLabel("Frame 1/1")
             self.workflow_parent_combo = QComboBox()
-            self.workflow_parent_combo.currentTextChanged.connect(self._set_workflow_segment_parent)
+            self.workflow_parent_combo.currentTextChanged.connect(
+                self._set_workflow_segment_parent
+            )
             self.assigned_marker_list = QListWidget()
             self.assigned_marker_list.setSelectionMode(qt_extended_selection)
-            self.assigned_marker_list.itemSelectionChanged.connect(self._sync_assigned_marker_technical_checkbox)
-            self.assigned_marker_technical_checkbox = QCheckBox("Selected markers are technical")
-            self.assigned_marker_technical_checkbox.stateChanged.connect(self._set_selected_assigned_markers_technical)
+            self.assigned_marker_list.itemSelectionChanged.connect(
+                self._sync_assigned_marker_technical_checkbox
+            )
+            self.assigned_marker_technical_checkbox = QCheckBox(
+                "Selected markers are technical"
+            )
+            self.assigned_marker_technical_checkbox.stateChanged.connect(
+                self._set_selected_assigned_markers_technical
+            )
             self.axis_list = QListWidget()
             self.axis_list.setMaximumWidth(720)
             self.axis_list.setMaximumHeight(120)
             self.anatomical_segment_list = QListWidget()
             self.anatomical_segment_list.setMaximumWidth(720)
             self.anatomical_segment_list.setMaximumHeight(110)
-            self.anatomical_segment_list.itemSelectionChanged.connect(self._update_anatomical_segment_details)
-            self.axis_marker_source_list = _marker_list_widget(min_height=220, min_width=140, max_width=180)
-            self.axis_origin_marker_list = _marker_list_widget(min_height=52, max_height=76, max_width=190)
+            self.anatomical_segment_list.itemSelectionChanged.connect(
+                self._update_anatomical_segment_details
+            )
+            self.axis_marker_source_list = _marker_list_widget(
+                min_height=220, min_width=140, max_width=180
+            )
+            self.axis_origin_marker_list = _marker_list_widget(
+                min_height=52, max_height=76, max_width=190
+            )
             self.add_axis_origin_marker_button = _small_button("+")
             self.remove_axis_origin_marker_button = _small_button("-")
-            self.add_axis_origin_marker_button.clicked.connect(self._add_selected_axis_origin_markers)
-            self.remove_axis_origin_marker_button.clicked.connect(self._remove_selected_axis_origin_markers)
-            self.axis_vector_controls = [_create_axis_vector_controls(index) for index in range(2)]
+            self.add_axis_origin_marker_button.clicked.connect(
+                self._add_selected_axis_origin_markers
+            )
+            self.remove_axis_origin_marker_button.clicked.connect(
+                self._remove_selected_axis_origin_markers
+            )
+            self.axis_vector_controls = [
+                _create_axis_vector_controls(index) for index in range(2)
+            ]
             for index, controls in enumerate(self.axis_vector_controls):
                 controls["add_start_button"].clicked.connect(
-                    lambda checked=False, vector_index=index: self._add_selected_axis_markers(vector_index, "start")
+                    lambda checked=False, vector_index=index: self._add_selected_axis_markers(
+                        vector_index, "start"
+                    )
                 )
                 controls["add_end_button"].clicked.connect(
-                    lambda checked=False, vector_index=index: self._add_selected_axis_markers(vector_index, "end")
+                    lambda checked=False, vector_index=index: self._add_selected_axis_markers(
+                        vector_index, "end"
+                    )
                 )
                 controls["remove_start_button"].clicked.connect(
-                    lambda checked=False, vector_index=index: self._remove_selected_axis_markers(vector_index, "start")
+                    lambda checked=False, vector_index=index: self._remove_selected_axis_markers(
+                        vector_index, "start"
+                    )
                 )
                 controls["remove_end_button"].clicked.connect(
-                    lambda checked=False, vector_index=index: self._remove_selected_axis_markers(vector_index, "end")
+                    lambda checked=False, vector_index=index: self._remove_selected_axis_markers(
+                        vector_index, "end"
+                    )
+                )
+                controls["swap_button"].clicked.connect(
+                    lambda checked=False, vector_index=index: self._swap_axis_vector_endpoints(
+                        vector_index
+                    )
                 )
                 controls["axis_combo"].currentTextChanged.connect(
                     lambda text, combo=controls["axis_combo"]: _style_axis_combo(combo)
                 )
-                controls["axis_combo"].currentTextChanged.connect(self._update_segment_axis_preview)
-                controls["keep_checkbox"].stateChanged.connect(
-                    lambda checked=False, vector_index=index: self._ensure_single_kept_axis_vector(vector_index)
+                controls["axis_combo"].currentTextChanged.connect(
+                    self._update_segment_axis_preview
                 )
-            self.save_segment_axis_button = QPushButton("Add/update anatomical frame vectors")
-            self.save_segment_axis_button.clicked.connect(self._save_segment_axis_from_lists)
+                controls["keep_checkbox"].stateChanged.connect(
+                    lambda checked=False, vector_index=index: self._ensure_single_kept_axis_vector(
+                        vector_index
+                    )
+                )
+            self.save_segment_axis_button = QPushButton(
+                "Add/update anatomical frame vectors"
+            )
+            self.save_segment_axis_button.clicked.connect(
+                self._save_segment_axis_from_lists
+            )
             self.segment_axis_preview = C3dSegmentAxisPreviewWidget()
             _style_preview_widget(self.segment_axis_preview)
             self.segment_axis_preview.setMinimumWidth(360)
             self.segment_axis_preview.setMinimumHeight(520)
             self.anatomical_frame_slider = QSlider(qt_horizontal)
             self.anatomical_frame_slider.setEnabled(False)
-            self.anatomical_frame_slider.valueChanged.connect(self._update_segment_axis_preview)
+            self.anatomical_frame_slider.valueChanged.connect(
+                self._update_segment_axis_preview
+            )
             self.anatomical_frame_label = QLabel("Frame 1/1")
             self.virtual_marker_name_edit = QLineEdit()
             self.virtual_marker_suggested_name_label = QLabel()
             self.virtual_marker_suggested_name_label.setObjectName("MutedInfoLabel")
             self.virtual_marker_segment_combo = QComboBox()
-            self.virtual_marker_segment_combo.currentTextChanged.connect(self._update_suggested_virtual_marker_name)
-            self.virtual_marker_segment_combo.currentTextChanged.connect(self._sync_virtual_marker_segment_context)
+            self.virtual_marker_segment_combo.currentTextChanged.connect(
+                self._update_suggested_virtual_marker_name
+            )
+            self.virtual_marker_segment_combo.currentTextChanged.connect(
+                self._sync_virtual_marker_segment_context
+            )
             self.virtual_marker_method_combo = QComboBox()
             self.virtual_marker_method_combo.addItems(
                 [
@@ -2650,49 +4494,148 @@ def launch_model_editor() -> None:
                     "predictive",
                 ]
             )
-            self.virtual_marker_method_combo.currentTextChanged.connect(self._sync_virtual_marker_method_fields)
+            self.virtual_marker_method_combo.currentTextChanged.connect(
+                self._sync_virtual_marker_method_fields
+            )
             self.virtual_marker_predictive_method_combo = QComboBox()
-            self.virtual_marker_predictive_method_combo.addItems(list(PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS.values()))
+            self.virtual_marker_predictive_method_combo.addItems(
+                list(PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS.values())
+            )
             self.virtual_marker_predictive_method_combo.currentTextChanged.connect(
                 self._sync_virtual_marker_method_fields
             )
             self.virtual_marker_source_edit = QLineEdit()
-            self.virtual_marker_source_edit.textChanged.connect(self._update_virtual_marker_preview)
+            self.virtual_marker_source_edit.textChanged.connect(
+                self._update_virtual_marker_preview
+            )
+            self.virtual_marker_source_label = QLabel("Source")
             self.virtual_marker_source_edit.hide()
-            self.virtual_marker_projection_available_list = _marker_list_widget(max_height=112, max_width=320)
-            self.virtual_marker_projected_marker_list = _marker_list_widget(max_height=70, max_width=240)
-            self.virtual_marker_projection_axis_list = _marker_list_widget(max_height=70, max_width=240)
+            self.virtual_marker_source_label.hide()
+            self.virtual_marker_projection_available_list = _marker_list_widget(
+                max_height=112, max_width=320
+            )
+            self.virtual_marker_projected_marker_list = _marker_list_widget(
+                max_height=70, max_width=240
+            )
+            self.virtual_marker_projection_axis_list = _marker_list_widget(
+                max_height=70, max_width=240
+            )
             self.add_projected_marker_button = _small_button("+")
             self.remove_projected_marker_button = _small_button("-")
             self.add_projection_axis_button = _small_button("+")
             self.remove_projection_axis_button = _small_button("-")
-            self.add_projected_marker_button.clicked.connect(self._add_projection_source_markers)
-            self.remove_projected_marker_button.clicked.connect(self._remove_projection_source_markers)
-            self.add_projection_axis_button.clicked.connect(self._add_projection_axis_source)
-            self.remove_projection_axis_button.clicked.connect(self._remove_projection_axis_source)
+            self.add_projected_marker_button.clicked.connect(
+                self._add_projection_source_markers
+            )
+            self.remove_projected_marker_button.clicked.connect(
+                self._remove_projection_source_markers
+            )
+            self.add_projection_axis_button.clicked.connect(
+                self._add_projection_axis_source
+            )
+            self.remove_projection_axis_button.clicked.connect(
+                self._remove_projection_axis_source
+            )
             self.virtual_marker_c3d_file_combo = QComboBox()
-            self.virtual_marker_c3d_file_combo.currentTextChanged.connect(self._update_virtual_marker_preview)
-            self.virtual_marker_c3d_file_combo.currentTextChanged.connect(self._update_suggested_virtual_marker_name)
+            self.virtual_marker_c3d_file_combo.currentTextChanged.connect(
+                self._update_virtual_marker_preview
+            )
+            self.virtual_marker_c3d_file_combo.currentTextChanged.connect(
+                self._update_suggested_virtual_marker_name
+            )
             self.browse_virtual_marker_c3d_button = QPushButton("Browse C3D")
             self.browse_virtual_marker_c3d_button.setObjectName("SecondaryActionButton")
-            self.browse_virtual_marker_c3d_button.clicked.connect(self._browse_virtual_marker_c3d_source)
-            self.virtual_marker_show_functional_c3d_checkbox = QCheckBox("Preview functional C3D")
+            self.browse_virtual_marker_c3d_button.clicked.connect(
+                self._browse_virtual_marker_c3d_source
+            )
+            self.virtual_marker_show_functional_c3d_checkbox = QCheckBox(
+                "Preview functional C3D"
+            )
             self.virtual_marker_show_functional_c3d_checkbox.setChecked(True)
-            self.virtual_marker_show_functional_c3d_checkbox.stateChanged.connect(self._update_virtual_marker_preview)
-            self.virtual_marker_whole_body_preview_checkbox = QCheckBox("Whole body view")
+            self.virtual_marker_show_functional_c3d_checkbox.stateChanged.connect(
+                self._update_virtual_marker_preview
+            )
+            self.virtual_marker_whole_body_preview_checkbox = QCheckBox(
+                "Whole body view"
+            )
             self.virtual_marker_whole_body_preview_checkbox.setChecked(False)
-            self.virtual_marker_whole_body_preview_checkbox.stateChanged.connect(self._update_virtual_marker_preview)
-            self.use_diverse_functional_frames_checkbox = QCheckBox("Use diverse functional frames")
+            self.virtual_marker_whole_body_preview_checkbox.stateChanged.connect(
+                self._update_virtual_marker_preview
+            )
+            self.use_manual_functional_frames_checkbox = QCheckBox(
+                "Use selected functional frame zones"
+            )
+            self.use_manual_functional_frames_checkbox.setToolTip(
+                "Use the blue frame zones under the preview frame slider for functional SCoRE/SARA calculations."
+            )
+            self.use_manual_functional_frames_checkbox.stateChanged.connect(
+                self._set_manual_functional_frames_enabled
+            )
+            self.use_diverse_functional_frames_checkbox = QCheckBox(
+                "Use diverse functional frames"
+            )
             self.use_diverse_functional_frames_checkbox.setToolTip(
                 "Select a smaller set of valid functional frames with different parent-child rototranslations."
             )
             self.use_diverse_functional_frames_checkbox.stateChanged.connect(
-                self._update_diverse_functional_frame_calculations
+                self._set_diverse_functional_frames_enabled
             )
+            self.explore_functional_residuals_button = QPushButton(
+                "Explore SCoRE/SARA residuals"
+            )
+            self.explore_functional_residuals_button.setObjectName(
+                "SecondaryActionButton"
+            )
+            self.explore_functional_residuals_button.setEnabled(False)
+            self.explore_functional_residuals_button.clicked.connect(
+                self._show_functional_residual_diagnostics
+            )
+            self.functional_reconstruction_feature_combo = QComboBox()
+            self.functional_reconstruction_feature_combo.setMinimumWidth(240)
+            self.functional_reconstruction_feature_combo.setMinimumContentsLength(28)
+            self.functional_reconstruction_feature_combo.currentIndexChanged.connect(
+                self._sync_functional_reconstruction_trial_choices
+            )
+            self.functional_reconstruction_feature_combo.currentIndexChanged.connect(
+                self._update_virtual_marker_preview
+            )
+            self.functional_reconstruction_trial_combo = QComboBox()
+            self.functional_reconstruction_trial_combo.setMinimumWidth(240)
+            self.functional_reconstruction_trial_combo.setMinimumContentsLength(28)
+            self.functional_reconstruction_trial_combo.currentIndexChanged.connect(
+                self._update_virtual_marker_preview
+            )
+            self.functional_reconstruction_method_combo = QComboBox()
+            self.functional_reconstruction_method_combo.addItems(["QLD", "EKF"])
+            self.functional_reconstruction_method_combo.setMaximumWidth(110)
+            self.functional_reconstruction_method_combo.setToolTip(
+                "EKF uses biorbd Kalman reconstruction when available. QLD uses BioBuddy/biorbd least-squares IK."
+            )
+            self.run_functional_reconstruction_button = QPushButton("Run diagnostic")
+            self.run_functional_reconstruction_button.setMinimumWidth(150)
+            self.run_functional_reconstruction_button.setObjectName(
+                "SecondaryActionButton"
+            )
+            self.run_functional_reconstruction_button.clicked.connect(
+                self._run_functional_reconstruction_diagnostic
+            )
+            self.functional_reconstruction_output = QTextEdit()
+            self.functional_reconstruction_output.setReadOnly(True)
+            self.functional_reconstruction_output.setMinimumHeight(220)
+            self.functional_reconstruction_plot = FunctionalReconstructionPlotWidget()
             self.virtual_marker_frame_slider = QSlider(qt_horizontal)
             self.virtual_marker_frame_slider.setEnabled(False)
-            self.virtual_marker_frame_slider.valueChanged.connect(self._update_virtual_marker_preview)
+            self.virtual_marker_frame_slider.valueChanged.connect(
+                self._update_virtual_marker_preview
+            )
             self.virtual_marker_frame_label = QLabel("Frame 1/1")
+            self.functional_frame_range_bar = FunctionalFrameRangeBar()
+            self.functional_frame_range_bar.on_frame_dragged = (
+                self._set_virtual_marker_frame_from_range_drag
+            )
+            self.functional_frame_range_bar.on_selection_changed = (
+                self._update_manual_functional_frame_selection
+            )
             self.virtual_marker_equation_edit = QLineEdit()
             self.virtual_marker_equation_edit.hide()
             self.virtual_marker_c3d_role_combo = QComboBox()
@@ -2702,22 +4645,38 @@ def launch_model_editor() -> None:
             self.virtual_marker_technical_markers_label.setObjectName("MutedInfoLabel")
             self.virtual_marker_technical_markers_label.setWordWrap(True)
             self.virtual_marker_proximal_combo = QComboBox()
-            self.virtual_marker_proximal_combo.currentTextChanged.connect(self._update_virtual_marker_preview)
-            self.virtual_marker_proximal_combo.currentTextChanged.connect(self._update_suggested_virtual_marker_name)
-            self.virtual_marker_proximal_combo.currentTextChanged.connect(self._update_virtual_marker_technical_markers)
+            self.virtual_marker_proximal_combo.currentTextChanged.connect(
+                self._update_virtual_marker_preview
+            )
+            self.virtual_marker_proximal_combo.currentTextChanged.connect(
+                self._update_suggested_virtual_marker_name
+            )
+            self.virtual_marker_proximal_combo.currentTextChanged.connect(
+                self._update_virtual_marker_technical_markers
+            )
             self.virtual_marker_distal_combo = QComboBox()
-            self.virtual_marker_distal_combo.currentTextChanged.connect(self._update_virtual_marker_preview)
-            self.virtual_marker_distal_combo.currentTextChanged.connect(self._update_suggested_virtual_marker_name)
-            self.virtual_marker_distal_combo.currentTextChanged.connect(self._update_virtual_marker_technical_markers)
+            self.virtual_marker_distal_combo.currentTextChanged.connect(
+                self._update_virtual_marker_preview
+            )
+            self.virtual_marker_distal_combo.currentTextChanged.connect(
+                self._update_suggested_virtual_marker_name
+            )
+            self.virtual_marker_distal_combo.currentTextChanged.connect(
+                self._update_virtual_marker_technical_markers
+            )
             self.virtual_marker_info_label = QLabel()
             self.virtual_marker_info_label.setObjectName("MutedInfoLabel")
             self.virtual_marker_info_label.setWordWrap(True)
             self.save_virtual_marker_button = QPushButton("Save virtual marker/axis")
-            self.save_virtual_marker_button.clicked.connect(self._save_workflow_virtual_marker_from_form)
+            self.save_virtual_marker_button.clicked.connect(
+                self._save_workflow_virtual_marker_from_form
+            )
             self.virtual_marker_preview = C3dVirtualMarkerPreviewWidget()
             _style_preview_widget(self.virtual_marker_preview)
             self.segment_settings_list = QListWidget()
-            self.segment_settings_list.itemSelectionChanged.connect(self._load_selected_segment_settings_into_form)
+            self.segment_settings_list.itemSelectionChanged.connect(
+                self._load_selected_segment_settings_into_form
+            )
             self.segment_settings_preview = C3dSegmentSettingsPreviewWidget()
             _style_preview_widget(self.segment_settings_preview)
             self.workflow_view_button = QPushButton("View")
@@ -2725,32 +4684,62 @@ def launch_model_editor() -> None:
             self.workflow_view_button.setMenu(self._create_workflow_view_menu())
             self.segment_settings_frame_slider = QSlider(qt_horizontal)
             self.segment_settings_frame_slider.setEnabled(False)
-            self.segment_settings_frame_slider.valueChanged.connect(self._update_segment_settings_preview)
+            self.segment_settings_frame_slider.valueChanged.connect(
+                self._update_segment_settings_preview
+            )
             self.segment_settings_frame_label = QLabel("Frame 1/1")
-            self.settings_translations_edit = _AxisSequencePicker(allow_first_third_repeat=False)
+            self.settings_translations_edit = _AxisSequencePicker(
+                allow_first_third_repeat=False
+            )
             self.settings_translations_edit.setMaximumWidth(220)
-            self.settings_translations_edit.setToolTip("Choose translation axes. Each axis can be selected only once.")
-            self.settings_rotations_edit = _AxisSequencePicker(allow_first_third_repeat=True)
+            self.settings_translations_edit.setToolTip(
+                "Choose translation axes. Each axis can be selected only once."
+            )
+            self.settings_rotations_edit = _AxisSequencePicker(
+                allow_first_third_repeat=True
+            )
             self.settings_rotations_edit.setMaximumWidth(220)
             self.settings_rotations_edit.setToolTip(
                 "Choose rotation axes. The middle axis cannot be the same as the first or third axis."
             )
             self.settings_q_min_edit = QLineEdit()
             self.settings_q_min_edit.setMaximumWidth(120)
-            self.settings_q_min_edit.setToolTip("Leave empty, or enter one q min value per translation/rotation DoF.")
+            self.settings_q_min_edit.setToolTip(
+                "Leave empty, or enter one q min value per translation/rotation DoF."
+            )
             self.settings_q_max_edit = QLineEdit()
             self.settings_q_max_edit.setMaximumWidth(120)
-            self.settings_q_max_edit.setToolTip("Leave empty, or enter one q max value per translation/rotation DoF.")
-            self.settings_translations_edit.textChanged.connect(self._sync_segment_settings_validation_style)
-            self.settings_rotations_edit.textChanged.connect(self._sync_segment_settings_validation_style)
-            self.settings_q_min_edit.textChanged.connect(self._sync_segment_settings_validation_style)
-            self.settings_q_max_edit.textChanged.connect(self._sync_segment_settings_validation_style)
-            self.settings_child_translation_checkbox = QCheckBox("Allow child translation")
-            self.settings_translations_edit.textChanged.connect(self._update_segment_settings_preview)
-            self.settings_rotations_edit.textChanged.connect(self._update_segment_settings_preview)
-            self.settings_child_translation_checkbox.stateChanged.connect(self._update_segment_settings_preview)
+            self.settings_q_max_edit.setToolTip(
+                "Leave empty, or enter one q max value per translation/rotation DoF."
+            )
+            self.settings_translations_edit.textChanged.connect(
+                self._sync_segment_settings_validation_style
+            )
+            self.settings_rotations_edit.textChanged.connect(
+                self._sync_segment_settings_validation_style
+            )
+            self.settings_q_min_edit.textChanged.connect(
+                self._sync_segment_settings_validation_style
+            )
+            self.settings_q_max_edit.textChanged.connect(
+                self._sync_segment_settings_validation_style
+            )
+            self.settings_child_translation_checkbox = QCheckBox(
+                "Allow child translation"
+            )
+            self.settings_translations_edit.textChanged.connect(
+                self._update_segment_settings_preview
+            )
+            self.settings_rotations_edit.textChanged.connect(
+                self._update_segment_settings_preview
+            )
+            self.settings_child_translation_checkbox.stateChanged.connect(
+                self._update_segment_settings_preview
+            )
             self.settings_initial_rotation_method_combo = QComboBox()
-            self.settings_initial_rotation_method_combo.addItems(["identity", "matrix", "anatomical_c3d"])
+            self.settings_initial_rotation_method_combo.addItems(
+                ["identity", "matrix", "anatomical_c3d"]
+            )
             self.settings_initial_rotation_method_combo.currentTextChanged.connect(
                 self._sync_initial_rotation_source_fields
             )
@@ -2762,8 +4751,12 @@ def launch_model_editor() -> None:
                 self._mirror_initial_rotation_c3d_source
             )
             self.browse_initial_rotation_c3d_button = QPushButton("Browse C3D")
-            self.browse_initial_rotation_c3d_button.setObjectName("SecondaryActionButton")
-            self.browse_initial_rotation_c3d_button.clicked.connect(self._browse_initial_rotation_c3d_source)
+            self.browse_initial_rotation_c3d_button.setObjectName(
+                "SecondaryActionButton"
+            )
+            self.browse_initial_rotation_c3d_button.clicked.connect(
+                self._browse_initial_rotation_c3d_source
+            )
             self.settings_segment_length_edit = QLineEdit()
             self.settings_segment_length_edit.setReadOnly(True)
             self.settings_segment_length_edit.setMaximumWidth(140)
@@ -2780,8 +4773,12 @@ def launch_model_editor() -> None:
             self.settings_anthropometry_mass_edit = QLineEdit()
             self.settings_anthropometry_mass_edit.setPlaceholderText("kg")
             self.settings_anthropometry_mass_edit.setMaximumWidth(140)
-            self.apply_anthropometry_button = QPushButton("Apply anthropometry parameters")
-            self.apply_anthropometry_button.clicked.connect(self._apply_anthropometry_to_selected_segment)
+            self.apply_anthropometry_button = QPushButton(
+                "Apply anthropometry parameters"
+            )
+            self.apply_anthropometry_button.clicked.connect(
+                self._apply_anthropometry_to_selected_segment
+            )
             self.file_role_list = QListWidget()
             self.issue_list = QListWidget()
             self.add_segment_button = QPushButton("Add segment")
@@ -2796,12 +4793,20 @@ def launch_model_editor() -> None:
             self.unassign_marker_button.setObjectName("SmallIconButton")
             self.unassign_marker_button.clicked.connect(self._unassign_workflow_marker)
             self.add_virtual_marker_button = QPushButton("Add/edit virtual marker/axis")
-            self.add_virtual_marker_button.clicked.connect(self._add_workflow_virtual_marker)
-            self.remove_virtual_marker_button = QPushButton("Remove virtual marker/axis")
+            self.add_virtual_marker_button.clicked.connect(
+                self._add_workflow_virtual_marker
+            )
+            self.remove_virtual_marker_button = QPushButton(
+                "Remove virtual marker/axis"
+            )
             self.remove_virtual_marker_button.setObjectName("DangerActionButton")
-            self.remove_virtual_marker_button.clicked.connect(self._remove_workflow_virtual_marker)
+            self.remove_virtual_marker_button.clicked.connect(
+                self._remove_workflow_virtual_marker
+            )
             self.edit_segment_settings_button = QPushButton("Apply segment settings")
-            self.edit_segment_settings_button.clicked.connect(self._apply_workflow_segment_settings_from_form)
+            self.edit_segment_settings_button.clicked.connect(
+                self._apply_workflow_segment_settings_from_form
+            )
             self.assign_c3d_role_button = QPushButton("Assign C3D file")
             self.assign_c3d_role_button.clicked.connect(self._assign_workflow_c3d_role)
             self.clear_c3d_role_button = QPushButton("Clear C3D file")
@@ -2877,9 +4882,19 @@ def launch_model_editor() -> None:
             self.workflow_tabs = QTabWidget()
             self.workflow_tabs.addTab(self._pipeline_workflow_tab(), "Pipeline")
             self.workflow_tabs.addTab(self._segment_workflow_tab(), "Technical segment")
-            self.workflow_tabs.addTab(self._virtual_marker_workflow_tab(), "Virtual markers and axes")
-            self.workflow_tabs.addTab(self._anatomical_segment_workflow_tab(), "Anatomical segment")
-            self.workflow_tabs.addTab(self._segment_settings_workflow_tab(), "Segment settings")
+            self.workflow_tabs.addTab(
+                self._virtual_marker_workflow_tab(), "Virtual markers and axes"
+            )
+            self.workflow_tabs.addTab(
+                self._anatomical_segment_workflow_tab(), "Anatomical segment"
+            )
+            self.workflow_tabs.addTab(
+                self._segment_settings_workflow_tab(), "Chain definition"
+            )
+            self.workflow_tabs.addTab(
+                self._functional_reconstruction_workflow_tab(),
+                "Functional reconstruction",
+            )
             self.workflow_tabs.addTab(self._file_role_workflow_tab(), "C3D names")
             self.workflow_tabs.addTab(self.issue_list, "Checks")
             left_layout.addWidget(self.workflow_tabs, 1)
@@ -2897,6 +4912,10 @@ def launch_model_editor() -> None:
             layout.addWidget(buttons)
             _resize_window_to_available_screen(self, QApplication, 1440, 820)
             self._update_preset_details()
+            self.apply_initial_context(
+                preset=initial_preset,
+                c3d_folder=initial_c3d_folder,
+            )
             self._sync_workflow_preview_panel(self.workflow_tabs.currentIndex())
 
         def selected_preset(self) -> C3dModelPreset:
@@ -2911,6 +4930,29 @@ def launch_model_editor() -> None:
             """
             text = self.c3d_path.text().strip()
             return None if text == "" else Path(text)
+
+        def selected_c3d_folder(self) -> Path | None:
+            """
+            Return the selected C3D folder, if one was chosen.
+            """
+            text = self.c3d_folder_path.strip()
+            return None if text == "" else Path(text)
+
+        def apply_initial_context(
+            self,
+            *,
+            preset: str | C3dModelPreset | None = None,
+            c3d_folder: str | Path | None = None,
+        ) -> None:
+            """
+            Apply preset/folder values supplied by a launcher or CLI.
+            """
+            if preset is not None:
+                preset_value = c3d_model_preset_from_cli_value(preset)
+                if preset_value in self.presets:
+                    self.preset_combo.setCurrentIndex(self.presets.index(preset_value))
+            if c3d_folder is not None:
+                self._set_c3d_folder(str(Path(c3d_folder).expanduser()))
 
         def _pipeline_workflow_tab(self):
             widget = QWidget()
@@ -2954,21 +4996,33 @@ def launch_model_editor() -> None:
             self.workflow_empty_frame_label = QLabel("Frame 0/0")
             self.workflow_frame_stack = QStackedWidget()
             self.workflow_frame_empty_index = self.workflow_frame_stack.addWidget(
-                self._workflow_frame_slider_page(self.workflow_empty_frame_slider, self.workflow_empty_frame_label)
+                self._workflow_frame_slider_page(
+                    self.workflow_empty_frame_slider, self.workflow_empty_frame_label
+                )
             )
             self.workflow_frame_technical_index = self.workflow_frame_stack.addWidget(
-                self._workflow_frame_slider_page(self.technical_frame_slider, self.technical_frame_label)
+                self._workflow_frame_slider_page(
+                    self.technical_frame_slider, self.technical_frame_label
+                )
             )
             self.workflow_frame_virtual_index = self.workflow_frame_stack.addWidget(
-                self._workflow_frame_slider_page(self.virtual_marker_frame_slider, self.virtual_marker_frame_label)
+                self._workflow_frame_slider_page(
+                    self.virtual_marker_frame_slider,
+                    self.virtual_marker_frame_label,
+                    self.functional_frame_range_bar,
+                )
             )
             self.workflow_frame_anatomical_index = self.workflow_frame_stack.addWidget(
-                self._workflow_frame_slider_page(self.anatomical_frame_slider, self.anatomical_frame_label)
-            )
-            self.workflow_frame_segment_settings_index = self.workflow_frame_stack.addWidget(
                 self._workflow_frame_slider_page(
-                    self.segment_settings_frame_slider,
-                    self.segment_settings_frame_label,
+                    self.anatomical_frame_slider, self.anatomical_frame_label
+                )
+            )
+            self.workflow_frame_segment_settings_index = (
+                self.workflow_frame_stack.addWidget(
+                    self._workflow_frame_slider_page(
+                        self.segment_settings_frame_slider,
+                        self.segment_settings_frame_label,
+                    )
                 )
             )
             layout.addWidget(self.workflow_frame_stack)
@@ -2979,41 +5033,72 @@ def launch_model_editor() -> None:
                 "or building anatomical segment frames."
             )
             empty_label.setAlignment(qt_alignment_center)
-            self.workflow_canvas_empty_index = self.workflow_canvas_stack.addWidget(empty_label)
-            self.workflow_canvas_technical_index = self.workflow_canvas_stack.addWidget(self.technical_segment_preview)
-            self.workflow_canvas_virtual_index = self.workflow_canvas_stack.addWidget(self.virtual_marker_preview)
-            self.workflow_canvas_anatomical_index = self.workflow_canvas_stack.addWidget(self.segment_axis_preview)
-            self.workflow_canvas_segment_settings_index = self.workflow_canvas_stack.addWidget(
-                self.segment_settings_preview
+            self.workflow_canvas_empty_index = self.workflow_canvas_stack.addWidget(
+                empty_label
+            )
+            self.workflow_canvas_technical_index = self.workflow_canvas_stack.addWidget(
+                self.technical_segment_preview
+            )
+            self.workflow_canvas_virtual_index = self.workflow_canvas_stack.addWidget(
+                self.virtual_marker_preview
+            )
+            self.workflow_canvas_anatomical_index = (
+                self.workflow_canvas_stack.addWidget(self.segment_axis_preview)
+            )
+            self.workflow_canvas_segment_settings_index = (
+                self.workflow_canvas_stack.addWidget(self.segment_settings_preview)
             )
             layout.addWidget(self.workflow_canvas_stack, 1)
             return panel
 
-        def _workflow_frame_slider_page(self, slider, label):
+        def _workflow_frame_slider_page(self, slider, label, range_bar=None):
             """
             Return one fixed-height frame-control row for the shared preview panel.
             """
             page = QWidget()
-            row = QHBoxLayout(page)
+            page_layout = QVBoxLayout(page)
+            _configure_panel_layout(page_layout, margin=0, spacing=2)
+            row = QHBoxLayout()
             _configure_panel_layout(row, margin=0, spacing=8)
             play_button = _small_button(">")
             play_button.setToolTip("Play frames")
-            play_button.setEnabled(slider.isEnabled() and slider.maximum() > slider.minimum())
+            play_button.setEnabled(
+                slider.isEnabled() and slider.maximum() > slider.minimum()
+            )
             play_button.clicked.connect(
-                lambda checked=False, frame_slider=slider: self._toggle_workflow_frame_playback(frame_slider)
+                lambda checked=False, frame_slider=slider: self._toggle_workflow_frame_playback(
+                    frame_slider
+                )
             )
             self._workflow_frame_play_buttons[slider] = play_button
             row.addWidget(QLabel("Frame"))
             row.addWidget(play_button)
             row.addWidget(slider, 1)
             row.addWidget(label)
+            page_layout.addLayout(row)
+            if range_bar is not None:
+                range_row = QHBoxLayout()
+                _configure_panel_layout(range_row, margin=0, spacing=8)
+                left_spacer_width = (
+                    QLabel("Frame").sizeHint().width()
+                    + play_button.sizeHint().width()
+                    + 8
+                )
+                right_spacer_width = max(label.sizeHint().width(), 92)
+                range_row.addSpacing(left_spacer_width)
+                range_row.addWidget(range_bar, 1)
+                range_row.addSpacing(right_spacer_width)
+                page_layout.addLayout(range_row)
             return page
 
         def _toggle_workflow_frame_playback(self, slider) -> None:
             """
             Start or stop playback for one preview frame slider.
             """
-            if self._workflow_playback_timer.isActive() and self._workflow_playback_slider is slider:
+            if (
+                self._workflow_playback_timer.isActive()
+                and self._workflow_playback_slider is slider
+            ):
                 self._stop_workflow_frame_playback()
                 return
             self._stop_workflow_frame_playback()
@@ -3021,23 +5106,63 @@ def launch_model_editor() -> None:
                 self._sync_workflow_frame_play_button(slider)
                 return
             self._workflow_playback_slider = slider
+            playback_data = self._workflow_playback_c3d_data_for_slider(slider)
+            self._workflow_playback_fps = _workflow_playback_fps(playback_data)
+            self._workflow_playback_timer.setInterval(
+                _workflow_playback_timer_interval_ms(playback_data)
+            )
             button = self._workflow_frame_play_buttons.get(slider)
             if button is not None:
                 button.setText("||")
-                button.setToolTip("Pause frames")
+                button.setToolTip(f"Pause frames ({self._workflow_playback_fps:g} fps)")
+            if (
+                slider is self.virtual_marker_frame_slider
+                and self.workflow_tabs.tabText(self.workflow_tabs.currentIndex())
+                == "Functional reconstruction"
+            ):
+                self._update_virtual_marker_preview()
             self._workflow_playback_timer.start()
+
+        def _workflow_playback_c3d_data_for_slider(self, slider):
+            """
+            Return the C3D data that controls playback speed for a preview slider.
+            """
+            if slider is self.virtual_marker_frame_slider:
+                if (
+                    self.workflow_tabs.tabText(self.workflow_tabs.currentIndex())
+                    == "Functional reconstruction"
+                ):
+                    axis = self._selected_functional_reconstruction_axis()
+                    data, _source_label = (
+                        self._selected_functional_reconstruction_c3d_data(axis)
+                    )
+                    if data is not None:
+                        return data
+                return self._selected_virtual_marker_preview_c3d_data()
+            if slider in (
+                self.technical_frame_slider,
+                self.anatomical_frame_slider,
+                self.segment_settings_frame_slider,
+            ):
+                return self.c3d_data
+            return None
 
         def _advance_workflow_frame_playback(self) -> None:
             """
             Advance the currently playing preview slider, looping at the end.
             """
             slider = self._workflow_playback_slider
-            if slider is None or not slider.isEnabled() or slider.maximum() <= slider.minimum():
+            if (
+                slider is None
+                or not slider.isEnabled()
+                or slider.maximum() <= slider.minimum()
+            ):
                 self._stop_workflow_frame_playback()
                 return
-            next_frame = slider.value() + 1
-            if next_frame > slider.maximum():
-                next_frame = slider.minimum()
+            frame_count = slider.maximum() - slider.minimum() + 1
+            next_frame = slider.minimum() + (
+                (slider.value() - slider.minimum() + 1) % frame_count
+            )
             slider.setValue(next_frame)
 
         def _stop_workflow_frame_playback(self) -> None:
@@ -3053,7 +5178,9 @@ def launch_model_editor() -> None:
                 if button is not None:
                     button.setText(">")
                     button.setToolTip("Play frames")
-                    button.setEnabled(slider.isEnabled() and slider.maximum() > slider.minimum())
+                    button.setEnabled(
+                        slider.isEnabled() and slider.maximum() > slider.minimum()
+                    )
 
         def _sync_workflow_frame_play_button(self, slider) -> None:
             """
@@ -3073,7 +5200,9 @@ def launch_model_editor() -> None:
             """
             if self.workflow_view_button.menu() is None:
                 self.workflow_view_button.setMenu(self._create_workflow_view_menu())
-            position = self.workflow_view_button.mapToGlobal(self.workflow_view_button.rect().bottomLeft())
+            position = self.workflow_view_button.mapToGlobal(
+                self.workflow_view_button.rect().bottomLeft()
+            )
             self.workflow_view_button.menu().popup(position)
 
         def _create_workflow_view_menu(self):
@@ -3084,7 +5213,9 @@ def launch_model_editor() -> None:
             for plane in ("XY", "YZ", "ZX"):
                 action = menu.addAction(f"{plane} plane")
                 action.triggered.connect(
-                    lambda checked=False, selected_plane=plane: self._apply_workflow_preview_plane(selected_plane)
+                    lambda checked=False, selected_plane=plane: self._apply_workflow_preview_plane(
+                        selected_plane
+                    )
                 )
             menu.addSeparator()
             for label, view in (
@@ -3094,7 +5225,9 @@ def launch_model_editor() -> None:
             ):
                 action = menu.addAction(label)
                 action.triggered.connect(
-                    lambda checked=False, selected_view=view: self._apply_workflow_preview_subject_view(selected_view)
+                    lambda checked=False, selected_view=view: self._apply_workflow_preview_subject_view(
+                        selected_view
+                    )
                 )
             return menu
 
@@ -3109,7 +5242,9 @@ def launch_model_editor() -> None:
             Apply one PCA-derived subject view to the active workflow preview.
             """
             try:
-                matrix = _preview_camera_matrix_for_subject_view(view, self._active_workflow_preview_marker_positions())
+                matrix = _preview_camera_matrix_for_subject_view(
+                    view, self._active_workflow_preview_marker_positions()
+                )
             except ValueError as error:
                 QMessageBox.warning(self, "Unavailable view", str(error))
                 return
@@ -3136,7 +5271,10 @@ def launch_model_editor() -> None:
             widget = self.workflow_canvas_stack.currentWidget()
             scene = getattr(widget, "scene", None)
             if scene is not None:
-                return {name: np.asarray(point, dtype=float) for name, point in scene.markers.items()}
+                return {
+                    name: np.asarray(point, dtype=float)
+                    for name, point in scene.markers.items()
+                }
             c3d_data = getattr(widget, "c3d_data", None)
             if c3d_data is None:
                 return {}
@@ -3169,7 +5307,11 @@ def launch_model_editor() -> None:
                 title = "Virtual marker/axis preview"
                 frame_index = self.workflow_frame_virtual_index
                 canvas_index = self.workflow_canvas_virtual_index
-            elif tab_text == "Segment settings":
+            elif tab_text == "Functional reconstruction":
+                title = "Functional reconstruction preview"
+                frame_index = self.workflow_frame_virtual_index
+                canvas_index = self.workflow_canvas_virtual_index
+            elif tab_text == "Chain definition":
                 title = "Kinematic chain preview"
                 frame_index = self.workflow_frame_segment_settings_index
                 canvas_index = self.workflow_canvas_segment_settings_index
@@ -3177,9 +5319,52 @@ def launch_model_editor() -> None:
             self.workflow_frame_stack.setCurrentIndex(frame_index)
             self.workflow_canvas_stack.setCurrentIndex(canvas_index)
 
-            virtual_preview_is_active = tab_text == "Virtual markers and axes"
-            self.virtual_marker_show_functional_c3d_checkbox.setEnabled(virtual_preview_is_active)
-            self.virtual_marker_whole_body_preview_checkbox.setEnabled(virtual_preview_is_active)
+            virtual_preview_is_active = tab_text in {
+                "Virtual markers and axes",
+                "Functional reconstruction",
+            }
+            self.virtual_marker_show_functional_c3d_checkbox.setEnabled(
+                virtual_preview_is_active
+            )
+            self.virtual_marker_whole_body_preview_checkbox.setEnabled(
+                virtual_preview_is_active
+            )
+            if tab_text == "Functional reconstruction":
+                self._update_virtual_marker_preview()
+
+        def _functional_reconstruction_workflow_tab(self):
+            widget = QWidget()
+            layout = QVBoxLayout(widget)
+            _configure_panel_layout(layout)
+            layout.addWidget(_section_label("Functional trial reconstruction"))
+            info = _muted_label(
+                "Select a SARA knee AoR, reconstruct the whole functional trial with the current chain, and inspect the knee XYZ rotations plus the optimal axis in proximal/distal frames. QLD uses marker weights 100 on the proximal/distal AoR marker sets and 1 on the other model markers."
+            )
+            info.setWordWrap(True)
+            layout.addWidget(info)
+
+            aor_row = QHBoxLayout()
+            _configure_panel_layout(aor_row, margin=0, spacing=8)
+            aor_row.addWidget(QLabel("AoR"))
+            aor_row.addWidget(self.functional_reconstruction_feature_combo, 1)
+            layout.addLayout(aor_row)
+
+            trial_row = QHBoxLayout()
+            _configure_panel_layout(trial_row, margin=0, spacing=8)
+            trial_row.addWidget(QLabel("Functional C3D"))
+            trial_row.addWidget(self.functional_reconstruction_trial_combo, 1)
+            layout.addLayout(trial_row)
+
+            action_row = QHBoxLayout()
+            _configure_panel_layout(action_row, margin=0, spacing=8)
+            action_row.addWidget(QLabel("Method"))
+            action_row.addWidget(self.functional_reconstruction_method_combo)
+            action_row.addWidget(self.run_functional_reconstruction_button)
+            action_row.addStretch()
+            layout.addLayout(action_row)
+            layout.addWidget(self.functional_reconstruction_plot)
+            layout.addWidget(self.functional_reconstruction_output, 1)
+            return widget
 
         def _segment_workflow_tab(self):
             widget = QWidget()
@@ -3336,19 +5521,33 @@ def launch_model_editor() -> None:
             form_grid.addWidget(self.virtual_marker_proximal_combo, 1, 3)
             form_grid.addWidget(QLabel("Functional C3D"), 2, 0)
             form_grid.addWidget(self.virtual_marker_c3d_file_combo, 2, 1, 1, 3)
-            form_grid.addWidget(self.use_diverse_functional_frames_checkbox, 2, 4)
+            functional_frame_options = QVBoxLayout()
+            functional_frame_options.addWidget(
+                self.use_manual_functional_frames_checkbox
+            )
+            functional_frame_options.addWidget(
+                self.use_diverse_functional_frames_checkbox
+            )
+            form_grid.addLayout(functional_frame_options, 2, 4, 2, 1)
             form_grid.addWidget(QLabel("Name"), 3, 0)
             form_grid.addWidget(self.virtual_marker_name_edit, 3, 1)
             form_grid.addWidget(QLabel("Suggested"), 3, 2)
             form_grid.addWidget(self.virtual_marker_suggested_name_label, 3, 3)
+            form_grid.addWidget(self.virtual_marker_source_label, 4, 0)
+            form_grid.addWidget(self.virtual_marker_source_edit, 4, 1, 1, 3)
+            form_grid.addWidget(self.explore_functional_residuals_button, 4, 4)
             form_column.addWidget(_layout_group("Definition", form_grid))
 
-            self.virtual_marker_projection_group = QGroupBox("Projection on axis: project marker(s) onto an axis")
+            self.virtual_marker_projection_group = QGroupBox(
+                "Projection on axis: project marker(s) onto an axis"
+            )
             projection_layout = QGridLayout(self.virtual_marker_projection_group)
             projection_layout.setHorizontalSpacing(14)
             projection_layout.setVerticalSpacing(6)
             projection_layout.addWidget(QLabel("Available markers and axes"), 0, 0)
-            projection_layout.addWidget(self.virtual_marker_projection_available_list, 1, 0)
+            projection_layout.addWidget(
+                self.virtual_marker_projection_available_list, 1, 0
+            )
             projection_layout.addLayout(
                 _list_with_side_buttons(
                     "Marker(s) to project",
@@ -3459,7 +5658,9 @@ def launch_model_editor() -> None:
             anthropometry_form.addWidget(QLabel("Anthropometry"), 0, 2)
             anthropometry_form.addWidget(self.settings_anthropometry_model_combo, 0, 3)
             anthropometry_form.addWidget(QLabel("Length source"), 1, 0)
-            anthropometry_form.addWidget(self.settings_segment_length_source_label, 1, 1, 1, 3)
+            anthropometry_form.addWidget(
+                self.settings_segment_length_source_label, 1, 1, 1, 3
+            )
             anthropometry_form.addWidget(QLabel("Sex"), 2, 0)
             anthropometry_form.addWidget(self.settings_anthropometry_sex_combo, 2, 1)
             anthropometry_form.addWidget(QLabel("Body mass"), 2, 2)
@@ -3511,6 +5712,7 @@ def launch_model_editor() -> None:
 
         def _reload_current_c3d_file(self, *_args) -> None:
             self._c3d_data_cache.clear()
+            self._invalidate_virtual_feature_c3d_preview_cache()
             filepath = self.c3d_path.text().strip()
             if filepath == "":
                 return
@@ -3521,6 +5723,7 @@ def launch_model_editor() -> None:
 
         def _load_c3d_file(self, filepath: str) -> None:
             self.c3d_data = C3dData(filepath)
+            self._invalidate_virtual_feature_c3d_preview_cache()
             if self.strip_participant_prefix_checkbox.isChecked():
                 _strip_participant_prefix_from_c3d_data(self.c3d_data)
             self.c3d_path.setText(filepath)
@@ -3529,8 +5732,12 @@ def launch_model_editor() -> None:
                 _marker_pool_from_draft(self.workflow_draft),
                 tuple(self.c3d_data.marker_names),
             )
-            self.workflow_draft = _remap_c3d_workflow_draft_markers(self.workflow_draft, marker_mapping)
-            self.marker_mapping_label.setText(_format_marker_mapping_summary(marker_mapping))
+            self.workflow_draft = _remap_c3d_workflow_draft_markers(
+                self.workflow_draft, marker_mapping
+            )
+            self.marker_mapping_label.setText(
+                _format_marker_mapping_summary(marker_mapping)
+            )
             self.workflow_marker_pool = tuple(self.c3d_data.marker_names)
             self._configure_technical_frame_slider()
             self._configure_anatomical_frame_slider()
@@ -3541,18 +5748,33 @@ def launch_model_editor() -> None:
 
         def _update_main_c3d_name_label(self) -> None:
             filepath = self.c3d_path.text().strip()
-            self.main_c3d_name_label.setText(Path(filepath).name if filepath else "No main C3D selected")
+            self.main_c3d_name_label.setText(
+                Path(filepath).name if filepath else "No main C3D selected"
+            )
 
         def _choose_c3d_folder(self) -> None:
-            folder = QFileDialog.getExistingDirectory(self, "Choose folder containing C3D files", self.c3d_folder_path)
+            folder = QFileDialog.getExistingDirectory(
+                self, "Choose folder containing C3D files", self.c3d_folder_path
+            )
             if not folder:
                 return
-            progress_dialog, progress_callback = self._c3d_folder_selection_progress_reporter()
+            self._set_c3d_folder(folder)
+
+        def _set_c3d_folder(self, folder: str) -> None:
+            """
+            Set the C3D folder and auto-assign expected C3D files.
+            """
+            progress_dialog, progress_callback = (
+                self._c3d_folder_selection_progress_reporter()
+            )
             try:
                 progress_callback(f"Selected folder: {folder}")
                 self.c3d_folder_path = folder
+                self._invalidate_virtual_feature_c3d_preview_cache()
                 self.c3d_folder_edit.setText(folder)
-                self._auto_assign_c3d_files_from_folder(progress_callback=progress_callback)
+                self._auto_assign_c3d_files_from_folder(
+                    progress_callback=progress_callback
+                )
                 progress_callback("Refreshing C3D file selectors...")
                 self._sync_virtual_marker_c3d_files()
                 self._sync_initial_rotation_c3d_files()
@@ -3612,7 +5834,9 @@ def launch_model_editor() -> None:
             progress_callback("Preparing functional-frame calculations...")
             return progress_dialog, progress_callback
 
-        def _auto_assign_c3d_files_from_folder(self, load_main: bool = True, progress_callback=None) -> None:
+        def _auto_assign_c3d_files_from_folder(
+            self, load_main: bool = True, progress_callback=None
+        ) -> None:
             if not self.c3d_folder_path or self._is_auto_assigning_c3d_files:
                 return
             self._is_auto_assigning_c3d_files = True
@@ -3623,9 +5847,17 @@ def launch_model_editor() -> None:
                 trial_sources = {}
                 for assignment in self.workflow_draft.file_assignments:
                     if progress_callback is not None:
-                        progress_callback(f"Matching C3D file: {assignment.generic_name}")
-                    matched_file = _matching_c3d_file_for_expected_name(self.c3d_folder_path, assignment.generic_name)
-                    source_path = str(matched_file) if matched_file is not None else assignment.source_path
+                        progress_callback(
+                            f"Matching C3D file: {assignment.generic_name}"
+                        )
+                    matched_file = _matching_c3d_file_for_expected_name(
+                        self.c3d_folder_path, assignment.generic_name
+                    )
+                    source_path = (
+                        str(matched_file)
+                        if matched_file is not None
+                        else assignment.source_path
+                    )
                     assignments.append(replace(assignment, source_path=source_path))
                     if source_path:
                         trial_sources[assignment.role] = source_path
@@ -3639,13 +5871,24 @@ def launch_model_editor() -> None:
                     ) or _trial_name_from_virtual_feature_source(marker.equation)
                     source_path = trial_sources.get(trial_name, "")
                     equation = marker.equation
-                    if marker.method in {"score", "sara", "sara_direction"} and equation == "":
-                        parent_name = _parent_segment_name(self.workflow_draft, marker.segment_name)
-                        equation = f"proximal={parent_name}; distal={marker.segment_name}" if parent_name else equation
+                    if (
+                        marker.method in {"score", "sara", "sara_direction"}
+                        and equation == ""
+                    ):
+                        parent_name = _parent_segment_name(
+                            self.workflow_draft, marker.segment_name
+                        )
+                        equation = (
+                            f"proximal={parent_name}; distal={marker.segment_name}"
+                            if parent_name
+                            else equation
+                        )
                     updated_virtual_markers.append(
                         replace(
                             marker,
-                            source=_source_with_c3d_assignment(marker.source, source_path),
+                            source=_source_with_c3d_assignment(
+                                marker.source, source_path
+                            ),
                             equation=equation,
                         )
                     )
@@ -3659,7 +5902,9 @@ def launch_model_editor() -> None:
                     updated_axes.append(
                         replace(
                             axis,
-                            source=_source_with_c3d_assignment(axis.source, source_path),
+                            source=_source_with_c3d_assignment(
+                                axis.source, source_path
+                            ),
                         )
                     )
 
@@ -3703,8 +5948,12 @@ def launch_model_editor() -> None:
             )
             if not filepath:
                 return
-            self._set_c3d_combo_to_filepath(self.settings_initial_rotation_c3d_combo, filepath, "Choose a C3D first")
-            self.settings_initial_rotation_source_edit.setText(self._selected_initial_rotation_c3d_file())
+            self._set_c3d_combo_to_filepath(
+                self.settings_initial_rotation_c3d_combo, filepath, "Choose a C3D first"
+            )
+            self.settings_initial_rotation_source_edit.setText(
+                self._selected_initial_rotation_c3d_file()
+            )
 
         def _generate_template(self) -> None:
             default_name = f"{self.selected_preset().value}_template.json"
@@ -3732,7 +5981,9 @@ def launch_model_editor() -> None:
                 QMessageBox.critical(self, "Unable to generate template", str(error))
 
         def _add_workflow_segment(self) -> None:
-            segment_name, accepted = QInputDialog.getText(self, "Add segment", "Segment name")
+            segment_name, accepted = QInputDialog.getText(
+                self, "Add segment", "Segment name"
+            )
             if not accepted:
                 return
             segment_type, accepted = QInputDialog.getItem(
@@ -3770,7 +6021,9 @@ def launch_model_editor() -> None:
             segment_name = self._selected_workflow_segment_name()
             if segment_name is None:
                 return
-            self.workflow_draft = remove_segment_from_draft(self.workflow_draft, segment_name)
+            self.workflow_draft = remove_segment_from_draft(
+                self.workflow_draft, segment_name
+            )
             self._update_preset_details()
 
         def _assign_workflow_marker(self) -> None:
@@ -3779,8 +6032,12 @@ def launch_model_editor() -> None:
             if segment_name is None or len(marker_names) == 0:
                 return
             try:
-                self.workflow_marker_pool = tuple(dict.fromkeys(self.workflow_marker_pool + marker_names))
-                self.workflow_draft = assign_markers_to_segment(self.workflow_draft, segment_name, marker_names)
+                self.workflow_marker_pool = tuple(
+                    dict.fromkeys(self.workflow_marker_pool + marker_names)
+                )
+                self.workflow_draft = assign_markers_to_segment(
+                    self.workflow_draft, segment_name, marker_names
+                )
                 self._refresh_marker_assignment_details(segment_name)
             except Exception as error:
                 QMessageBox.critical(self, "Unable to assign marker", str(error))
@@ -3792,7 +6049,9 @@ def launch_model_editor() -> None:
                 marker_names = self._selected_workflow_marker_names()
             if segment_name is None or len(marker_names) == 0:
                 return
-            self.workflow_draft = unassign_markers_from_segment(self.workflow_draft, segment_name, marker_names)
+            self.workflow_draft = unassign_markers_from_segment(
+                self.workflow_draft, segment_name, marker_names
+            )
             self._refresh_marker_assignment_details(segment_name)
 
         def _add_workflow_virtual_marker(self) -> None:
@@ -3811,7 +6070,10 @@ def launch_model_editor() -> None:
             self._update_virtual_marker_preview()
 
         def _save_workflow_virtual_marker_from_form(self) -> None:
-            name = self.virtual_marker_name_edit.text().strip() or self._suggested_virtual_marker_name()
+            name = (
+                self.virtual_marker_name_edit.text().strip()
+                or self._suggested_virtual_marker_name()
+            )
             segment_name = self.virtual_marker_segment_combo.currentText().strip()
             method = self._selected_virtual_marker_method()
             source = self._virtual_marker_source_from_form(method)
@@ -3825,7 +6087,9 @@ def launch_model_editor() -> None:
                     source=source,
                     equation=equation,
                 )
-                self.workflow_marker_pool = tuple(dict.fromkeys(self.workflow_marker_pool + (name,)))
+                self.workflow_marker_pool = tuple(
+                    dict.fromkeys(self.workflow_marker_pool + (name,))
+                )
                 self._update_preset_details()
                 self._select_virtual_marker_by_name(name)
             except Exception as error:
@@ -3836,6 +6100,14 @@ def launch_model_editor() -> None:
                 return self.virtual_marker_source_edit.text().strip()
             if method == "marker_mean":
                 return self._technical_marker_source_from_selected_segments()
+            if method == "rab2002_shoulder":
+                return (
+                    self.virtual_marker_source_edit.text().strip()
+                    or _default_rab2002_payload(
+                        self.virtual_marker_name_edit.text().strip(),
+                        self.virtual_marker_segment_combo.currentText().strip(),
+                    )
+                )
             return self._selected_virtual_marker_c3d_file()
 
         def _virtual_marker_equation_from_form(self, method: str) -> str:
@@ -3858,7 +6130,11 @@ def launch_model_editor() -> None:
             proximal = self.virtual_marker_proximal_combo.currentText().strip()
             segment_name = self.virtual_marker_segment_combo.currentText().strip()
             distal = segment_name
-            joint_name = _joint_name_from_segments(proximal, distal) if proximal or distal else segment_name or "Marker"
+            joint_name = (
+                _joint_name_from_segments(proximal, distal)
+                if proximal or distal
+                else segment_name or "Marker"
+            )
             method_label = {
                 "score": "SCoRE",
                 "sara": "SARA",
@@ -3870,9 +6146,13 @@ def launch_model_editor() -> None:
                 method.capitalize() if method else "Virtual",
             )
             if method in {"hara2016_hip", "harrington2007_hip"}:
-                method_label = PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS[method].replace(" ", "")
+                method_label = PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS[method].replace(
+                    " ", ""
+                )
             elif method in {"sobral2025_shoulder", "rab2002_shoulder"}:
-                method_label = PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS[method].replace(" ", "")
+                method_label = PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS[method].replace(
+                    " ", ""
+                )
             local_segment = proximal or segment_name
             if method in {"score", "sara", "sara_direction"} and local_segment:
                 return f"CoR_{method_label}_{joint_name}_wrt_{local_segment}"
@@ -3888,34 +6168,86 @@ def launch_model_editor() -> None:
         def _remove_workflow_virtual_marker(self) -> None:
             axis = self._selected_virtual_axis()
             if axis is not None:
-                self.workflow_draft = remove_axis_from_draft(self.workflow_draft, axis.name)
+                self.workflow_draft = remove_axis_from_draft(
+                    self.workflow_draft, axis.name
+                )
                 self._update_preset_details()
                 return
             name = self._selected_virtual_marker_name()
             if name is None:
                 return
-            self.workflow_draft = remove_virtual_marker_from_draft(self.workflow_draft, name)
+            self.workflow_draft = remove_virtual_marker_from_draft(
+                self.workflow_draft, name
+            )
             self._update_preset_details()
 
         def _load_selected_segment_settings_into_form(self) -> None:
             setting = self._selected_segment_setting()
             if setting is None:
                 return
-            self.settings_translations_edit.setText(setting.translations)
-            self.settings_rotations_edit.setText(setting.rotations)
-            self.settings_q_min_edit.setText(_format_float_list(list(setting.q_min)))
-            self.settings_q_max_edit.setText(_format_float_list(list(setting.q_max)))
-            self.settings_child_translation_checkbox.setChecked(setting.child_translation)
-            self.settings_initial_rotation_method_combo.setCurrentText(setting.initial_rotation_method)
-            self.settings_initial_rotation_source_edit.setText(setting.initial_rotation_source)
-            self.settings_anthropometry_model_combo.setCurrentText(setting.anthropometry_model or "none")
-            self.settings_anthropometry_sex_combo.setCurrentText(setting.anthropometry_sex or "male")
-            self.settings_anthropometry_mass_edit.setText(
-                "" if setting.anthropometry_mass is None else str(setting.anthropometry_mass)
-            )
-            self._refresh_segment_length_fields(setting)
-            self._sync_initial_rotation_c3d_files(setting.initial_rotation_source)
-            self._sync_initial_rotation_source_fields()
+            self._suspend_segment_settings_preview_updates = True
+            try:
+                for widget in (
+                    self.settings_translations_edit,
+                    self.settings_rotations_edit,
+                    self.settings_q_min_edit,
+                    self.settings_q_max_edit,
+                    self.settings_child_translation_checkbox,
+                    self.settings_initial_rotation_method_combo,
+                    self.settings_initial_rotation_source_edit,
+                    self.settings_initial_rotation_c3d_combo,
+                    self.settings_anthropometry_model_combo,
+                    self.settings_anthropometry_sex_combo,
+                    self.settings_anthropometry_mass_edit,
+                ):
+                    widget.blockSignals(True)
+                self.settings_translations_edit.setText(setting.translations)
+                self.settings_rotations_edit.setText(setting.rotations)
+                self.settings_q_min_edit.setText(
+                    _format_float_list(list(setting.q_min))
+                )
+                self.settings_q_max_edit.setText(
+                    _format_float_list(list(setting.q_max))
+                )
+                self.settings_child_translation_checkbox.setChecked(
+                    setting.child_translation
+                )
+                self.settings_initial_rotation_method_combo.setCurrentText(
+                    setting.initial_rotation_method
+                )
+                self.settings_initial_rotation_source_edit.setText(
+                    setting.initial_rotation_source
+                )
+                self.settings_anthropometry_model_combo.setCurrentText(
+                    setting.anthropometry_model or "none"
+                )
+                self.settings_anthropometry_sex_combo.setCurrentText(
+                    setting.anthropometry_sex or "male"
+                )
+                self.settings_anthropometry_mass_edit.setText(
+                    ""
+                    if setting.anthropometry_mass is None
+                    else str(setting.anthropometry_mass)
+                )
+                self._refresh_segment_length_fields(setting)
+                self._sync_initial_rotation_c3d_files(setting.initial_rotation_source)
+                self._sync_initial_rotation_source_fields()
+            finally:
+                for widget in (
+                    self.settings_translations_edit,
+                    self.settings_rotations_edit,
+                    self.settings_q_min_edit,
+                    self.settings_q_max_edit,
+                    self.settings_child_translation_checkbox,
+                    self.settings_initial_rotation_method_combo,
+                    self.settings_initial_rotation_source_edit,
+                    self.settings_initial_rotation_c3d_combo,
+                    self.settings_anthropometry_model_combo,
+                    self.settings_anthropometry_sex_combo,
+                    self.settings_anthropometry_mass_edit,
+                ):
+                    widget.blockSignals(False)
+                self._suspend_segment_settings_preview_updates = False
             self._sync_segment_settings_validation_style()
             self._update_segment_settings_preview()
 
@@ -3923,14 +6255,18 @@ def launch_model_editor() -> None:
             """
             Highlight q range fields when their value count does not match the selected DoF count.
             """
-            translations = self.settings_translations_edit.text().strip().replace("-", "")
+            translations = (
+                self.settings_translations_edit.text().strip().replace("-", "")
+            )
             rotations = self.settings_rotations_edit.text().strip().replace("-", "")
             dof_count = len(translations) + len(rotations)
             q_min_count = _safe_float_count(self.settings_q_min_edit.text())
             q_max_count = _safe_float_count(self.settings_q_max_edit.text())
             q_min_valid = q_min_count in {0, dof_count}
             q_max_valid = q_max_count in {0, dof_count}
-            problem_style = "background: #fff1f2; border: 2px solid #dc2626; color: #7f1d1d;"
+            problem_style = (
+                "background: #fff1f2; border: 2px solid #dc2626; color: #7f1d1d;"
+            )
             self.settings_q_min_edit.setStyleSheet("" if q_min_valid else problem_style)
             self.settings_q_max_edit.setStyleSheet("" if q_max_valid else problem_style)
             return q_min_valid and q_max_valid
@@ -3944,10 +6280,12 @@ def launch_model_editor() -> None:
                     self,
                     "Invalid q bounds",
                     "q min and q max must be empty or contain exactly one value per DoF. "
-                    "Edit Segment settings: DoF axes and Bounds.",
+                    "Edit Chain definition: DoF axes and bounds.",
                 )
                 return
-            initial_rotation_method = self.settings_initial_rotation_method_combo.currentText()
+            initial_rotation_method = (
+                self.settings_initial_rotation_method_combo.currentText()
+            )
             initial_rotation_source = self.settings_initial_rotation_source_edit.text()
             if initial_rotation_method == "anatomical_c3d":
                 initial_rotation_source = self._selected_initial_rotation_c3d_file()
@@ -3962,15 +6300,23 @@ def launch_model_editor() -> None:
                     child_translation=self.settings_child_translation_checkbox.isChecked(),
                     initial_rotation_method=initial_rotation_method,
                     initial_rotation_source=initial_rotation_source,
-                    anthropometry_model=_settings_anthropometry_model(self.settings_anthropometry_model_combo),
+                    anthropometry_model=_settings_anthropometry_model(
+                        self.settings_anthropometry_model_combo
+                    ),
                     anthropometry_sex=self.settings_anthropometry_sex_combo.currentText(),
-                    anthropometry_mass=_parse_optional_float(self.settings_anthropometry_mass_edit.text()),
-                    segment_length=_parse_optional_float(self.settings_segment_length_edit.text()),
+                    anthropometry_mass=_parse_optional_float(
+                        self.settings_anthropometry_mass_edit.text()
+                    ),
+                    segment_length=_parse_optional_float(
+                        self.settings_segment_length_edit.text()
+                    ),
                     segment_length_source=self.settings_segment_length_source_label.text(),
                 )
                 self._update_preset_details()
             except Exception as error:
-                QMessageBox.critical(self, "Unable to apply segment settings", str(error))
+                QMessageBox.critical(
+                    self, "Unable to apply segment settings", str(error)
+                )
 
         def _apply_anthropometry_to_selected_segment(self) -> None:
             setting = self._selected_segment_setting()
@@ -3980,21 +6326,33 @@ def launch_model_editor() -> None:
             self._refresh_segment_length_fields(setting, force_recompute=True)
             self._apply_workflow_segment_settings_from_form()
 
-        def _refresh_segment_length_fields(self, setting, force_recompute: bool = False) -> None:
+        def _refresh_segment_length_fields(
+            self, setting, force_recompute: bool = False
+        ) -> None:
             if self.c3d_data is None:
                 self.settings_segment_length_edit.setText(
-                    "" if setting.segment_length is None else f"{setting.segment_length:.6g}"
+                    ""
+                    if setting.segment_length is None
+                    else f"{setting.segment_length:.6g}"
                 )
                 self.settings_segment_length_source_label.setText(
                     setting.segment_length_source or "No main C3D loaded."
                 )
                 return
             if setting.segment_length is not None and not force_recompute:
-                self.settings_segment_length_edit.setText(f"{setting.segment_length:.6g}")
-                self.settings_segment_length_source_label.setText(setting.segment_length_source or "-")
+                self.settings_segment_length_edit.setText(
+                    f"{setting.segment_length:.6g}"
+                )
+                self.settings_segment_length_source_label.setText(
+                    setting.segment_length_source or "-"
+                )
                 return
-            length, source = _segment_length_from_draft(self.workflow_draft, self.c3d_data, setting.segment_name)
-            self.settings_segment_length_edit.setText("" if length is None else f"{length:.6g}")
+            length, source = _segment_length_from_draft(
+                self.workflow_draft, self.c3d_data, setting.segment_name
+            )
+            self.settings_segment_length_edit.setText(
+                "" if length is None else f"{length:.6g}"
+            )
             self.settings_segment_length_source_label.setText(source)
 
         def _edit_workflow_segment_settings(self) -> None:
@@ -4009,7 +6367,9 @@ def launch_model_editor() -> None:
             )
             if not accepted:
                 return
-            rotations, accepted = QInputDialog.getText(self, "Segment rotations", "Rotations", text=setting.rotations)
+            rotations, accepted = QInputDialog.getText(
+                self, "Segment rotations", "Rotations", text=setting.rotations
+            )
             if not accepted:
                 return
             q_min, accepted = QInputDialog.getText(
@@ -4044,8 +6404,11 @@ def launch_model_editor() -> None:
                 "Method",
                 ["identity", "matrix", "anatomical_c3d"],
                 (
-                    ["identity", "matrix", "anatomical_c3d"].index(setting.initial_rotation_method)
-                    if setting.initial_rotation_method in {"identity", "matrix", "anatomical_c3d"}
+                    ["identity", "matrix", "anatomical_c3d"].index(
+                        setting.initial_rotation_method
+                    )
+                    if setting.initial_rotation_method
+                    in {"identity", "matrix", "anatomical_c3d"}
                     else 0
                 ),
                 False,
@@ -4079,7 +6442,9 @@ def launch_model_editor() -> None:
                 )
                 self._update_preset_details()
             except Exception as error:
-                QMessageBox.critical(self, "Unable to edit segment settings", str(error))
+                QMessageBox.critical(
+                    self, "Unable to edit segment settings", str(error)
+                )
 
         def _assign_workflow_c3d_role(self) -> None:
             role = self._selected_c3d_role()
@@ -4093,14 +6458,18 @@ def launch_model_editor() -> None:
             )
             if not filepath:
                 return
-            self.workflow_draft = assign_c3d_file_role_to_draft(self.workflow_draft, role, filepath)
+            self.workflow_draft = assign_c3d_file_role_to_draft(
+                self.workflow_draft, role, filepath
+            )
             self._update_preset_details()
 
         def _clear_workflow_c3d_role(self) -> None:
             role = self._selected_c3d_role()
             if role is None:
                 return
-            self.workflow_draft = clear_c3d_file_role_from_draft(self.workflow_draft, role)
+            self.workflow_draft = clear_c3d_file_role_from_draft(
+                self.workflow_draft, role
+            )
             self._update_preset_details()
 
         def _set_workflow_segment_parent(self, _parent_name: str | None = None) -> None:
@@ -4115,7 +6484,9 @@ def launch_model_editor() -> None:
                 )
                 self._update_preset_details()
             except Exception as error:
-                QMessageBox.critical(self, "Unable to update segment parent", str(error))
+                QMessageBox.critical(
+                    self, "Unable to update segment parent", str(error)
+                )
 
         def _add_selected_axis_markers(self, vector_index: int, endpoint: str) -> None:
             target_list = self._axis_endpoint_list(vector_index, endpoint)
@@ -4133,7 +6504,9 @@ def launch_model_editor() -> None:
                 if source_name:
                     target_list.addItem(source_name)
 
-        def _remove_selected_axis_markers(self, vector_index: int, endpoint: str) -> None:
+        def _remove_selected_axis_markers(
+            self, vector_index: int, endpoint: str
+        ) -> None:
             target_list = self._axis_endpoint_list(vector_index, endpoint)
             self._remove_selected_axis_markers_from_list(target_list)
             self._sync_axis_vector_endpoint_state(vector_index)
@@ -4146,6 +6519,17 @@ def launch_model_editor() -> None:
         def _remove_selected_axis_markers_from_list(self, target_list) -> None:
             for item in target_list.selectedItems():
                 target_list.takeItem(target_list.row(item))
+
+        def _swap_axis_vector_endpoints(self, vector_index: int) -> None:
+            controls = self.axis_vector_controls[vector_index]
+            start_names = _list_widget_texts(controls["start_list"])
+            end_names = _list_widget_texts(controls["end_list"])
+            controls["start_list"].clear()
+            controls["end_list"].clear()
+            controls["start_list"].addItems(end_names)
+            controls["end_list"].addItems(start_names)
+            self._sync_axis_vector_endpoint_state(vector_index)
+            self._update_segment_axis_preview()
 
         def _axis_endpoint_list(self, vector_index: int, endpoint: str):
             key = "start_list" if endpoint == "start" else "end_list"
@@ -4161,9 +6545,13 @@ def launch_model_editor() -> None:
             controls["add_end_button"].setEnabled(not has_axis_source)
             controls["remove_end_button"].setEnabled(not has_axis_source)
             controls["end_label"].setEnabled(not has_axis_source)
+            controls["swap_button"].setEnabled(not has_axis_source)
 
         def _contains_virtual_axis_source(self, source_names: tuple[str, ...]) -> bool:
-            return _virtual_axis_from_source_names(source_names, self.workflow_draft.axes) is not None
+            return (
+                _virtual_axis_from_source_names(source_names, self.workflow_draft.axes)
+                is not None
+            )
 
         def _save_segment_axis_from_lists(self) -> None:
             segment_name = self._selected_anatomical_segment_name()
@@ -4207,7 +6595,8 @@ def launch_model_editor() -> None:
                     axes=tuple(
                         axis
                         for axis in self.workflow_draft.axes
-                        if axis.segment_name != segment_name or _is_virtual_feature_axis(axis)
+                        if axis.segment_name != segment_name
+                        or _is_virtual_feature_axis(axis)
                     ),
                 )
                 for index, (
@@ -4216,7 +6605,11 @@ def launch_model_editor() -> None:
                     end_markers,
                     keep_vector,
                 ) in enumerate(vector_specs, start=1):
-                    method = "sara_direction" if self._contains_virtual_axis_source(start_markers) else "markers"
+                    method = (
+                        "sara_direction"
+                        if self._contains_virtual_axis_source(start_markers)
+                        else "markers"
+                    )
                     updated_draft = add_axis_to_draft(
                         updated_draft,
                         name=f"{segment_name}_frame_vector_{index}",
@@ -4261,23 +6654,42 @@ def launch_model_editor() -> None:
                     )
             return tuple(specs)
 
-        def _choose_workflow_segment(self, title: str, current_segment_name: str = "") -> str | None:
-            segment_names = [group.segment_name for group in self.workflow_draft.segment_marker_groups]
+        def _choose_workflow_segment(
+            self, title: str, current_segment_name: str = ""
+        ) -> str | None:
+            segment_names = [
+                group.segment_name
+                for group in self.workflow_draft.segment_marker_groups
+            ]
             if not segment_names:
                 return None
-            segment_index = segment_names.index(current_segment_name) if current_segment_name in segment_names else 0
-            segment_name, accepted = QInputDialog.getItem(self, title, "Segment", segment_names, segment_index, False)
+            segment_index = (
+                segment_names.index(current_segment_name)
+                if current_segment_name in segment_names
+                else 0
+            )
+            segment_name, accepted = QInputDialog.getItem(
+                self, title, "Segment", segment_names, segment_index, False
+            )
             return segment_name if accepted else None
 
         def _selected_workflow_segment_name(self) -> str | None:
             if not self.segment_marker_list.selectedItems():
                 return None
-            return self.segment_marker_list.selectedItems()[0].text().split(":", maxsplit=1)[0]
+            return (
+                self.segment_marker_list.selectedItems()[0]
+                .text()
+                .split(":", maxsplit=1)[0]
+            )
 
         def _selected_anatomical_segment_name(self) -> str | None:
             if not self.anatomical_segment_list.selectedItems():
                 return None
-            return self.anatomical_segment_list.selectedItems()[0].text().split(":", maxsplit=1)[0]
+            return (
+                self.anatomical_segment_list.selectedItems()[0]
+                .text()
+                .split(":", maxsplit=1)[0]
+            )
 
         def _selected_workflow_marker_name(self) -> str | None:
             marker_names = self._selected_workflow_marker_names()
@@ -4289,7 +6701,9 @@ def launch_model_editor() -> None:
             marker_names = []
             for item in self.marker_list.selectedItems():
                 marker_name = item.text()
-                if marker_name.startswith("Choose ") or marker_name.startswith("No available"):
+                if marker_name.startswith("Choose ") or marker_name.startswith(
+                    "No available"
+                ):
                     continue
                 marker_names.append(marker_name)
             return tuple(marker_names)
@@ -4298,7 +6712,9 @@ def launch_model_editor() -> None:
             marker_names = []
             for item in self.assigned_marker_list.selectedItems():
                 marker_name = item.text().split("|", maxsplit=1)[0].strip()
-                if marker_name.startswith("Select a segment") or marker_name.startswith("No marker"):
+                if marker_name.startswith("Select a segment") or marker_name.startswith(
+                    "No marker"
+                ):
                     continue
                 marker_names.append(marker_name)
             return tuple(marker_names)
@@ -4310,16 +6726,24 @@ def launch_model_editor() -> None:
             self._update_technical_segment_preview()
             segment_name = self._selected_workflow_segment_name()
             if segment_name is None:
-                self.assigned_marker_list.addItem("Select a segment to inspect its markers.")
+                self.assigned_marker_list.addItem(
+                    "Select a segment to inspect its markers."
+                )
                 return
             for group in self.workflow_draft.segment_marker_groups:
                 if group.segment_name != segment_name:
                     continue
                 if len(group.marker_names) == 0:
-                    self.assigned_marker_list.addItem("No marker assigned to this segment.")
+                    self.assigned_marker_list.addItem(
+                        "No marker assigned to this segment."
+                    )
                     return
                 for marker_name in group.marker_names:
-                    marker_kind = "technical" if marker_name in group.technical_marker_names else "additional"
+                    marker_kind = (
+                        "technical"
+                        if marker_name in group.technical_marker_names
+                        else "additional"
+                    )
                     self.assigned_marker_list.addItem(f"{marker_name} | {marker_kind}")
                 return
 
@@ -4362,7 +6786,9 @@ def launch_model_editor() -> None:
             if frame_count == 0:
                 self.technical_frame_label.setText("Frame 0/0")
             else:
-                self.technical_frame_label.setText(f"Frame {frame_index + 1}/{frame_count}")
+                self.technical_frame_label.setText(
+                    f"Frame {frame_index + 1}/{frame_count}"
+                )
             self.technical_segment_preview.set_context(
                 self.c3d_data,
                 self.workflow_draft.segment_marker_groups,
@@ -4372,12 +6798,16 @@ def launch_model_editor() -> None:
             )
 
         def _update_segment_settings_preview(self, *_args) -> None:
+            if self._suspend_segment_settings_preview_updates:
+                return
             frame_index = self.segment_settings_frame_slider.value()
             frame_count = 0 if self.c3d_data is None else self.c3d_data.nb_frames
             if frame_count == 0:
                 self.segment_settings_frame_label.setText("Frame 0/0")
             else:
-                self.segment_settings_frame_label.setText(f"Frame {frame_index + 1}/{frame_count}")
+                self.segment_settings_frame_label.setText(
+                    f"Frame {frame_index + 1}/{frame_count}"
+                )
             selected_setting = self._selected_segment_setting()
             overrides = {}
             if selected_setting is not None:
@@ -4397,8 +6827,12 @@ def launch_model_editor() -> None:
             )
 
         def _update_anatomical_segment_details(self) -> None:
-            self._update_axis_marker_source_list()
-            self._load_selected_segment_axes_into_controls()
+            self._suspend_anatomical_preview_updates = True
+            try:
+                self._update_axis_marker_source_list()
+                self._load_selected_segment_axes_into_controls()
+            finally:
+                self._suspend_anatomical_preview_updates = False
             self._update_segment_axis_preview()
 
         def _sync_assigned_marker_technical_checkbox(self) -> None:
@@ -4409,7 +6843,10 @@ def launch_model_editor() -> None:
             if is_enabled:
                 for group in self.workflow_draft.segment_marker_groups:
                     if group.segment_name == segment_name:
-                        is_checked = all(marker_name in group.technical_marker_names for marker_name in marker_names)
+                        is_checked = all(
+                            marker_name in group.technical_marker_names
+                            for marker_name in marker_names
+                        )
                         break
             self.assigned_marker_technical_checkbox.blockSignals(True)
             self.assigned_marker_technical_checkbox.setEnabled(is_enabled)
@@ -4440,7 +6877,9 @@ def launch_model_editor() -> None:
                 self.workflow_parent_combo.setEnabled(False)
                 self.workflow_parent_combo.blockSignals(False)
                 return
-            choices = _segment_parent_choices(self.workflow_draft, excluded_segment_name=segment_name)
+            choices = _segment_parent_choices(
+                self.workflow_draft, excluded_segment_name=segment_name
+            )
             self.workflow_parent_combo.addItems(choices)
             current_parent = ""
             for group in self.workflow_draft.segment_marker_groups:
@@ -4457,9 +6896,13 @@ def launch_model_editor() -> None:
             self.axis_marker_source_list.clear()
             segment_name = self._selected_anatomical_segment_name()
             if segment_name is None:
-                self.axis_marker_source_list.addItem("Select a segment to list axis markers.")
+                self.axis_marker_source_list.addItem(
+                    "Select a segment to list axis markers."
+                )
                 return
-            for source_label in _anatomical_axis_source_labels(self.workflow_draft, self.workflow_marker_pool):
+            for source_label in _anatomical_axis_source_labels(
+                self.workflow_draft, self.workflow_marker_pool
+            ):
                 self.axis_marker_source_list.addItem(source_label)
 
         def _load_selected_segment_axes_into_controls(self) -> None:
@@ -4470,21 +6913,31 @@ def launch_model_editor() -> None:
             for marker_name in origin_markers:
                 self.axis_origin_marker_list.addItem(marker_name)
             for index, controls in enumerate(self.axis_vector_controls):
+                axis_combo = controls["axis_combo"]
+                keep_checkbox = controls["keep_checkbox"]
+                axis_combo.blockSignals(True)
+                keep_checkbox.blockSignals(True)
                 controls["start_list"].clear()
                 controls["end_list"].clear()
-                controls["axis_combo"].setCurrentText("x" if index == 0 else "y")
-                controls["keep_checkbox"].setChecked(index == 0)
+                axis_combo.setCurrentText("x" if index == 0 else "y")
+                keep_checkbox.setChecked(index == 0)
                 if index >= len(axes):
+                    axis_combo.blockSignals(False)
+                    keep_checkbox.blockSignals(False)
                     self._sync_axis_vector_endpoint_state(index)
                     continue
                 axis = axes[index]
                 fallback_axis = "x" if index == 0 else "y"
-                controls["axis_combo"].setCurrentText(axis.axis if axis.axis in {"x", "y", "z"} else fallback_axis)
-                controls["keep_checkbox"].setChecked(axis.keep_vector)
+                axis_combo.setCurrentText(
+                    axis.axis if axis.axis in {"x", "y", "z"} else fallback_axis
+                )
+                keep_checkbox.setChecked(axis.keep_vector)
                 for marker_name in axis.start_markers:
                     controls["start_list"].addItem(marker_name)
                 for marker_name in axis.end_markers:
                     controls["end_list"].addItem(marker_name)
+                axis_combo.blockSignals(False)
+                keep_checkbox.blockSignals(False)
                 self._sync_axis_vector_endpoint_state(index)
             self._ensure_single_kept_axis_vector(0)
 
@@ -4494,7 +6947,8 @@ def launch_model_editor() -> None:
             return tuple(
                 axis
                 for axis in self.workflow_draft.axes
-                if axis.segment_name == segment_name and not _is_virtual_feature_axis(axis)
+                if axis.segment_name == segment_name
+                and not _is_virtual_feature_axis(axis)
             )
 
         def _ensure_single_kept_axis_vector(self, selected_index: int) -> None:
@@ -4507,7 +6961,9 @@ def launch_model_editor() -> None:
                 if controls["keep_checkbox"].isChecked()
             ]
             index_to_keep = (
-                selected_index if selected_index in checked_indices else (checked_indices[0] if checked_indices else 0)
+                selected_index
+                if selected_index in checked_indices
+                else (checked_indices[0] if checked_indices else 0)
             )
             for index, controls in enumerate(self.axis_vector_controls):
                 checkbox = controls["keep_checkbox"]
@@ -4517,16 +6973,22 @@ def launch_model_editor() -> None:
             self._update_segment_axis_preview()
 
         def _update_segment_axis_preview(self) -> None:
+            if self._suspend_anatomical_preview_updates:
+                return
             segment_name = self._selected_anatomical_segment_name()
             if segment_name is None:
-                self.segment_axis_preview.set_context(self.c3d_data, (), (), (), "", (), ())
+                self.segment_axis_preview.set_context(
+                    self.c3d_data, (), (), (), "", (), ()
+                )
                 return
             frame_index = self.anatomical_frame_slider.value()
             frame_count = 0 if self.c3d_data is None else self.c3d_data.nb_frames
             if frame_count == 0:
                 self.anatomical_frame_label.setText("Frame 0/0")
             else:
-                self.anatomical_frame_label.setText(f"Frame {frame_index + 1}/{frame_count}")
+                self.anatomical_frame_label.setText(
+                    f"Frame {frame_index + 1}/{frame_count}"
+                )
             segment_marker_names = tuple(self.workflow_marker_pool)
             label_marker_names = self._marker_names_for_segment(segment_name)
             segment_axes = self._local_frame_axes_for_segment(segment_name)
@@ -4562,11 +7024,20 @@ def launch_model_editor() -> None:
                 _list_widget_texts(self.axis_origin_marker_list),
                 frame_index,
                 self.use_diverse_functional_frames_checkbox.isChecked(),
+                self._manual_functional_frame_indices(),
             )
 
         def _virtual_feature_c3d_preview_data_map(self) -> dict[str, object]:
+            cache_key = self._virtual_feature_c3d_preview_data_cache_key()
+            if (
+                self._virtual_feature_c3d_preview_data_cache is not None
+                and self._virtual_feature_c3d_preview_data_cache_signature == cache_key
+            ):
+                return self._virtual_feature_c3d_preview_data_cache
             c3d_data_by_key = {}
-            for feature in tuple(self.workflow_draft.virtual_markers) + tuple(self.workflow_draft.axes):
+            for feature in tuple(self.workflow_draft.virtual_markers) + tuple(
+                self.workflow_draft.axes
+            ):
                 sources = (
                     getattr(feature, "source", ""),
                     getattr(feature, "equation", ""),
@@ -4576,9 +7047,15 @@ def launch_model_editor() -> None:
                     trial_name = _trial_name_from_virtual_feature_source(source)
                     filepath = ""
                     if c3d_name:
-                        filepath = str(Path(self.c3d_folder_path) / c3d_name) if self.c3d_folder_path else c3d_name
+                        filepath = (
+                            str(Path(self.c3d_folder_path) / c3d_name)
+                            if self.c3d_folder_path
+                            else c3d_name
+                        )
                     elif trial_name:
-                        filepath = _assigned_c3d_source_for_role(self.workflow_draft, trial_name)
+                        filepath = _assigned_c3d_source_for_role(
+                            self.workflow_draft, trial_name
+                        )
                     if not filepath:
                         continue
                     try:
@@ -4589,7 +7066,37 @@ def launch_model_editor() -> None:
                         c3d_data_by_key[c3d_name] = data
                     if trial_name:
                         c3d_data_by_key[trial_name] = data
+            self._virtual_feature_c3d_preview_data_cache = c3d_data_by_key
+            self._virtual_feature_c3d_preview_data_cache_signature = cache_key
             return c3d_data_by_key
+
+        def _virtual_feature_c3d_preview_data_cache_key(self) -> tuple[object, ...]:
+            features = tuple(
+                (
+                    feature.__class__.__name__,
+                    getattr(feature, "name", ""),
+                    getattr(feature, "method", ""),
+                    getattr(feature, "source", ""),
+                    getattr(feature, "equation", ""),
+                )
+                for feature in tuple(self.workflow_draft.virtual_markers)
+                + tuple(self.workflow_draft.axes)
+            )
+            assignments = tuple(
+                (assignment.role, assignment.generic_name, assignment.source_path)
+                for assignment in self.workflow_draft.file_assignments
+            )
+            return (
+                id(self.workflow_draft),
+                self.c3d_folder_path,
+                self.strip_participant_prefix_checkbox.isChecked(),
+                features,
+                assignments,
+            )
+
+        def _invalidate_virtual_feature_c3d_preview_cache(self) -> None:
+            self._virtual_feature_c3d_preview_data_cache = None
+            self._virtual_feature_c3d_preview_data_cache_signature = None
 
         def _marker_names_for_segment(self, segment_name: str) -> tuple[str, ...]:
             marker_names = []
@@ -4599,7 +7106,9 @@ def launch_model_editor() -> None:
                     marker_names.extend(group.technical_marker_names)
                     break
             marker_names.extend(
-                marker.name for marker in self.workflow_draft.virtual_markers if marker.segment_name == segment_name
+                marker.name
+                for marker in self.workflow_draft.virtual_markers
+                if marker.segment_name == segment_name
             )
             return tuple(dict.fromkeys(marker_names))
 
@@ -4640,17 +7149,29 @@ def launch_model_editor() -> None:
                     return
 
         def _load_selected_virtual_marker_into_form(self) -> None:
+            self._sync_functional_residual_button()
             marker = self._selected_virtual_marker()
             if marker is None:
                 axis = self._selected_virtual_axis()
                 if axis is not None:
                     self.virtual_marker_name_edit.setText(axis.name)
                     self.virtual_marker_segment_combo.setCurrentText(axis.segment_name)
-                    parent_name = _parent_segment_name(self.workflow_draft, axis.segment_name)
-                    if parent_name and self.virtual_marker_proximal_combo.findText(parent_name) >= 0:
+                    parent_name = _parent_segment_name(
+                        self.workflow_draft, axis.segment_name
+                    )
+                    if (
+                        parent_name
+                        and self.virtual_marker_proximal_combo.findText(parent_name)
+                        >= 0
+                    ):
                         self.virtual_marker_proximal_combo.setCurrentText(parent_name)
-                    if self.virtual_marker_distal_combo.findText(axis.segment_name) >= 0:
-                        self.virtual_marker_distal_combo.setCurrentText(axis.segment_name)
+                    if (
+                        self.virtual_marker_distal_combo.findText(axis.segment_name)
+                        >= 0
+                    ):
+                        self.virtual_marker_distal_combo.setCurrentText(
+                            axis.segment_name
+                        )
                     self._set_virtual_marker_method(axis.method)
                     self.virtual_marker_source_edit.setText(axis.source)
                     self.virtual_marker_equation_edit.setText("")
@@ -4672,14 +7193,20 @@ def launch_model_editor() -> None:
             else:
                 self._set_virtual_marker_method(marker.method)
             self.virtual_marker_source_edit.setText(marker.source)
-            self.virtual_marker_equation_edit.setText(marker.equation if marker.method == "axis_projection" else "")
-            self._load_axis_projection_payload_into_lists(marker.source, marker.equation)
+            self.virtual_marker_equation_edit.setText(
+                marker.equation if marker.method == "axis_projection" else ""
+            )
+            self._load_axis_projection_payload_into_lists(
+                marker.source, marker.equation
+            )
             proximal, distal = _score_segments_from_payload(marker.equation)
             if proximal:
                 self.virtual_marker_proximal_combo.setCurrentText(proximal)
             if distal:
                 self.virtual_marker_distal_combo.setCurrentText(distal)
-            self._select_virtual_marker_c3d_from_source("; ".join((marker.source, marker.equation)))
+            self._select_virtual_marker_c3d_from_source(
+                "; ".join((marker.source, marker.equation))
+            )
             self._sync_virtual_marker_method_fields()
             self._update_virtual_marker_info_label(marker)
             self._update_virtual_marker_preview()
@@ -4688,7 +7215,9 @@ def launch_model_editor() -> None:
             source_name = _c3d_source_name_from_virtual_feature_source(source)
             if not source_name:
                 trial_name = _trial_name_from_virtual_feature_source(source)
-                source_name = Path(_assigned_c3d_source_for_role(self.workflow_draft, trial_name)).name
+                source_name = Path(
+                    _assigned_c3d_source_for_role(self.workflow_draft, trial_name)
+                ).name
             if not source_name:
                 return
             if self.virtual_marker_c3d_file_combo.findText(source_name) >= 0:
@@ -4699,11 +7228,15 @@ def launch_model_editor() -> None:
             current_proximal = self.virtual_marker_proximal_combo.currentText()
             current_distal = self.virtual_marker_distal_combo.currentText()
 
-            segment_names = [group.segment_name for group in self.workflow_draft.segment_marker_groups]
+            segment_names = [
+                group.segment_name
+                for group in self.workflow_draft.segment_marker_groups
+            ]
             technical_segment_names = [
                 group.segment_name
                 for group in self.workflow_draft.segment_marker_groups
-                if group.segment_type == "technical" or len(group.technical_marker_names) != 0
+                if group.segment_type == "technical"
+                or len(group.technical_marker_names) != 0
             ]
             if len(technical_segment_names) == 0:
                 technical_segment_names = segment_names
@@ -4742,17 +7275,22 @@ def launch_model_editor() -> None:
             self._sync_c3d_combo(
                 self.settings_initial_rotation_c3d_combo,
                 "Choose a C3D first",
-                current_source or self.settings_initial_rotation_c3d_combo.currentText(),
+                current_source
+                or self.settings_initial_rotation_c3d_combo.currentText(),
             )
             self._sync_initial_rotation_source_fields()
 
         def _available_workflow_c3d_files(self) -> tuple[str, ...]:
             files = _c3d_file_names_from_folder(self.c3d_folder_path)
             if self.c3d_path.text().strip():
-                files = tuple(dict.fromkeys(files + (Path(self.c3d_path.text().strip()).name,)))
+                files = tuple(
+                    dict.fromkeys(files + (Path(self.c3d_path.text().strip()).name,))
+                )
             return files
 
-        def _sync_c3d_combo(self, combo, placeholder: str, current_value: str = "") -> None:
+        def _sync_c3d_combo(
+            self, combo, placeholder: str, current_value: str = ""
+        ) -> None:
             current_value = current_value.strip()
             files = self._available_workflow_c3d_files()
             selected_value = ""
@@ -4774,10 +7312,14 @@ def launch_model_editor() -> None:
                 combo.setCurrentText(selected_value)
             combo.blockSignals(False)
 
-        def _set_c3d_combo_to_filepath(self, combo, filepath: str, placeholder: str) -> None:
+        def _set_c3d_combo_to_filepath(
+            self, combo, filepath: str, placeholder: str
+        ) -> None:
             filepath = str(Path(filepath))
             selected_value = Path(filepath).name
-            if not self.c3d_folder_path or Path(filepath).parent != Path(self.c3d_folder_path):
+            if not self.c3d_folder_path or Path(filepath).parent != Path(
+                self.c3d_folder_path
+            ):
                 selected_value = filepath
             self._sync_c3d_combo(combo, placeholder, selected_value)
 
@@ -4801,20 +7343,31 @@ def launch_model_editor() -> None:
             distal = self.virtual_marker_segment_combo.currentText().strip()
             lines = []
             for label, segment_name in (("Parent", proximal), ("Segment", distal)):
-                technical_markers = _technical_markers_for_segment(self.workflow_draft, segment_name)
+                technical_markers = _technical_markers_for_segment(
+                    self.workflow_draft, segment_name
+                )
                 if technical_markers:
-                    lines.append(f"{label} {segment_name}: {', '.join(technical_markers)}")
+                    lines.append(
+                        f"{label} {segment_name}: {', '.join(technical_markers)}"
+                    )
                 elif segment_name:
                     lines.append(f"{label} {segment_name}: no technical marker defined")
-            self.virtual_marker_technical_markers_label.setText("\n".join(lines) if lines else "-")
+            self.virtual_marker_technical_markers_label.setText(
+                "\n".join(lines) if lines else "-"
+            )
             self._sync_projection_available_list()
 
         def _sync_projection_available_list(self) -> None:
             if not hasattr(self, "virtual_marker_projection_available_list"):
                 return
-            current_selection = {item.text() for item in self.virtual_marker_projection_available_list.selectedItems()}
+            current_selection = {
+                item.text()
+                for item in self.virtual_marker_projection_available_list.selectedItems()
+            }
             self.virtual_marker_projection_available_list.clear()
-            for source_label in _anatomical_axis_source_labels(self.workflow_draft, self.workflow_marker_pool):
+            for source_label in _anatomical_axis_source_labels(
+                self.workflow_draft, self.workflow_marker_pool
+            ):
                 self.virtual_marker_projection_available_list.addItem(source_label)
             for index in range(self.virtual_marker_projection_available_list.count()):
                 item = self.virtual_marker_projection_available_list.item(index)
@@ -4829,18 +7382,24 @@ def launch_model_editor() -> None:
             self._sync_axis_projection_payload_from_lists()
 
         def _remove_projection_source_markers(self) -> None:
-            self._remove_selected_axis_markers_from_list(self.virtual_marker_projected_marker_list)
+            self._remove_selected_axis_markers_from_list(
+                self.virtual_marker_projected_marker_list
+            )
             self._sync_axis_projection_payload_from_lists()
 
         def _add_projection_axis_source(self) -> None:
-            selected_items = self.virtual_marker_projection_available_list.selectedItems()
+            selected_items = (
+                self.virtual_marker_projection_available_list.selectedItems()
+            )
             if len(selected_items) == 0:
                 return
             self.virtual_marker_projection_axis_list.clear()
             for item in selected_items:
                 text = item.text().strip()
                 if text.startswith("[axis]"):
-                    self.virtual_marker_projection_axis_list.addItem(f"[axis] {_axis_source_name_from_list_text(text)}")
+                    self.virtual_marker_projection_axis_list.addItem(
+                        f"[axis] {_axis_source_name_from_list_text(text)}"
+                    )
                     break
             else:
                 for item in selected_items:
@@ -4850,17 +7409,23 @@ def launch_model_editor() -> None:
             self._sync_axis_projection_payload_from_lists()
 
         def _remove_projection_axis_source(self) -> None:
-            self._remove_selected_axis_markers_from_list(self.virtual_marker_projection_axis_list)
+            self._remove_selected_axis_markers_from_list(
+                self.virtual_marker_projection_axis_list
+            )
             self._sync_axis_projection_payload_from_lists()
 
-        def _load_axis_projection_payload_into_lists(self, source: str, equation: str) -> None:
+        def _load_axis_projection_payload_into_lists(
+            self, source: str, equation: str
+        ) -> None:
             self.virtual_marker_projected_marker_list.clear()
             self.virtual_marker_projection_axis_list.clear()
             if self._selected_virtual_marker_method() != "axis_projection":
                 return
             for marker_name in _axis_projection_point_markers_from_payload(source):
                 self.virtual_marker_projected_marker_list.addItem(marker_name)
-            axis_name, axis_start, axis_end = _axis_projection_axis_from_payload(equation)
+            axis_name, axis_start, axis_end = _axis_projection_axis_from_payload(
+                equation
+            )
             if axis_name:
                 self.virtual_marker_projection_axis_list.addItem(f"[axis] {axis_name}")
             else:
@@ -4868,11 +7433,15 @@ def launch_model_editor() -> None:
                     self.virtual_marker_projection_axis_list.addItem(marker_name)
 
         def _sync_axis_projection_payload_from_lists(self) -> None:
-            point_markers = _list_widget_texts(self.virtual_marker_projected_marker_list)
+            point_markers = _list_widget_texts(
+                self.virtual_marker_projected_marker_list
+            )
             axis_items = _list_widget_texts(self.virtual_marker_projection_axis_list)
             self.virtual_marker_source_edit.blockSignals(True)
             self.virtual_marker_equation_edit.blockSignals(True)
-            self.virtual_marker_source_edit.setText(f"point={','.join(point_markers)}" if point_markers else "")
+            self.virtual_marker_source_edit.setText(
+                f"point={','.join(point_markers)}" if point_markers else ""
+            )
             axis_name = ""
             axis_markers = []
             for item in axis_items:
@@ -4883,7 +7452,9 @@ def launch_model_editor() -> None:
             if axis_name:
                 self.virtual_marker_equation_edit.setText(f"axis={axis_name}")
             elif len(axis_markers) >= 2:
-                self.virtual_marker_equation_edit.setText(f"axis_start={axis_markers[0]}; axis_end={axis_markers[1]}")
+                self.virtual_marker_equation_edit.setText(
+                    f"axis_start={axis_markers[0]}; axis_end={axis_markers[1]}"
+                )
             else:
                 self.virtual_marker_equation_edit.setText("")
             self.virtual_marker_equation_edit.blockSignals(False)
@@ -4891,10 +7462,14 @@ def launch_model_editor() -> None:
             self._update_virtual_marker_preview()
 
         def _selected_virtual_marker_c3d_file(self) -> str:
-            return self._selected_c3d_file_from_combo(self.virtual_marker_c3d_file_combo, "Choose a C3D folder first")
+            return self._selected_c3d_file_from_combo(
+                self.virtual_marker_c3d_file_combo, "Choose a C3D folder first"
+            )
 
         def _selected_initial_rotation_c3d_file(self) -> str:
-            return self._selected_c3d_file_from_combo(self.settings_initial_rotation_c3d_combo, "Choose a C3D first")
+            return self._selected_c3d_file_from_combo(
+                self.settings_initial_rotation_c3d_combo, "Choose a C3D first"
+            )
 
         def _selected_c3d_file_from_combo(self, combo, placeholder: str) -> str:
             filename = combo.currentText().strip()
@@ -4923,20 +7498,41 @@ def launch_model_editor() -> None:
                 return self.c3d_data
 
         def _selected_virtual_marker_preview_c3d_data(self):
+            if self._selected_virtual_marker_method() == "rab2002_shoulder":
+                return self.c3d_data
             if self.virtual_marker_show_functional_c3d_checkbox.isChecked():
                 return self._selected_virtual_marker_c3d_data()
             return self.c3d_data
 
         def _selected_virtual_marker_preview_label(self) -> str:
+            if self._selected_virtual_marker_method() == "rab2002_shoulder":
+                static_file = (
+                    Path(self.c3d_path.text().strip()).name
+                    if self.c3d_path.text().strip()
+                    else ""
+                )
+                return (
+                    f"static/main C3D ({static_file})"
+                    if static_file
+                    else "static/main C3D"
+                )
             if self.virtual_marker_show_functional_c3d_checkbox.isChecked():
                 filename = self.virtual_marker_c3d_file_combo.currentText().strip()
                 return f"functional C3D ({filename})" if filename else "functional C3D"
-            static_file = Path(self.c3d_path.text().strip()).name if self.c3d_path.text().strip() else ""
-            return f"static/main C3D ({static_file})" if static_file else "static/main C3D"
+            static_file = (
+                Path(self.c3d_path.text().strip()).name
+                if self.c3d_path.text().strip()
+                else ""
+            )
+            return (
+                f"static/main C3D ({static_file})" if static_file else "static/main C3D"
+            )
 
         def _sync_virtual_marker_frame_slider(self, c3d_data) -> None:
             frame_count = 0 if c3d_data is None else c3d_data.nb_frames
-            current_frame = min(self.virtual_marker_frame_slider.value(), max(frame_count - 1, 0))
+            current_frame = min(
+                self.virtual_marker_frame_slider.value(), max(frame_count - 1, 0)
+            )
             self.virtual_marker_frame_slider.blockSignals(True)
             self.virtual_marker_frame_slider.setEnabled(frame_count > 1)
             self.virtual_marker_frame_slider.setMinimum(0)
@@ -4947,23 +7543,36 @@ def launch_model_editor() -> None:
             if frame_count == 0:
                 self.virtual_marker_frame_label.setText("Frame 0/0")
             else:
-                self.virtual_marker_frame_label.setText(f"Frame {current_frame + 1}/{frame_count}")
+                self.virtual_marker_frame_label.setText(
+                    f"Frame {current_frame + 1}/{frame_count}"
+                )
+            self.functional_frame_range_bar.set_frame_count(frame_count)
+            self._sync_functional_frame_range_bar_enabled()
 
         def _mirror_initial_rotation_c3d_source(self, *_args) -> None:
-            if self.settings_initial_rotation_method_combo.currentText() == "anatomical_c3d":
-                self.settings_initial_rotation_source_edit.setText(self._selected_initial_rotation_c3d_file())
+            if (
+                self.settings_initial_rotation_method_combo.currentText()
+                == "anatomical_c3d"
+            ):
+                self.settings_initial_rotation_source_edit.setText(
+                    self._selected_initial_rotation_c3d_file()
+                )
 
         def _sync_initial_rotation_source_fields(self, *_args) -> None:
             method = self.settings_initial_rotation_method_combo.currentText()
             is_anatomical_c3d = method == "anatomical_c3d"
             is_matrix = method == "matrix"
-            self.settings_initial_rotation_source_edit.setEnabled(is_matrix or is_anatomical_c3d)
+            self.settings_initial_rotation_source_edit.setEnabled(
+                is_matrix or is_anatomical_c3d
+            )
             self.settings_initial_rotation_c3d_combo.setEnabled(
                 is_anatomical_c3d and self._selected_initial_rotation_c3d_file() != ""
             )
             self.browse_initial_rotation_c3d_button.setEnabled(is_anatomical_c3d)
             if is_anatomical_c3d:
-                self.settings_initial_rotation_source_edit.setText(self._selected_initial_rotation_c3d_file())
+                self.settings_initial_rotation_source_edit.setText(
+                    self._selected_initial_rotation_c3d_file()
+                )
 
         def _technical_marker_source_from_selected_segments(self) -> str:
             marker_names = []
@@ -4971,7 +7580,9 @@ def launch_model_editor() -> None:
                 self.virtual_marker_proximal_combo.currentText().strip(),
                 self.virtual_marker_segment_combo.currentText().strip(),
             ):
-                marker_names.extend(_technical_markers_for_segment(self.workflow_draft, segment_name))
+                marker_names.extend(
+                    _technical_markers_for_segment(self.workflow_draft, segment_name)
+                )
             return ",".join(dict.fromkeys(marker_names))
 
         def _selected_virtual_marker_method(self) -> str:
@@ -4984,23 +7595,35 @@ def launch_model_editor() -> None:
             )
 
         def _set_virtual_marker_method(self, method: str) -> None:
-            self.virtual_marker_method_combo.setCurrentText(_virtual_marker_method_display(method))
+            self.virtual_marker_method_combo.setCurrentText(
+                _virtual_marker_method_display(method)
+            )
 
-        def _sync_virtual_marker_method_fields(self, _method: str | None = None) -> None:
+        def _sync_virtual_marker_method_fields(
+            self, _method: str | None = None
+        ) -> None:
             method = self._selected_virtual_marker_method()
             is_predictive = (
-                _virtual_marker_method_from_display(self.virtual_marker_method_combo.currentText().strip())
+                _virtual_marker_method_from_display(
+                    self.virtual_marker_method_combo.currentText().strip()
+                )
                 == "predictive"
             )
             self.virtual_marker_predictive_method_combo.setEnabled(is_predictive)
-            has_c3d_file = self.virtual_marker_c3d_file_combo.currentText().strip() != "Choose a C3D folder first"
+            has_c3d_file = (
+                self.virtual_marker_c3d_file_combo.currentText().strip()
+                != "Choose a C3D folder first"
+            )
             self.virtual_marker_c3d_file_combo.setEnabled(
-                method not in {"marker_mean", "axis_projection"} and has_c3d_file
+                method not in {"marker_mean", "axis_projection", "rab2002_shoulder"}
+                and has_c3d_file
             )
             self.virtual_marker_proximal_combo.setEnabled(
                 method in {"score", "sara", "sara_direction"} or is_predictive
             )
-            self.virtual_marker_distal_combo.setEnabled(method in {"score", "sara", "sara_direction"} or is_predictive)
+            self.virtual_marker_distal_combo.setEnabled(
+                method in {"score", "sara", "sara_direction"} or is_predictive
+            )
             is_axis_projection = method == "axis_projection"
             self.virtual_marker_projection_group.setEnabled(is_axis_projection)
             for widget in (
@@ -5016,11 +7639,29 @@ def launch_model_editor() -> None:
             self._sync_projection_available_list()
             if is_axis_projection:
                 if self.virtual_marker_source_edit.text().strip() == "":
-                    self.virtual_marker_source_edit.setPlaceholderText("point=LKNE,LKNEM")
+                    self.virtual_marker_source_edit.setPlaceholderText(
+                        "point=LKNE,LKNEM"
+                    )
                 if self.virtual_marker_equation_edit.text().strip() == "":
                     self.virtual_marker_equation_edit.setPlaceholderText(
                         "axis=Axis_LKnee_SARA or axis_start=LKNE,LKNEM; axis_end=LANK,LANKM"
                     )
+            is_rab2002 = method == "rab2002_shoulder"
+            self.virtual_marker_source_label.setVisible(is_rab2002)
+            self.virtual_marker_source_edit.setVisible(is_rab2002)
+            self.virtual_marker_source_edit.setEnabled(is_rab2002)
+            if is_rab2002:
+                if self.virtual_marker_source_edit.text().strip() == "":
+                    self.virtual_marker_source_edit.setText(
+                        _default_rab2002_payload(
+                            self.virtual_marker_name_edit.text().strip(),
+                            self.virtual_marker_segment_combo.currentText().strip(),
+                        )
+                    )
+                self.virtual_marker_source_label.setText("Rab markers")
+                self.virtual_marker_source_edit.setPlaceholderText(
+                    "point=RCAJ; mid=RHME,RHLE; fraction=0.17"
+                )
             hints = {
                 "pointing": (
                     "Pointing is not implemented yet: the workflow still needs a dedicated pointing object "
@@ -5042,7 +7683,10 @@ def launch_model_editor() -> None:
                 "hara2016_hip": "Predict a hip CoR from the selected C3D and segment pair.",
                 "harrington2007_hip": "Predict a hip CoR from the selected C3D and segment pair.",
                 "sobral2025_shoulder": "Predict a shoulder CoR from the selected C3D and segment pair.",
-                "rab2002_shoulder": "Predict a glenohumeral center from CAJ and the midpoint between HME/HLE.",
+                "rab2002_shoulder": (
+                    "Static C3D: draw CAJ to the midpoint of HME/HLE, then place GJC at 17% of that vector "
+                    "from CAJ. Edit point=... and mid=...,... to choose the three markers."
+                ),
             }
             self.virtual_marker_info_label.setText(hints.get(method, ""))
             self._update_suggested_virtual_marker_name()
@@ -5058,13 +7702,32 @@ def launch_model_editor() -> None:
             proximal, distal = _score_segments_from_payload(marker.equation)
             segment_pair = f"{proximal or '-'} -> {distal or '-'}"
             if marker.method == "axis_projection":
-                point_markers = _axis_projection_point_markers_from_payload(marker.source)
-                axis_reference, axis_start, axis_end = _axis_projection_axis_from_payload(marker.equation)
-                axis_text = axis_reference or f"{','.join(axis_start) or '-'} -> {','.join(axis_end) or '-'}"
+                point_markers = _axis_projection_point_markers_from_payload(
+                    marker.source
+                )
+                axis_reference, axis_start, axis_end = (
+                    _axis_projection_axis_from_payload(marker.equation)
+                )
+                axis_text = (
+                    axis_reference
+                    or f"{','.join(axis_start) or '-'} -> {','.join(axis_end) or '-'}"
+                )
                 self.virtual_marker_info_label.setText(
                     f"Name: {marker.name}\nSegment: {marker.segment_name}\n"
                     f"Method: {_virtual_marker_method_display(marker.method)}\n"
                     f"Projected markers: {','.join(point_markers) or '-'}\nProjection axis: {axis_text}"
+                )
+                return
+            if marker.method == "rab2002_shoulder":
+                point_marker, mid_markers, fraction = _rab2002_markers_from_payload(
+                    marker.source, marker.name
+                )
+                self.virtual_marker_info_label.setText(
+                    f"Name: {marker.name}\nSegment: {marker.segment_name}\n"
+                    "Method: Rab 2002 shoulder\n"
+                    f"Static markers: CAJ/acromion={point_marker or '-'}; epicondyles={','.join(mid_markers) or '-'}\n"
+                    f"Geometry: GJC = CAJ + {fraction:g} * (mid(epicondyles) - CAJ)\n"
+                    "The preview uses the static/main C3D because this predictive marker is anatomical, not functional."
                 )
                 return
             self.virtual_marker_info_label.setText(
@@ -5077,8 +7740,12 @@ def launch_model_editor() -> None:
 
         def _update_virtual_axis_info_label(self, axis) -> None:
             source = axis.source if axis.source else "-"
-            origin = ",".join(axis.origin_markers) if len(axis.origin_markers) != 0 else "-"
-            start = ",".join(axis.start_markers) if len(axis.start_markers) != 0 else "-"
+            origin = (
+                ",".join(axis.origin_markers) if len(axis.origin_markers) != 0 else "-"
+            )
+            start = (
+                ",".join(axis.start_markers) if len(axis.start_markers) != 0 else "-"
+            )
             end = ",".join(axis.end_markers) if len(axis.end_markers) != 0 else "-"
             self.virtual_marker_info_label.setText(
                 f"Name: {axis.name}\nSegment: {axis.segment_name}\nMethod: {axis.method}\n"
@@ -5091,24 +7758,52 @@ def launch_model_editor() -> None:
         def _update_virtual_marker_preview(self, *_args) -> None:
             preview_c3d_data = self._selected_virtual_marker_preview_c3d_data()
             solution_c3d_data = self._selected_virtual_marker_c3d_data()
-            self._sync_virtual_marker_frame_slider(preview_c3d_data)
+            preview_source_label = self._selected_virtual_marker_preview_label()
+            functional_preview_active = (
+                self.workflow_tabs.tabText(self.workflow_tabs.currentIndex())
+                == "Functional reconstruction"
+            )
+            fast_playback_preview = (
+                functional_preview_active
+                and self._workflow_playback_slider is self.virtual_marker_frame_slider
+            )
             selected_axis = self._selected_virtual_axis()
+            if functional_preview_active:
+                selected_axis = self._selected_functional_reconstruction_axis()
+                solution_c3d_data, source_label = (
+                    self._selected_functional_reconstruction_c3d_data(selected_axis)
+                )
+                if solution_c3d_data is not None:
+                    preview_c3d_data = solution_c3d_data
+                    preview_source_label = f"functional C3D ({source_label})"
+            self._sync_virtual_marker_frame_slider(preview_c3d_data)
             selected_name = self.virtual_marker_name_edit.text().strip()
             selected_method = self._selected_virtual_marker_method()
-            proximal_segment_name = self.virtual_marker_proximal_combo.currentText().strip()
-            distal_segment_name = self.virtual_marker_segment_combo.currentText().strip()
+            proximal_segment_name = (
+                self.virtual_marker_proximal_combo.currentText().strip()
+            )
+            distal_segment_name = (
+                self.virtual_marker_segment_combo.currentText().strip()
+            )
             if selected_axis is not None:
                 selected_name = selected_axis.name
                 selected_method = selected_axis.method
-                distal_segment_name = selected_axis.segment_name
-                proximal_segment_name = _parent_segment_name(self.workflow_draft, selected_axis.segment_name)
+                proximal_segment_name, distal_segment_name = (
+                    self._functional_reconstruction_axis_pair(selected_axis)
+                )
+            virtual_feature_c3d_data = (
+                {}
+                if fast_playback_preview
+                else self._virtual_feature_c3d_preview_data_map()
+            )
             self.virtual_marker_preview.set_context(
                 preview_c3d_data,
                 solution_c3d_data,
-                self._selected_virtual_marker_preview_label(),
+                preview_source_label,
                 self.workflow_draft.segment_marker_groups,
                 self.workflow_draft.axes,
                 self.workflow_draft.virtual_markers,
+                virtual_feature_c3d_data,
                 selected_name,
                 selected_method,
                 proximal_segment_name,
@@ -5116,13 +7811,25 @@ def launch_model_editor() -> None:
                 self.virtual_marker_frame_slider.value(),
                 self.virtual_marker_whole_body_preview_checkbox.isChecked(),
                 self.use_diverse_functional_frames_checkbox.isChecked(),
+                self._manual_functional_frame_indices(),
+                functional_preview_active,
+                fast_playback_preview,
             )
 
         def _update_diverse_functional_frame_calculations(self, *_args) -> None:
-            progress_dialog, progress_callback = self._functional_frame_calculation_progress_reporter()
+            progress_dialog, progress_callback = (
+                self._functional_frame_calculation_progress_reporter()
+            )
             try:
-                mode = "enabled" if self.use_diverse_functional_frames_checkbox.isChecked() else "disabled"
-                progress_callback(f"Diverse functional frames {mode}; updating virtual marker preview...")
+                if self.use_manual_functional_frames_checkbox.isChecked():
+                    mode = "manual range"
+                elif self.use_diverse_functional_frames_checkbox.isChecked():
+                    mode = "diverse frames"
+                else:
+                    mode = "all valid frames"
+                progress_callback(
+                    f"Functional frame selection: {mode}; updating virtual marker preview..."
+                )
                 self._update_virtual_marker_preview()
                 progress_callback("Updating anatomical segment axes preview...")
                 self._update_segment_axis_preview()
@@ -5131,11 +7838,59 @@ def launch_model_editor() -> None:
             finally:
                 progress_dialog.close()
 
+        def _set_manual_functional_frames_enabled(self, *_args) -> None:
+            if self.use_manual_functional_frames_checkbox.isChecked():
+                self.use_diverse_functional_frames_checkbox.blockSignals(True)
+                self.use_diverse_functional_frames_checkbox.setChecked(False)
+                self.use_diverse_functional_frames_checkbox.blockSignals(False)
+            self._sync_functional_frame_range_bar_enabled()
+            self._update_diverse_functional_frame_calculations()
+
+        def _set_diverse_functional_frames_enabled(self, *_args) -> None:
+            if self.use_diverse_functional_frames_checkbox.isChecked():
+                self.use_manual_functional_frames_checkbox.blockSignals(True)
+                self.use_manual_functional_frames_checkbox.setChecked(False)
+                self.use_manual_functional_frames_checkbox.blockSignals(False)
+            self._sync_functional_frame_range_bar_enabled()
+            self._update_diverse_functional_frame_calculations()
+
+        def _sync_functional_frame_range_bar_enabled(self) -> None:
+            frame_count = self.functional_frame_range_bar.frame_count
+            self.functional_frame_range_bar.setEnabled(
+                self.use_manual_functional_frames_checkbox.isChecked()
+                and frame_count > 1
+            )
+
+        def _set_virtual_marker_frame_from_range_drag(self, frame_index: int) -> None:
+            self.virtual_marker_frame_slider.setValue(frame_index)
+            QApplication.processEvents()
+
+        def _update_manual_functional_frame_selection(self) -> None:
+            if not self.use_manual_functional_frames_checkbox.isChecked():
+                return
+            self._update_virtual_marker_preview()
+            self._update_generation_log()
+
+        def _manual_functional_frame_indices(self) -> tuple[int, ...]:
+            if not self.use_manual_functional_frames_checkbox.isChecked():
+                return ()
+            return self.functional_frame_range_bar.selected_indices()
+
+        def _current_functional_frame_selection_options(
+            self,
+        ) -> FunctionalFrameSelectionOptions:
+            return _functional_frame_selection_options(
+                self.use_diverse_functional_frames_checkbox.isChecked(),
+                self._manual_functional_frame_indices(),
+            )
+
         def _functional_trial_quality_lines(self) -> tuple[str, ...]:
             lines = ["", "Functional trial quality:"]
             feature_count = 0
             features = tuple(self.workflow_draft.virtual_markers) + tuple(
-                axis for axis in self.workflow_draft.axes if _is_virtual_feature_axis(axis)
+                axis
+                for axis in self.workflow_draft.axes
+                if _is_virtual_feature_axis(axis)
             )
             for feature in features:
                 method = getattr(feature, "method", "")
@@ -5143,22 +7898,38 @@ def launch_model_editor() -> None:
                     continue
                 source = getattr(feature, "source", "")
                 payload = _key_value_payload(source)
-                parent_marker_names = _split_marker_names(payload.get("parent markers", ""))
-                child_marker_names = _split_marker_names(payload.get("child markers", ""))
+                parent_marker_names = _split_marker_names(
+                    payload.get("parent markers", "")
+                )
+                child_marker_names = _split_marker_names(
+                    payload.get("child markers", "")
+                )
                 if len(parent_marker_names) == 0:
                     parent_marker_names = _technical_markers_for_segment(
                         self.workflow_draft,
                         _parent_segment_name(self.workflow_draft, feature.segment_name),
                     )
                 if len(child_marker_names) == 0:
-                    child_marker_names = _technical_markers_for_segment(self.workflow_draft, feature.segment_name)
-                functional_data, source_label = self._functional_feature_c3d_data_for_source(source)
+                    child_marker_names = _technical_markers_for_segment(
+                        self.workflow_draft, feature.segment_name
+                    )
+                functional_data, source_label = (
+                    self._functional_feature_c3d_data_for_source(source)
+                )
                 feature_count += 1
                 if functional_data is None:
-                    lines.append(f"- {feature.name} ({method}): missing functional C3D source.")
+                    lines.append(
+                        f"- {feature.name} ({method}): missing functional C3D source."
+                    )
                     continue
-                marker_names = tuple(dict.fromkeys(parent_marker_names + child_marker_names))
-                missing_markers = tuple(marker for marker in marker_names if marker not in functional_data.marker_names)
+                marker_names = tuple(
+                    dict.fromkeys(parent_marker_names + child_marker_names)
+                )
+                missing_markers = tuple(
+                    marker
+                    for marker in marker_names
+                    if marker not in functional_data.marker_names
+                )
                 if missing_markers:
                     lines.append(
                         f"- {feature.name} ({method}, {source_label}): missing markers "
@@ -5170,26 +7941,464 @@ def launch_model_editor() -> None:
                         SegmentCoordinateSystemUtils,
                     )
 
-                    parent_functional_marker_data = functional_data.get_partial_dict_data(parent_marker_names)
-                    child_functional_marker_data = functional_data.get_partial_dict_data(child_marker_names)
-                    rt_parent_func = SegmentCoordinateSystemUtils.rigidify(parent_functional_marker_data)
-                    rt_child_func = SegmentCoordinateSystemUtils.rigidify(child_functional_marker_data)
+                    parent_functional_marker_data = (
+                        functional_data.get_partial_dict_data(parent_marker_names)
+                    )
+                    child_functional_marker_data = (
+                        functional_data.get_partial_dict_data(child_marker_names)
+                    )
+                    rt_parent_func = SegmentCoordinateSystemUtils.rigidify(
+                        parent_functional_marker_data
+                    )
+                    rt_child_func = SegmentCoordinateSystemUtils.rigidify(
+                        child_functional_marker_data
+                    )
                     rt_parent_used, rt_child_used, report = prepare_functional_rt_pair(
                         rt_parent_func,
                         rt_child_func,
-                        _functional_frame_selection_options(self.use_diverse_functional_frames_checkbox.isChecked()),
+                        self._current_functional_frame_selection_options(),
                     )
-                    algorithm_quality = _functional_algorithm_quality_text(method, rt_parent_used, rt_child_used)
+                    algorithm_quality = _functional_algorithm_quality_text(
+                        method, rt_parent_used, rt_child_used
+                    )
+                    static_axis_quality = _sara_static_axis_quality_text(
+                        method=method,
+                        feature=feature,
+                        payload=payload,
+                        static_data=self.c3d_data,
+                        functional_data=functional_data,
+                        parent_marker_names=parent_marker_names,
+                        child_marker_names=child_marker_names,
+                        use_diverse_functional_frames=self.use_diverse_functional_frames_checkbox.isChecked(),
+                        manual_functional_frame_indices=self._manual_functional_frame_indices(),
+                    )
                 except Exception as error:
-                    lines.append(f"- {feature.name} ({method}, {source_label}): unable to compute quality ({error}).")
+                    lines.append(
+                        f"- {feature.name} ({method}, {source_label}): unable to compute quality ({error})."
+                    )
                     continue
-                complete_frames = _complete_marker_frame_count(functional_data, marker_names)
+                complete_frames = _complete_marker_frame_count(
+                    functional_data, marker_names
+                )
+                quality_details = algorithm_quality
+                if static_axis_quality:
+                    quality_details = f"{quality_details}; {static_axis_quality}"
                 lines.append(
                     f"- {feature.name} ({method}, {source_label}): {complete_frames} marker-complete frames; "
-                    f"{format_functional_frame_report(report)}; {algorithm_quality}."
+                    f"{format_functional_frame_report(report)}; {quality_details}."
                 )
             if feature_count == 0:
                 lines.append("- No functional SCoRE/SARA feature in this draft.")
+            return tuple(lines)
+
+        def _show_functional_residual_diagnostics(self) -> None:
+            """
+            Show residual boxplots for the selected SCoRE/SARA virtual feature.
+            """
+            feature = self._selected_functional_residual_feature()
+            if feature is None:
+                QMessageBox.information(
+                    self,
+                    "SCoRE/SARA residual diagnostics",
+                    "Select one SCoRE CoR or SARA AoR in the virtual marker/axis list first.",
+                )
+                self._sync_functional_residual_button()
+                return
+            try:
+                summary_lines, boxplots = self._functional_feature_residual_plot_data(
+                    feature
+                )
+            except Exception as error:
+                QMessageBox.critical(
+                    self, "Unable to compute residual diagnostics", str(error)
+                )
+                return
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"SCoRE/SARA residual diagnostics - {feature.name}")
+            layout = QVBoxLayout(dialog)
+            _configure_panel_layout(layout)
+            summary_label = QLabel("\n".join(summary_lines))
+            summary_label.setWordWrap(True)
+            summary_label.setObjectName("MutedInfoLabel")
+            layout.addWidget(summary_label)
+            boxplot_widget = FunctionalResidualBoxplotWidget()
+            boxplot_widget.set_boxplots(tuple(boxplots))
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(boxplot_widget)
+            layout.addWidget(scroll, 1)
+            buttons = QDialogButtonBox(_dialog_button("Ok"))
+            buttons.accepted.connect(dialog.accept)
+            layout.addWidget(buttons)
+            dialog.resize(920, 680)
+            _exec_dialog(dialog)
+
+        def _selected_functional_residual_feature(self):
+            marker = self._selected_virtual_marker()
+            if marker is not None and marker.method in {
+                "score",
+                "sara",
+                "sara_direction",
+            }:
+                return marker
+            axis = self._selected_virtual_axis()
+            if axis is not None and _is_sara_direction_method(axis.method):
+                return axis
+            return None
+
+        def _sync_functional_residual_button(self) -> None:
+            feature = self._selected_functional_residual_feature()
+            enabled = feature is not None
+            self.explore_functional_residuals_button.setEnabled(enabled)
+            if enabled:
+                self.explore_functional_residuals_button.setToolTip(
+                    f"Show residual boxplots for {feature.name} only."
+                )
+            else:
+                self.explore_functional_residuals_button.setToolTip(
+                    "Select one SCoRE CoR or SARA AoR in the virtual marker/axis list."
+                )
+
+        def _functional_residual_diagnostics_lines(self) -> tuple[str, ...]:
+            lines = [
+                "SCoRE/SARA residual diagnostics",
+                "",
+                "Distances are reported in mm. SARA residual angles are reported in degrees.",
+                "Marker boxplots use the selected functional-frame mode before SCoRE/SARA estimation.",
+            ]
+            feature_count = 0
+            features = tuple(self.workflow_draft.virtual_markers) + tuple(
+                axis
+                for axis in self.workflow_draft.axes
+                if _is_virtual_feature_axis(axis)
+            )
+            for feature in features:
+                method = getattr(feature, "method", "")
+                if method not in {"score", "sara", "sara_direction"}:
+                    continue
+                feature_count += 1
+                lines.extend(("", f"{feature.name} ({method})"))
+                try:
+                    lines.extend(self._functional_feature_residual_lines(feature))
+                except Exception as error:
+                    lines.append(f"  unavailable: {error}")
+            if feature_count == 0:
+                lines.append("")
+                lines.append("No SCoRE/SARA feature in this draft.")
+            return tuple(lines)
+
+        def _functional_feature_residual_plot_data(
+            self, feature
+        ) -> tuple[tuple[str, ...], tuple[dict[str, object], ...]]:
+            method = getattr(feature, "method", "")
+            source = getattr(feature, "source", "")
+            payload = _key_value_payload(source)
+            parent_marker_names = _split_marker_names(payload.get("parent markers", ""))
+            child_marker_names = _split_marker_names(payload.get("child markers", ""))
+            if len(parent_marker_names) == 0:
+                parent_marker_names = _technical_markers_for_segment(
+                    self.workflow_draft,
+                    _parent_segment_name(self.workflow_draft, feature.segment_name),
+                )
+            if len(child_marker_names) == 0:
+                child_marker_names = _technical_markers_for_segment(
+                    self.workflow_draft, feature.segment_name
+                )
+            functional_data, source_label = (
+                self._functional_feature_c3d_data_for_source(source)
+            )
+            if functional_data is None:
+                raise RuntimeError(f"Missing functional C3D source ({source_label}).")
+            marker_names = tuple(
+                dict.fromkeys(parent_marker_names + child_marker_names)
+            )
+            missing_markers = tuple(
+                marker
+                for marker in marker_names
+                if marker not in functional_data.marker_names
+            )
+            if missing_markers:
+                raise RuntimeError(f"Missing markers: {', '.join(missing_markers)}.")
+
+            from ..components.generic.rigidbody.segment_coordinate_system import (
+                SegmentCoordinateSystemUtils,
+            )
+
+            parent_data = functional_data.get_partial_dict_data(parent_marker_names)
+            child_data = functional_data.get_partial_dict_data(child_marker_names)
+            rt_parent = SegmentCoordinateSystemUtils.rigidify(parent_data)
+            rt_child = SegmentCoordinateSystemUtils.rigidify(child_data)
+            rt_parent, rt_child, report = prepare_functional_rt_pair(
+                rt_parent,
+                rt_child,
+                self._current_functional_frame_selection_options(),
+            )
+            selected_indices = tuple(report.selected_indices)
+            summary = [
+                f"{feature.name} ({method})",
+                f"C3D: {source_label}",
+                format_functional_frame_report(report),
+            ]
+            boxplots = []
+            if method == "score":
+                from ..model_modifiers.joint_center_tool import Score
+
+                _, cor_parent_local, cor_child_local, _, _ = Score.perform_algorithm(
+                    rt_parent,
+                    rt_child,
+                    recursive_outlier_removal=False,
+                )
+                residuals = _score_residuals(
+                    rt_parent, rt_child, cor_parent_local, cor_child_local
+                )
+                boxplots.append(
+                    _residual_boxplot_data(
+                        "CoR parent-child residual", residuals * 1000.0, "mm"
+                    )
+                )
+                parent_cor = _rt_point_series(rt_parent, cor_parent_local)
+                child_cor = _rt_point_series(rt_child, cor_child_local)
+                for marker_name in parent_marker_names:
+                    marker_points = _selected_marker_xyz(
+                        functional_data, marker_name, selected_indices
+                    )
+                    boxplots.append(
+                        _residual_boxplot_data(
+                            f"{marker_name} distance to parent CoR",
+                            np.linalg.norm(marker_points - parent_cor, axis=0) * 1000.0,
+                            "mm",
+                        )
+                    )
+                for marker_name in child_marker_names:
+                    marker_points = _selected_marker_xyz(
+                        functional_data, marker_name, selected_indices
+                    )
+                    boxplots.append(
+                        _residual_boxplot_data(
+                            f"{marker_name} distance to child CoR",
+                            np.linalg.norm(marker_points - child_cor, axis=0) * 1000.0,
+                            "mm",
+                        )
+                    )
+                return tuple(summary), tuple(boxplots)
+
+            from ..model_modifiers.joint_center_tool import Sara, get_svd
+
+            (
+                _,
+                aor_parent_local,
+                aor_child_local,
+                _,
+                cor_parent_local,
+                cor_child_local,
+                _,
+                _,
+            ) = Sara.perform_algorithm(
+                rt_parent, rt_child, recursive_outlier_removal=False
+            )
+            residuals = _sara_residual_angles(
+                rt_parent, rt_child, aor_parent_local, aor_child_local
+            )
+            _, singular_values, _, _ = get_svd(rt_parent, rt_child)
+            summary.append(
+                "SVD singular values: "
+                + ", ".join(
+                    f"{float(value):.4g}"
+                    for value in np.asarray(singular_values, dtype=float)
+                )
+            )
+            boxplots.append(
+                _residual_boxplot_data(
+                    "AoR parent-child angular residual", residuals, "deg"
+                )
+            )
+            parent_start = _rt_point_series(rt_parent, cor_parent_local)
+            parent_direction = _rt_vector_series(rt_parent, aor_parent_local)
+            child_start = _rt_point_series(rt_child, cor_child_local)
+            child_direction = _rt_vector_series(rt_child, aor_child_local)
+            for marker_name in parent_marker_names:
+                marker_points = _selected_marker_xyz(
+                    functional_data, marker_name, selected_indices
+                )
+                boxplots.append(
+                    _residual_boxplot_data(
+                        f"{marker_name} distance to parent AoR",
+                        _point_to_line_distances(
+                            marker_points, parent_start, parent_direction
+                        )
+                        * 1000.0,
+                        "mm",
+                    )
+                )
+            for marker_name in child_marker_names:
+                marker_points = _selected_marker_xyz(
+                    functional_data, marker_name, selected_indices
+                )
+                boxplots.append(
+                    _residual_boxplot_data(
+                        f"{marker_name} distance to child AoR",
+                        _point_to_line_distances(
+                            marker_points, child_start, child_direction
+                        )
+                        * 1000.0,
+                        "mm",
+                    )
+                )
+            return tuple(summary), tuple(boxplots)
+
+        def _functional_feature_residual_lines(self, feature) -> tuple[str, ...]:
+            method = getattr(feature, "method", "")
+            source = getattr(feature, "source", "")
+            payload = _key_value_payload(source)
+            parent_marker_names = _split_marker_names(payload.get("parent markers", ""))
+            child_marker_names = _split_marker_names(payload.get("child markers", ""))
+            if len(parent_marker_names) == 0:
+                parent_marker_names = _technical_markers_for_segment(
+                    self.workflow_draft,
+                    _parent_segment_name(self.workflow_draft, feature.segment_name),
+                )
+            if len(child_marker_names) == 0:
+                child_marker_names = _technical_markers_for_segment(
+                    self.workflow_draft, feature.segment_name
+                )
+            functional_data, source_label = (
+                self._functional_feature_c3d_data_for_source(source)
+            )
+            if functional_data is None:
+                return (f"  missing functional C3D source ({source_label}).",)
+            marker_names = tuple(
+                dict.fromkeys(parent_marker_names + child_marker_names)
+            )
+            missing_markers = tuple(
+                marker
+                for marker in marker_names
+                if marker not in functional_data.marker_names
+            )
+            if missing_markers:
+                return (f"  missing markers: {', '.join(missing_markers)}.",)
+            from ..components.generic.rigidbody.segment_coordinate_system import (
+                SegmentCoordinateSystemUtils,
+            )
+
+            parent_data = functional_data.get_partial_dict_data(parent_marker_names)
+            child_data = functional_data.get_partial_dict_data(child_marker_names)
+            rt_parent = SegmentCoordinateSystemUtils.rigidify(parent_data)
+            rt_child = SegmentCoordinateSystemUtils.rigidify(child_data)
+            rt_parent, rt_child, report = prepare_functional_rt_pair(
+                rt_parent,
+                rt_child,
+                self._current_functional_frame_selection_options(),
+            )
+            selected_indices = tuple(report.selected_indices)
+            lines = [
+                f"  C3D: {source_label}",
+                f"  {format_functional_frame_report(report)}",
+            ]
+            if method == "score":
+                from ..model_modifiers.joint_center_tool import Score
+
+                _, cor_parent_local, cor_child_local, _, _ = Score.perform_algorithm(
+                    rt_parent,
+                    rt_child,
+                    recursive_outlier_removal=False,
+                )
+                residuals = _score_residuals(
+                    rt_parent, rt_child, cor_parent_local, cor_child_local
+                )
+                lines.extend(
+                    _histogram_lines(
+                        "  CoR parent-child residual", residuals * 1000.0, "mm"
+                    )
+                )
+                parent_cor = _rt_point_series(rt_parent, cor_parent_local)
+                child_cor = _rt_point_series(rt_child, cor_child_local)
+                for marker_name in parent_marker_names:
+                    marker_points = _selected_marker_xyz(
+                        functional_data, marker_name, selected_indices
+                    )
+                    lines.extend(
+                        _histogram_lines(
+                            f"  {marker_name} distance to parent CoR",
+                            np.linalg.norm(marker_points - parent_cor, axis=0) * 1000.0,
+                            "mm",
+                        )
+                    )
+                for marker_name in child_marker_names:
+                    marker_points = _selected_marker_xyz(
+                        functional_data, marker_name, selected_indices
+                    )
+                    lines.extend(
+                        _histogram_lines(
+                            f"  {marker_name} distance to child CoR",
+                            np.linalg.norm(marker_points - child_cor, axis=0) * 1000.0,
+                            "mm",
+                        )
+                    )
+                return tuple(lines)
+
+            from ..model_modifiers.joint_center_tool import Sara, get_svd
+
+            (
+                _,
+                aor_parent_local,
+                aor_child_local,
+                _,
+                cor_parent_local,
+                cor_child_local,
+                _,
+                _,
+            ) = Sara.perform_algorithm(
+                rt_parent, rt_child, recursive_outlier_removal=False
+            )
+            residuals = _sara_residual_angles(
+                rt_parent, rt_child, aor_parent_local, aor_child_local
+            )
+            _, singular_values, _, _ = get_svd(rt_parent, rt_child)
+            lines.extend(
+                _histogram_lines(
+                    "  AoR parent-child angular residual", residuals, "deg"
+                )
+            )
+            lines.append(
+                "  SVD singular values: "
+                + ", ".join(
+                    f"{float(value):.4g}"
+                    for value in np.asarray(singular_values, dtype=float)
+                )
+            )
+            parent_start = _rt_point_series(rt_parent, cor_parent_local)
+            parent_direction = _rt_vector_series(rt_parent, aor_parent_local)
+            child_start = _rt_point_series(rt_child, cor_child_local)
+            child_direction = _rt_vector_series(rt_child, aor_child_local)
+            for marker_name in parent_marker_names:
+                marker_points = _selected_marker_xyz(
+                    functional_data, marker_name, selected_indices
+                )
+                lines.extend(
+                    _histogram_lines(
+                        f"  {marker_name} distance to parent AoR",
+                        _point_to_line_distances(
+                            marker_points, parent_start, parent_direction
+                        )
+                        * 1000.0,
+                        "mm",
+                    )
+                )
+            for marker_name in child_marker_names:
+                marker_points = _selected_marker_xyz(
+                    functional_data, marker_name, selected_indices
+                )
+                lines.extend(
+                    _histogram_lines(
+                        f"  {marker_name} distance to child AoR",
+                        _point_to_line_distances(
+                            marker_points, child_start, child_direction
+                        )
+                        * 1000.0,
+                        "mm",
+                    )
+                )
             return tuple(lines)
 
         def _functional_feature_c3d_data_for_source(self, source: str):
@@ -5197,9 +8406,15 @@ def launch_model_editor() -> None:
             trial_name = _trial_name_from_virtual_feature_source(source)
             filepath = ""
             if c3d_name:
-                filepath = str(Path(self.c3d_folder_path) / c3d_name) if self.c3d_folder_path else c3d_name
+                filepath = (
+                    str(Path(self.c3d_folder_path) / c3d_name)
+                    if self.c3d_folder_path
+                    else c3d_name
+                )
             elif trial_name:
-                filepath = _assigned_c3d_source_for_role(self.workflow_draft, trial_name)
+                filepath = _assigned_c3d_source_for_role(
+                    self.workflow_draft, trial_name
+                )
             if not filepath:
                 return None, trial_name or c3d_name or "unassigned"
             try:
@@ -5207,6 +8422,803 @@ def launch_model_editor() -> None:
             except Exception:
                 return None, Path(filepath).name
             return data, Path(filepath).name
+
+        def _sync_functional_reconstruction_choices(self) -> None:
+            """
+            Refresh the SARA AoR choices available in the reconstruction diagnostic tab.
+            """
+            current_name = (
+                self.functional_reconstruction_feature_combo.currentData() or ""
+            )
+            self.functional_reconstruction_feature_combo.blockSignals(True)
+            self.functional_reconstruction_feature_combo.clear()
+            for axis in self.workflow_draft.axes:
+                if not (
+                    _is_virtual_feature_axis(axis)
+                    and _is_sara_direction_method(axis.method)
+                ):
+                    continue
+                parent_name, child_name = self._functional_reconstruction_axis_pair(
+                    axis
+                )
+                label = f"{axis.name} | {parent_name or '-'} -> {axis.segment_name}"
+                if child_name != axis.segment_name:
+                    label = f"{axis.name} | {parent_name or '-'} -> {child_name or '-'}"
+                self.functional_reconstruction_feature_combo.addItem(label, axis.name)
+            if self.functional_reconstruction_feature_combo.count() == 0:
+                self.functional_reconstruction_feature_combo.addItem(
+                    "No SARA AoR in this draft", ""
+                )
+            elif current_name:
+                for index in range(
+                    self.functional_reconstruction_feature_combo.count()
+                ):
+                    if (
+                        self.functional_reconstruction_feature_combo.itemData(index)
+                        == current_name
+                    ):
+                        self.functional_reconstruction_feature_combo.setCurrentIndex(
+                            index
+                        )
+                        break
+            self.functional_reconstruction_feature_combo.blockSignals(False)
+            self.run_functional_reconstruction_button.setEnabled(
+                self.functional_reconstruction_feature_combo.currentData() != ""
+            )
+            self._sync_functional_reconstruction_trial_choices()
+
+        def _sync_functional_reconstruction_trial_choices(self) -> None:
+            """
+            Refresh the functional C3D choices for the selected reconstruction AoR.
+            """
+            if not hasattr(self, "functional_reconstruction_trial_combo"):
+                return
+            current_role = (
+                self.functional_reconstruction_trial_combo.currentData() or ""
+            )
+            axis = self._selected_functional_reconstruction_axis()
+            default_role = (
+                _trial_name_from_virtual_feature_source(axis.source)
+                if axis is not None
+                else ""
+            )
+            assignments = tuple(
+                assignment
+                for assignment in self.workflow_draft.file_assignments
+                if assignment.role != "main" and assignment.source_path
+            )
+            self.functional_reconstruction_trial_combo.blockSignals(True)
+            self.functional_reconstruction_trial_combo.clear()
+            for assignment in assignments:
+                label = f"{assignment.role}: {Path(assignment.source_path).name}"
+                self.functional_reconstruction_trial_combo.addItem(
+                    label, assignment.role
+                )
+            if self.functional_reconstruction_trial_combo.count() == 0:
+                self.functional_reconstruction_trial_combo.addItem(
+                    "No functional C3D assigned", ""
+                )
+            else:
+                wanted_role = default_role or current_role
+                if wanted_role:
+                    for index in range(
+                        self.functional_reconstruction_trial_combo.count()
+                    ):
+                        if (
+                            self.functional_reconstruction_trial_combo.itemData(index)
+                            == wanted_role
+                        ):
+                            self.functional_reconstruction_trial_combo.setCurrentIndex(
+                                index
+                            )
+                            break
+            self.functional_reconstruction_trial_combo.blockSignals(False)
+            self.functional_reconstruction_trial_combo.setEnabled(
+                self.functional_reconstruction_trial_combo.currentData() != ""
+            )
+
+        def _selected_functional_reconstruction_axis(self):
+            axis_name = self.functional_reconstruction_feature_combo.currentData()
+            if not axis_name:
+                return None
+            for axis in self.workflow_draft.axes:
+                if (
+                    axis.name == axis_name
+                    and _is_virtual_feature_axis(axis)
+                    and _is_sara_direction_method(axis.method)
+                ):
+                    return axis
+            return None
+
+        def _functional_reconstruction_axis_pair(self, axis) -> tuple[str, str]:
+            """
+            Return the proximal/distal segments for a selected functional AoR.
+            """
+            if axis is None:
+                return "", ""
+            child_name = axis.segment_name
+            parent_name = _parent_segment_name(self.workflow_draft, child_name)
+            payload = _key_value_payload(axis.source)
+            payload_parent = payload.get("proximal", "") or payload.get(
+                "parent segment", ""
+            )
+            payload_child = payload.get("distal", "") or payload.get(
+                "child segment", ""
+            )
+            if payload_parent:
+                parent_name = payload_parent
+            if payload_child:
+                child_name = payload_child
+            return parent_name, child_name
+
+        def _selected_functional_reconstruction_c3d_data(self, axis):
+            role = ""
+            if hasattr(self, "functional_reconstruction_trial_combo"):
+                role = self.functional_reconstruction_trial_combo.currentData() or ""
+            if role:
+                filepath = _assigned_c3d_source_for_role(self.workflow_draft, role)
+                if filepath:
+                    try:
+                        return self._c3d_data_from_path(filepath), Path(filepath).name
+                    except Exception:
+                        return None, Path(filepath).name
+            if axis is None:
+                return None, "unassigned"
+            return self._functional_feature_c3d_data_for_source(axis.source)
+
+        def _run_functional_reconstruction_diagnostic(self) -> None:
+            """
+            Compute a focused SARA/reconstruction report for one functional knee trial.
+            """
+            axis = self._selected_functional_reconstruction_axis()
+            if axis is None:
+                QMessageBox.information(
+                    self,
+                    "Functional reconstruction",
+                    "Select a SARA AoR first.",
+                )
+                self._sync_functional_reconstruction_choices()
+                return
+            progress_dialog, progress_callback = (
+                self._functional_frame_calculation_progress_reporter()
+            )
+            try:
+                progress_callback("Preparing SARA functional trial data...")
+                lines, plot_data = self._functional_reconstruction_diagnostic_lines(
+                    axis,
+                    self.functional_reconstruction_method_combo.currentText().strip(),
+                    progress_callback,
+                )
+            except Exception as error:
+                QMessageBox.critical(
+                    self, "Unable to run reconstruction diagnostic", str(error)
+                )
+                return
+            finally:
+                progress_dialog.close()
+            self.functional_reconstruction_output.setPlainText("\n".join(lines))
+            self.functional_reconstruction_plot.set_rotation_series(plot_data)
+
+        def _functional_reconstruction_diagnostic_lines(
+            self, axis, method: str, progress_callback
+        ) -> tuple[tuple[str, ...], dict[str, object] | None]:
+            """
+            Return text diagnostics and reconstructed knee rotation plot data.
+            """
+            payload = _key_value_payload(axis.source)
+            parent_segment_name, child_segment_name = (
+                self._functional_reconstruction_axis_pair(axis)
+            )
+            parent_marker_names = _split_marker_names(
+                payload.get("parent markers", "")
+            ) or _technical_markers_for_segment(
+                self.workflow_draft, parent_segment_name
+            )
+            child_marker_names = _split_marker_names(
+                payload.get("child markers", "")
+            ) or _technical_markers_for_segment(self.workflow_draft, child_segment_name)
+            functional_data, source_label = (
+                self._selected_functional_reconstruction_c3d_data(axis)
+            )
+            if functional_data is None:
+                raise RuntimeError(f"Missing functional C3D source ({source_label}).")
+            required_markers = tuple(
+                dict.fromkeys(parent_marker_names + child_marker_names)
+            )
+            missing_markers = tuple(
+                marker
+                for marker in required_markers
+                if marker not in functional_data.marker_names
+            )
+            if missing_markers:
+                raise RuntimeError(f"Missing markers: {', '.join(missing_markers)}.")
+
+            progress_callback("Rigidifying proximal and distal marker clusters...")
+            from ..components.generic.rigidbody.segment_coordinate_system import (
+                SegmentCoordinateSystemUtils,
+            )
+            from ..model_modifiers.joint_center_tool import Sara, get_svd
+
+            parent_functional_data = functional_data.get_partial_dict_data(
+                parent_marker_names
+            )
+            child_functional_data = functional_data.get_partial_dict_data(
+                child_marker_names
+            )
+            parent_static_data = None
+            child_static_data = None
+            if self.c3d_data is not None and all(
+                marker in self.c3d_data.marker_names
+                for marker in parent_marker_names + child_marker_names
+            ):
+                parent_static_data = self.c3d_data.get_partial_dict_data(
+                    parent_marker_names
+                )
+                child_static_data = self.c3d_data.get_partial_dict_data(
+                    child_marker_names
+                )
+                rt_parent = SegmentCoordinateSystemUtils.rigidify(
+                    functional_data=parent_functional_data,
+                    static_data=parent_static_data,
+                )
+                rt_child = SegmentCoordinateSystemUtils.rigidify(
+                    functional_data=child_functional_data,
+                    static_data=child_static_data,
+                )
+                reference_note = "static marker geometry"
+            else:
+                rt_parent = SegmentCoordinateSystemUtils.rigidify(
+                    parent_functional_data
+                )
+                rt_child = SegmentCoordinateSystemUtils.rigidify(child_functional_data)
+                reference_note = "functional frame geometry"
+
+            rt_parent, rt_child, report = prepare_functional_rt_pair(
+                rt_parent,
+                rt_child,
+                self._current_functional_frame_selection_options(),
+            )
+            progress_callback("Running SARA and knee DoF diagnostics...")
+            expected_markers = _sara_expected_axis_markers(axis, payload)
+            original_axis_global = _sara_expected_global_axis(
+                functional_data, expected_markers
+            )
+            origin_markers = _sara_origin_markers(axis, payload, expected_markers)
+            origin_positions_global = (
+                functional_data.markers_center_position(origin_markers)
+                if origin_markers
+                and all(
+                    marker_name in functional_data.marker_names
+                    for marker_name in origin_markers
+                )
+                else None
+            )
+            if (
+                _uses_selected_functional_frames(report)
+                and origin_positions_global is not None
+            ):
+                origin_positions_global = subset_points_by_frame(
+                    origin_positions_global, report.selected_indices
+                )
+            (
+                aor_mean_global,
+                aor_parent_local,
+                aor_child_local,
+                _cor_mean_global,
+                cor_parent_local,
+                cor_child_local,
+                rt_parent_valid,
+                rt_child_valid,
+            ) = Sara.perform_algorithm(
+                rt_parent,
+                rt_child,
+                original_axis_global=original_axis_global,
+                origin_positions_global=origin_positions_global,
+            )
+            residuals = _sara_residual_angles(
+                rt_parent_valid, rt_child_valid, aor_parent_local, aor_child_local
+            )
+            _, singular_values, _, _ = get_svd(rt_parent_valid, rt_child_valid)
+            relative_xyz = _relative_xyz_euler_degrees(rt_parent_valid, rt_child_valid)
+            relative_xyz_plot_data = _relative_xyz_plot_data(
+                relative_xyz,
+                child_segment_name or axis.segment_name,
+                _c3d_frame_rate(functional_data),
+            )
+
+            lines = [
+                f"Functional reconstruction diagnostic: {axis.name}",
+                f"C3D: {source_label}",
+                f"Segments: {parent_segment_name or '-'} -> {child_segment_name or '-'}",
+                f"Markers proximal: {', '.join(parent_marker_names)}",
+                f"Markers distal: {', '.join(child_marker_names)}",
+                f"Method requested: {method}",
+                f"Reference for rigidification: {reference_note}",
+                format_functional_frame_report(report),
+                "",
+                "SARA result",
+                f"- AoR mean global: {_format_vector(aor_mean_global)}",
+                f"- AoR local proximal: {_format_vector(aor_parent_local)}",
+                f"- AoR local distal: {_format_vector(aor_child_local)}",
+                f"- CoR local proximal: {_format_vector(cor_parent_local)}",
+                f"- CoR local distal: {_format_vector(cor_child_local)}",
+                "- SVD singular values: "
+                + ", ".join(
+                    f"{float(value):.4g}"
+                    for value in np.asarray(singular_values, dtype=float)
+                ),
+                "  SARA has six singular values because the linear system estimates one 3D axis direction "
+                "in the child frame and one 3D axis direction in the parent frame. The smallest singular "
+                "direction is the coupled AoR solution; the spread of the values indicates conditioning/stability.",
+            ]
+            lines.extend(
+                _histogram_lines(
+                    "- SARA parent-child angular residual", residuals, "deg"
+                )
+            )
+            lines.extend(
+                _local_axis_orientation_lines("AoR proximal frame", aor_parent_local)
+            )
+            lines.extend(
+                _local_axis_orientation_lines("AoR distal frame", aor_child_local)
+            )
+            lines.extend(
+                self._static_expected_axis_comparison_lines(
+                    payload,
+                    expected_markers,
+                    parent_static_data,
+                    child_static_data,
+                    aor_parent_local,
+                    aor_child_local,
+                )
+            )
+            lines.extend(["", "Knee relative rotations (proximal^-1 * distal, XYZ)"])
+            for label, values in zip(("X", "Y", "Z"), relative_xyz):
+                values = np.asarray(values, dtype=float)
+                lines.append(
+                    f"- {label} rotation: mean={np.nanmean(values):.2f} deg; "
+                    f"range={np.nanmin(values):.2f}..{np.nanmax(values):.2f} deg"
+                )
+
+            progress_callback(f"Running {method} reconstruction probe...")
+            reconstruction_lines, plot_data = (
+                self._functional_reconstruction_method_probe_lines(
+                    method,
+                    axis,
+                    functional_data,
+                    parent_marker_names,
+                    child_marker_names,
+                    source_label,
+                    progress_callback,
+                )
+            )
+            lines.extend(reconstruction_lines)
+            return tuple(lines), plot_data or relative_xyz_plot_data
+
+        def _static_expected_axis_comparison_lines(
+            self,
+            payload: dict[str, str],
+            expected_markers: tuple[str, ...],
+            parent_static_data,
+            child_static_data,
+            aor_parent_local: np.ndarray,
+            aor_child_local: np.ndarray,
+        ) -> tuple[str, ...]:
+            if (
+                self.c3d_data is None
+                or len(expected_markers) < 2
+                or parent_static_data is None
+                or child_static_data is None
+            ):
+                return ("", "Static expected-axis comparison unavailable.")
+            expected_start_markers = expected_markers[:1]
+            expected_end_markers = expected_markers[1:]
+            if any(
+                marker not in self.c3d_data.marker_names
+                for marker in expected_start_markers + expected_end_markers
+            ):
+                return ("", "Static expected-axis comparison unavailable.")
+            try:
+                from ..components.generic.rigidbody.segment_coordinate_system import (
+                    SegmentCoordinateSystemUtils,
+                )
+
+                expected_global = np.nanmean(
+                    _mean_marker_series(self.c3d_data, expected_end_markers)
+                    - _mean_marker_series(self.c3d_data, expected_start_markers),
+                    axis=1,
+                )
+                parent_rt_static = SegmentCoordinateSystemUtils.rigidify(
+                    parent_static_data
+                )
+                child_rt_static = SegmentCoordinateSystemUtils.rigidify(
+                    child_static_data
+                )
+                expected_parent_local = _mean_local_vector(
+                    parent_rt_static, expected_global
+                )
+                expected_child_local = _mean_local_vector(
+                    child_rt_static, expected_global
+                )
+                parent_deviation = _axis_angle_degrees(
+                    aor_parent_local, expected_parent_local
+                )
+                child_deviation = _axis_angle_degrees(
+                    aor_child_local, expected_child_local
+                )
+            except Exception as error:
+                return ("", f"Static expected-axis comparison unavailable ({error}).")
+            limit = _sara_static_deviation_limit_from_payload(payload)
+            warning = ""
+            if limit is not None and (
+                parent_deviation > limit or child_deviation > limit
+            ):
+                warning = f" WARNING > {limit:g} deg"
+            label = (
+                f"{','.join(expected_start_markers)}->{','.join(expected_end_markers)}"
+            )
+            return (
+                "",
+                f"Static expected axis ({label})",
+                f"- Expected local proximal: {_format_vector(expected_parent_local)}; SARA deviation={parent_deviation:.1f} deg{warning}",
+                f"- Expected local distal: {_format_vector(expected_child_local)}; SARA deviation={child_deviation:.1f} deg{warning}",
+            )
+
+        def _functional_reconstruction_method_probe_lines(
+            self,
+            method: str,
+            axis,
+            functional_data,
+            high_weight_parent_markers: tuple[str, ...],
+            high_weight_child_markers: tuple[str, ...],
+            source_label: str,
+            progress_callback,
+        ) -> tuple[tuple[str, ...], dict[str, object] | None]:
+            """
+            Run a best-effort model IK probe with EKF or QLD.
+            """
+            if self.c3d_data is None:
+                return (
+                    (
+                        "",
+                        "Model reconstruction probe skipped: no static C3D is loaded.",
+                    ),
+                    None,
+                )
+            _parent_segment_name_for_axis, child_segment_name = (
+                self._functional_reconstruction_axis_pair(axis)
+            )
+            try:
+                model = self._diagnostic_model_from_current_preset(
+                    child_segment_name, progress_callback
+                )
+            except Exception as error:
+                return (
+                    (
+                        "",
+                        f"Model reconstruction probe unavailable: {error}",
+                        "The SARA section above still uses marker-cluster reconstruction and does not need model IK.",
+                    ),
+                    None,
+                )
+
+            progress_callback(f"Running {method} reconstruction on SARA chain...")
+            lines, plot_data = self._run_model_reconstruction_probe(
+                method,
+                model,
+                functional_data,
+                source_label,
+                child_segment_name,
+                high_weight_parent_markers,
+                high_weight_child_markers,
+                "SARA chain",
+            )
+
+            progress_callback(
+                f"Building marker fallback chain and running {method} reconstruction..."
+            )
+            fallback_lines, fallback_plot_data = (
+                self._functional_reconstruction_fallback_probe_lines(
+                    method,
+                    functional_data,
+                    source_label,
+                    child_segment_name,
+                    high_weight_parent_markers,
+                    high_weight_child_markers,
+                    progress_callback,
+                )
+            )
+            return tuple(lines) + tuple(fallback_lines), _combine_rotation_plot_data(
+                plot_data,
+                fallback_plot_data,
+                fallback_label_suffix="marker fallback",
+            )
+
+        def _functional_reconstruction_fallback_probe_lines(
+            self,
+            method: str,
+            functional_data,
+            source_label: str,
+            child_segment_name: str,
+            high_weight_parent_markers: tuple[str, ...],
+            high_weight_child_markers: tuple[str, ...],
+            progress_callback,
+        ) -> tuple[tuple[str, ...], dict[str, object] | None]:
+            """
+            Reconstruct the same trial with a marker-only fallback chain.
+            """
+            try:
+                fallback_model = self._diagnostic_model_from_current_preset(
+                    child_segment_name,
+                    progress_callback,
+                    use_marker_fallback=True,
+                )
+            except Exception as error:
+                return (
+                    (
+                        "",
+                        f"Marker fallback reconstruction unavailable: {error}",
+                    ),
+                    None,
+                )
+            return self._run_model_reconstruction_probe(
+                method,
+                fallback_model,
+                functional_data,
+                source_label,
+                child_segment_name,
+                high_weight_parent_markers,
+                high_weight_child_markers,
+                "marker fallback chain",
+            )
+
+        def _run_model_reconstruction_probe(
+            self,
+            method: str,
+            model,
+            functional_data,
+            source_label: str,
+            child_segment_name: str,
+            high_weight_parent_markers: tuple[str, ...],
+            high_weight_child_markers: tuple[str, ...],
+            probe_label: str,
+        ) -> tuple[tuple[str, ...], dict[str, object] | None]:
+            """
+            Run EKF or QLD against one diagnostic model.
+            """
+            model_marker_names = set(getattr(model, "marker_names", ()))
+            marker_names = tuple(
+                marker_name
+                for marker_name in functional_data.marker_names
+                if marker_name in model_marker_names
+            )
+            if len(marker_names) == 0:
+                return (
+                    (
+                        "",
+                        f"{probe_label} reconstruction unavailable: none of the selected functional markers exists in the generated model.",
+                    ),
+                    None,
+                )
+            marker_positions = functional_data.get_position(marker_names)[:3, :, :]
+            frame_count = marker_positions.shape[2]
+            frame_rate = _c3d_frame_rate(functional_data)
+            high_weight_markers = tuple(
+                dict.fromkeys(high_weight_parent_markers + high_weight_child_markers)
+            )
+            marker_weights = _marker_weights_for_reconstruction(
+                marker_names, high_weight_markers
+            )
+            if method == "EKF":
+                return self._ekf_reconstruction_probe_lines(
+                    model,
+                    marker_positions,
+                    marker_names,
+                    functional_data,
+                    child_segment_name,
+                    frame_rate,
+                    probe_label=probe_label,
+                )
+            return self._qld_reconstruction_probe_lines(
+                model,
+                marker_positions,
+                marker_names,
+                marker_weights,
+                frame_count,
+                source_label,
+                child_segment_name,
+                high_weight_markers,
+                frame_rate,
+                probe_label=probe_label,
+            )
+
+        def _diagnostic_model_from_current_preset(
+            self,
+            force_three_rotation_segment: str,
+            progress_callback,
+            *,
+            use_marker_fallback: bool = False,
+        ):
+            """
+            Build the current preset model with assigned C3D files for reconstruction diagnostics.
+            """
+            template = _diagnostic_template_for_c3d_model_preset(
+                self.workflow_draft.preset,
+                use_marker_fallback=use_marker_fallback,
+            )
+            functional_data = {}
+            if not use_marker_fallback:
+                for assignment in self.workflow_draft.file_assignments:
+                    if assignment.role == "main" or not assignment.source_path:
+                        continue
+                    progress_callback(
+                        f"Loading assigned functional C3D: {Path(assignment.source_path).name}"
+                    )
+                    functional_data[assignment.role] = self._c3d_data_from_path(
+                        assignment.source_path
+                    )
+            model = create_model_from_marker_data(
+                template=template,
+                static_data=self.c3d_data,
+                functional_data=functional_data,
+                preset=self.workflow_draft.preset,
+                static_virtual_points=_static_virtual_point_definitions_from_draft(
+                    self.workflow_draft
+                ),
+                progress_callback=progress_callback,
+            ).model
+            self._apply_chain_settings_to_diagnostic_model(
+                model, force_three_rotation_segment=force_three_rotation_segment
+            )
+            return model
+
+        def _apply_chain_settings_to_diagnostic_model(
+            self, model, force_three_rotation_segment: str
+        ) -> None:
+            """
+            Apply the editable chain settings to the diagnostic model and force the selected knee to 3 rotations.
+            """
+            from ..utils.enums import Rotations, Translations
+
+            settings_by_segment = {
+                setting.segment_name: setting
+                for setting in self.workflow_draft.segment_settings
+            }
+            for segment in model.segments:
+                setting = settings_by_segment.get(segment.name)
+                if setting is not None:
+                    if setting.translations:
+                        segment.translations = Translations(setting.translations)
+                    if setting.rotations:
+                        segment.rotations = Rotations(setting.rotations)
+                    segment.q_ranges = None
+                    segment.qdot_ranges = None
+                    segment.update_dof_names()
+                if segment.name == force_three_rotation_segment:
+                    segment.rotations = Rotations.XYZ
+                    segment.q_ranges = None
+                    segment.qdot_ranges = None
+                    segment.update_dof_names()
+            model.validate_dofs()
+
+        def _qld_reconstruction_probe_lines(
+            self,
+            model,
+            marker_positions: np.ndarray,
+            marker_names: tuple[str, ...],
+            marker_weights,
+            frame_count: int,
+            source_label: str,
+            knee_segment_name: str,
+            high_weight_markers: tuple[str, ...],
+            frame_rate: float | None,
+            probe_label: str = "chain",
+        ) -> tuple[tuple[str, ...], dict[str, object] | None]:
+            try:
+                q, residuals = model.inverse_kinematics(
+                    marker_positions,
+                    list(marker_names),
+                    marker_weights=marker_weights,
+                    method="lm",
+                    compute_residual_distance=True,
+                )
+            except Exception as error:
+                return ("", f"QLD reconstruction unavailable: {error}"), None
+            lines = [
+                "",
+                f"{probe_label} - QLD reconstruction probe ({source_label})",
+                f"- Frames used: {frame_count}",
+                f"- q shape: {q.shape[0]} DoF x {q.shape[1]} frames",
+                f"- Marker weights: 100 for {', '.join(high_weight_markers) or '-'}; 1 for the other model markers in this C3D.",
+            ]
+            rotation_plot = _rotation_dof_plot_data(
+                model, q, knee_segment_name, frame_rate
+            )
+            lines.extend(_rotation_dof_summary_lines(model, q, knee_segment_name))
+            if residuals is not None:
+                lines.extend(
+                    _histogram_lines(
+                        "- marker residual",
+                        np.asarray(residuals, dtype=float).reshape(-1) * 1000.0,
+                        "mm",
+                    )
+                )
+            return tuple(lines), rotation_plot
+
+        def _ekf_reconstruction_probe_lines(
+            self,
+            model,
+            marker_positions: np.ndarray,
+            marker_names: tuple[str, ...],
+            functional_data,
+            knee_segment_name: str,
+            frame_rate: float | None,
+            probe_label: str = "chain",
+        ) -> tuple[tuple[str, ...], dict[str, object] | None]:
+            try:
+                import tempfile
+
+                import biorbd  # type: ignore
+
+                with tempfile.NamedTemporaryFile(
+                    suffix=".bioMod", delete=True
+                ) as temporary_file:
+                    model.to_biomod(temporary_file.name, with_mesh=False)
+                    biorbd_model = biorbd.Model(temporary_file.name)
+                    biorbd_marker_names = tuple(
+                        name.to_string() for name in biorbd_model.markerNames()
+                    )
+                    marker_indices = [
+                        marker_names.index(name)
+                        for name in biorbd_marker_names
+                        if name in marker_names
+                    ]
+                    if len(marker_indices) == 0:
+                        return (
+                            (
+                                "",
+                                "EKF reconstruction unavailable: no selected functional marker is present in the generated biorbd model.",
+                            ),
+                            None,
+                        )
+                    markers = marker_positions[:, marker_indices, :]
+                    frequency = int(round(_c3d_frame_rate(functional_data) or 100.0))
+                    params = biorbd.KalmanParam(frequency)
+                    kalman = biorbd.KalmanReconsMarkers(biorbd_model, params)
+                    q = biorbd.GeneralizedCoordinates(biorbd_model)
+                    qdot = biorbd.GeneralizedVelocity(biorbd_model)
+                    qddot = biorbd.GeneralizedAcceleration(biorbd_model)
+                    q_values = np.zeros((biorbd_model.nbQ(), markers.shape[2]))
+                    for frame_index in range(markers.shape[2]):
+                        nodes = [
+                            biorbd.NodeSegment(markers[:, marker_index, frame_index])
+                            for marker_index in range(markers.shape[1])
+                        ]
+                        kalman.reconstructFrame(biorbd_model, nodes, q, qdot, qddot)
+                        q_values[:, frame_index] = q.to_array()
+            except Exception as error:
+                return (
+                    (
+                        "",
+                        f"EKF reconstruction unavailable: {error}",
+                        "Check that biorbd was compiled with Kalman marker reconstruction and that the marker set matches the model technical markers.",
+                    ),
+                    None,
+                )
+            lines = [
+                "",
+                f"{probe_label} - EKF reconstruction probe",
+                f"- Frames used: {q_values.shape[1]}",
+                f"- q shape: {q_values.shape[0]} DoF x {q_values.shape[1]} frames",
+                "- Marker weights: biorbd EKF does not expose per-marker weights here; use QLD for the 100/1 weighted reconstruction.",
+            ]
+            rotation_plot = _rotation_dof_plot_data(
+                model, q_values, knee_segment_name, frame_rate
+            )
+            lines.extend(
+                _rotation_dof_summary_lines(model, q_values, knee_segment_name)
+            )
+            return tuple(lines), rotation_plot
 
         def _update_generation_log(self) -> None:
             lines = _c3d_generation_log(
@@ -5233,15 +9245,25 @@ def launch_model_editor() -> None:
             Refresh the compact C3D files and marker names status panel.
             """
             workflow = c3d_creation_workflow(self.workflow_draft.preset)
-            required_roles = {role.role for role in workflow.file_roles if role.required}
-            assigned_count = sum(1 for assignment in self.workflow_draft.file_assignments if assignment.source_path)
+            required_roles = {
+                role.role for role in workflow.file_roles if role.required
+            }
+            assigned_count = sum(
+                1
+                for assignment in self.workflow_draft.file_assignments
+                if assignment.source_path
+            )
             missing_required = tuple(
                 assignment.role
                 for assignment in self.workflow_draft.file_assignments
                 if assignment.role in required_roles and not assignment.source_path
             )
             folder = self.c3d_folder_path or "not selected"
-            main_c3d = Path(self.c3d_path.text().strip()).name if self.c3d_path.text().strip() else "not selected"
+            main_c3d = (
+                Path(self.c3d_path.text().strip()).name
+                if self.c3d_path.text().strip()
+                else "not selected"
+            )
             missing_text = ", ".join(missing_required) if missing_required else "none"
             self.c3d_names_overview_label.setText(
                 f"Folder: {folder}\n"
@@ -5250,26 +9272,38 @@ def launch_model_editor() -> None:
                 f"(missing required: {missing_text})"
             )
 
-            expected_markers = _expected_marker_names_for_preset(self.workflow_draft.preset)
+            expected_markers = _expected_marker_names_for_preset(
+                self.workflow_draft.preset
+            )
             if self.c3d_data is None:
-                self.c3d_marker_status_label.setText("Marker names: load a main/static C3D to check template matches.")
+                self.c3d_marker_status_label.setText(
+                    "Marker names: load a main/static C3D to check template matches."
+                )
                 return
-            marker_mapping = _marker_name_mapping_for_c3d(expected_markers, tuple(self.c3d_data.marker_names))
-            missing_markers = tuple(marker for marker in expected_markers if marker not in marker_mapping)
+            marker_mapping = _marker_name_mapping_for_c3d(
+                expected_markers, tuple(self.c3d_data.marker_names)
+            )
+            missing_markers = tuple(
+                marker for marker in expected_markers if marker not in marker_mapping
+            )
             unassigned_markers = _unassigned_marker_names(
                 self.workflow_marker_pool, self.workflow_draft.segment_marker_groups
             )
             missing_preview = (
-                ", ".join(missing_markers[:12]) + ("..." if len(missing_markers) > 12 else "")
+                ", ".join(missing_markers[:12])
+                + ("..." if len(missing_markers) > 12 else "")
                 if missing_markers
                 else "none"
             )
             unassigned_preview = (
-                ", ".join(unassigned_markers[:12]) + ("..." if len(unassigned_markers) > 12 else "")
+                ", ".join(unassigned_markers[:12])
+                + ("..." if len(unassigned_markers) > 12 else "")
                 if unassigned_markers
                 else "none"
             )
-            prefix_status = "on" if self.strip_participant_prefix_checkbox.isChecked() else "off"
+            prefix_status = (
+                "on" if self.strip_participant_prefix_checkbox.isChecked() else "off"
+            )
             self.c3d_marker_status_label.setText(
                 f"Marker names: {len(marker_mapping)}/{len(expected_markers)} template markers matched; "
                 f"{len(self.c3d_data.marker_names)} markers in main C3D; known pool={len(self.workflow_marker_pool)}.\n"
@@ -5290,7 +9324,9 @@ def launch_model_editor() -> None:
 
         def _refresh_workflow_progress_and_issues(self) -> None:
             self.step_list.clear()
-            for step_status in c3d_workflow_progress(self.workflow_draft, self.c3d_data):
+            for step_status in c3d_workflow_progress(
+                self.workflow_draft, self.c3d_data
+            ):
                 self.step_list.addItem(_workflow_step_item(step_status))
             self.issue_list.clear()
             issues = validate_c3d_workflow_draft(self.workflow_draft, self.c3d_data)
@@ -5298,7 +9334,9 @@ def launch_model_editor() -> None:
                 self.issue_list.addItem("No draft issue detected.")
                 return
             for issue in issues:
-                item = QListWidgetItem(f"{issue.severity.upper()} | {issue.category} | {issue.message}")
+                item = QListWidgetItem(
+                    f"{issue.severity.upper()} | {issue.category} | {issue.message}"
+                )
                 if issue.severity == "error":
                     item.setForeground(QColor("#991b1b"))
                     item.setBackground(QColor("#fee2e2"))
@@ -5312,14 +9350,19 @@ def launch_model_editor() -> None:
             filepath, _ = QFileDialog.getSaveFileName(
                 self,
                 "Save generated Python code",
-                str(Path(default_folder) / f"{self.workflow_draft.preset.value}_model_definition.py"),
+                str(
+                    Path(default_folder)
+                    / f"{self.workflow_draft.preset.value}_model_definition.py"
+                ),
                 "Python files (*.py)",
             )
             if not filepath:
                 return
             try:
                 Path(filepath).write_text(
-                    _python_code_from_c3d_draft(self.workflow_draft, self.c3d_folder_path),
+                    _python_code_from_c3d_draft(
+                        self.workflow_draft, self.c3d_folder_path
+                    ),
                     encoding="utf-8",
                 )
             except Exception as error:
@@ -5328,7 +9371,12 @@ def launch_model_editor() -> None:
         def _selected_segment_setting(self):
             if not self.segment_settings_list.selectedItems():
                 return None
-            segment_name = self.segment_settings_list.selectedItems()[0].text().split("|", maxsplit=1)[0].strip()
+            segment_name = (
+                self.segment_settings_list.selectedItems()[0]
+                .text()
+                .split("|", maxsplit=1)[0]
+                .strip()
+            )
             for setting in self.workflow_draft.segment_settings:
                 if setting.segment_name == segment_name:
                     return setting
@@ -5337,11 +9385,18 @@ def launch_model_editor() -> None:
         def _selected_c3d_role(self) -> str | None:
             if not self.file_role_list.selectedItems():
                 return None
-            return self.file_role_list.selectedItems()[0].text().split("|", maxsplit=1)[0].strip()
+            return (
+                self.file_role_list.selectedItems()[0]
+                .text()
+                .split("|", maxsplit=1)[0]
+                .strip()
+            )
 
         def _update_preset_details(self) -> None:
             previously_selected_segment = self._selected_workflow_segment_name()
-            previously_selected_anatomical_segment = self._selected_anatomical_segment_name()
+            previously_selected_anatomical_segment = (
+                self._selected_anatomical_segment_name()
+            )
             preset = self.selected_preset()
             if self.workflow_draft.preset != preset:
                 self.workflow_draft = c3d_workflow_draft(preset)
@@ -5352,7 +9407,9 @@ def launch_model_editor() -> None:
                 )
                 previously_selected_segment = None
                 previously_selected_anatomical_segment = None
-                self._auto_assign_c3d_files_from_folder(load_main=not bool(self.c3d_path.text().strip()))
+                self._auto_assign_c3d_files_from_folder(
+                    load_main=not bool(self.c3d_path.text().strip())
+                )
             workflow = c3d_creation_workflow(preset)
             self.step_list.clear()
             self.marker_list.clear()
@@ -5382,26 +9439,41 @@ def launch_model_editor() -> None:
                     "Status: upper-limb template exists; virtual markers/axes must be supplied before generation."
                 )
             elif preset == C3dModelPreset.LOWER_LIMBS:
-                self.status_label.setText("Status: ready with main marker C3D and functional SCoRE/SARA trials.")
+                self.status_label.setText(
+                    "Status: ready with main marker C3D and functional SCoRE/SARA trials."
+                )
             elif preset == C3dModelPreset.LOWER_LIMBS_ANATOMICAL:
-                self.status_label.setText("Status: ready with main marker C3D; segment frames are marker-defined.")
+                self.status_label.setText(
+                    "Status: ready with main marker C3D; segment frames are marker-defined."
+                )
             else:
-                self.status_label.setText("Status: ready with main marker C3D and optional functional trials.")
+                self.status_label.setText(
+                    "Status: ready with main marker C3D and optional functional trials."
+                )
 
             self._refresh_workflow_progress_and_issues()
             self._populate_segment_marker_lists()
             self._restore_workflow_segment_selection(previously_selected_segment)
-            self._restore_anatomical_segment_selection(previously_selected_anatomical_segment)
+            self._restore_anatomical_segment_selection(
+                previously_selected_anatomical_segment
+            )
             self._update_available_marker_list()
             self._sync_virtual_marker_choices()
             self._update_technical_segment_preview()
 
             for label in _virtual_feature_list_labels(self.workflow_draft):
                 self.feature_list.addItem(label)
-            if self.feature_list.count() != 0 and self.feature_list.currentItem() is None:
+            if (
+                self.feature_list.count() != 0
+                and self.feature_list.currentItem() is None
+            ):
                 self.feature_list.setCurrentItem(self.feature_list.item(0))
+            self._sync_functional_residual_button()
+            self._sync_functional_reconstruction_choices()
 
-            anatomical_frame_lines = _anatomical_frame_instruction_lines(self.workflow_draft)
+            anatomical_frame_lines = _anatomical_frame_instruction_lines(
+                self.workflow_draft
+            )
             if len(anatomical_frame_lines) == 0:
                 self.axis_list.addItem("No anatomical frame recipe yet.")
             else:
@@ -5410,21 +9482,35 @@ def launch_model_editor() -> None:
 
             for setting in self.workflow_draft.segment_settings:
                 anthropometry = setting.anthropometry_model or "-"
-                length = "-" if setting.segment_length is None else f"{setting.segment_length:.4g}"
+                length = (
+                    "-"
+                    if setting.segment_length is None
+                    else f"{setting.segment_length:.4g}"
+                )
                 self.segment_settings_list.addItem(
                     f"{setting.segment_name} | translations={setting.translations or '-'} | "
                     f"rotations={setting.rotations or '-'} | child_translation={setting.child_translation} | "
                     f"initial_rotation={setting.initial_rotation_method} | anthropometry={anthropometry} | "
                     f"length={length}"
                 )
-            if self.segment_settings_list.count() != 0 and self.segment_settings_list.currentItem() is None:
-                self.segment_settings_list.setCurrentItem(self.segment_settings_list.item(0))
-                self._load_selected_segment_settings_into_form()
+            if (
+                self.segment_settings_list.count() != 0
+                and self.segment_settings_list.currentItem() is None
+            ):
+                self.segment_settings_list.setCurrentItem(
+                    self.segment_settings_list.item(0)
+                )
 
             for file_role in self.workflow_draft.file_assignments:
-                role_definition = next(role for role in workflow.file_roles if role.role == file_role.role)
+                role_definition = next(
+                    role for role in workflow.file_roles if role.role == file_role.role
+                )
                 required = "required" if role_definition.required else "optional"
-                source = Path(file_role.source_path).name if file_role.source_path else "not assigned"
+                source = (
+                    Path(file_role.source_path).name
+                    if file_role.source_path
+                    else "not assigned"
+                )
                 self.file_role_list.addItem(
                     f"{file_role.role} | {source} | expected={file_role.generic_name} | {required}"
                 )
@@ -5450,7 +9536,11 @@ def launch_model_editor() -> None:
             target_index = 0
             if segment_name is not None:
                 for index in range(self.segment_marker_list.count()):
-                    item_segment_name = self.segment_marker_list.item(index).text().split(":", maxsplit=1)[0]
+                    item_segment_name = (
+                        self.segment_marker_list.item(index)
+                        .text()
+                        .split(":", maxsplit=1)[0]
+                    )
                     if item_segment_name == segment_name:
                         target_index = index
                         break
@@ -5458,22 +9548,32 @@ def launch_model_editor() -> None:
                 self._update_assigned_marker_list()
                 self._update_available_marker_list()
                 return
-            self.segment_marker_list.setCurrentItem(self.segment_marker_list.item(target_index))
+            self.segment_marker_list.setCurrentItem(
+                self.segment_marker_list.item(target_index)
+            )
             self._update_assigned_marker_list()
             self._update_available_marker_list()
 
-        def _restore_anatomical_segment_selection(self, segment_name: str | None) -> None:
+        def _restore_anatomical_segment_selection(
+            self, segment_name: str | None
+        ) -> None:
             target_index = 0
             if segment_name is not None:
                 for index in range(self.anatomical_segment_list.count()):
-                    item_segment_name = self.anatomical_segment_list.item(index).text().split(":", maxsplit=1)[0]
+                    item_segment_name = (
+                        self.anatomical_segment_list.item(index)
+                        .text()
+                        .split(":", maxsplit=1)[0]
+                    )
                     if item_segment_name == segment_name:
                         target_index = index
                         break
             if self.anatomical_segment_list.count() == 0:
                 self._update_anatomical_segment_details()
                 return
-            self.anatomical_segment_list.setCurrentItem(self.anatomical_segment_list.item(target_index))
+            self.anatomical_segment_list.setCurrentItem(
+                self.anatomical_segment_list.item(target_index)
+            )
             self._update_anatomical_segment_details()
 
         def _update_available_marker_list(self) -> None:
@@ -5481,14 +9581,22 @@ def launch_model_editor() -> None:
             if self.c3d_data is None and len(self.workflow_marker_pool) == 0:
                 self.marker_list.addItem("Choose the main marker C3D to list markers.")
                 return
-            marker_names = tuple(self.c3d_data.marker_names) if self.c3d_data is not None else self.workflow_marker_pool
-            virtual_marker_names = tuple(marker.name for marker in self.workflow_draft.virtual_markers)
+            marker_names = (
+                tuple(self.c3d_data.marker_names)
+                if self.c3d_data is not None
+                else self.workflow_marker_pool
+            )
+            virtual_marker_names = tuple(
+                marker.name for marker in self.workflow_draft.virtual_markers
+            )
             if self.show_virtual_markers_in_segments_checkbox.isChecked():
                 marker_names = tuple(dict.fromkeys(marker_names + virtual_marker_names))
             else:
                 virtual_marker_name_set = set(virtual_marker_names)
                 marker_names = tuple(
-                    marker_name for marker_name in marker_names if marker_name not in virtual_marker_name_set
+                    marker_name
+                    for marker_name in marker_names
+                    if marker_name not in virtual_marker_name_set
                 )
             selected_segment_name = self._selected_workflow_segment_name()
             selected_segment_marker_names = {
@@ -5498,7 +9606,9 @@ def launch_model_editor() -> None:
                 for marker_name in group.marker_names
             }
             marker_names = tuple(
-                marker_name for marker_name in marker_names if marker_name not in selected_segment_marker_names
+                marker_name
+                for marker_name in marker_names
+                if marker_name not in selected_segment_marker_names
             )
             if not self.show_all_markers_checkbox.isChecked():
                 assigned_marker_names = {
@@ -5508,7 +9618,9 @@ def launch_model_editor() -> None:
                     for marker_name in group.marker_names
                 }
                 marker_names = tuple(
-                    marker_name for marker_name in marker_names if marker_name not in assigned_marker_names
+                    marker_name
+                    for marker_name in marker_names
+                    if marker_name not in assigned_marker_names
                 )
             if len(marker_names) == 0:
                 self.marker_list.addItem("No available marker with the current filter.")
@@ -5545,14 +9657,18 @@ def launch_model_editor() -> None:
             _set_preview_render_hints(self, painter)
             painter.fillRect(self.rect(), QColor("white"))
             if self.scene is None or not self.scene.joints:
-                painter.drawText(self.rect(), qt_alignment_center, "Open a model to preview it")
+                painter.drawText(
+                    self.rect(), qt_alignment_center, "Open a model to preview it"
+                )
                 return
 
             projected_joints = {
-                name: _rotate_preview_point(point, self.yaw, self.pitch) for name, point in self.scene.joints.items()
+                name: _rotate_preview_point(point, self.yaw, self.pitch)
+                for name, point in self.scene.joints.items()
             }
             projected_markers = {
-                name: _rotate_preview_point(point, self.yaw, self.pitch) for name, point in self.scene.markers.items()
+                name: _rotate_preview_point(point, self.yaw, self.pitch)
+                for name, point in self.scene.markers.items()
             }
             projected_axes = [
                 (
@@ -5562,14 +9678,24 @@ def launch_model_editor() -> None:
                 )
                 for axis in self.scene.segment_axes
             ]
-            all_points = list(projected_joints.values()) + list(projected_markers.values())
+            all_points = list(projected_joints.values()) + list(
+                projected_markers.values()
+            )
             for path in self.scene.muscles.values():
-                all_points.extend(_rotate_preview_point(point, self.yaw, self.pitch) for point in path)
+                all_points.extend(
+                    _rotate_preview_point(point, self.yaw, self.pitch) for point in path
+                )
             for _, start, end in projected_axes:
                 all_points.extend([start, end])
-            transform = _fit_projection(all_points, self.width(), self.height(), QPointF, self.zoom)
-            self._projected_joint_positions = {name: transform(point) for name, point in projected_joints.items()}
-            self._projected_marker_positions = {name: transform(point) for name, point in projected_markers.items()}
+            transform = _fit_projection(
+                all_points, self.width(), self.height(), QPointF, self.zoom
+            )
+            self._projected_joint_positions = {
+                name: transform(point) for name, point in projected_joints.items()
+            }
+            self._projected_marker_positions = {
+                name: transform(point) for name, point in projected_markers.items()
+            }
 
             painter.setPen(QPen(QColor("#6b7280"), 2))
             for parent, child in self.scene.bones:
@@ -5612,9 +9738,13 @@ def launch_model_editor() -> None:
                 is_selected = name == self.selected_segment_name
                 painter.setPen(QPen(QColor("#111827"), 1))
                 painter.setBrush(QColor("#f59e0b" if is_selected else "#111827"))
-                painter.drawEllipse(center, 5 if is_selected else 3, 5 if is_selected else 3)
+                painter.drawEllipse(
+                    center, 5 if is_selected else 3, 5 if is_selected else 3
+                )
 
-            _draw_preview_orientation_axes(painter, self.width(), self.height(), self.yaw, self.pitch)
+            _draw_preview_orientation_axes(
+                painter, self.width(), self.height(), self.yaw, self.pitch
+            )
             _draw_preview_interaction_hint(painter, self.width())
             self._draw_legend(painter)
 
@@ -5632,7 +9762,9 @@ def launch_model_editor() -> None:
             painter.setPen(QPen(QColor("#111827"), 1))
             painter.drawText(x, y, "Legend")
             y += line_gap
-            _draw_legend_point(painter, QPointF(x + 6, y - 4), QColor("#2563eb"), "Markers", x + 20, y)
+            _draw_legend_point(
+                painter, QPointF(x + 6, y - 4), QColor("#2563eb"), "Markers", x + 20, y
+            )
             y += line_gap
             _draw_legend_point(
                 painter,
@@ -5643,9 +9775,13 @@ def launch_model_editor() -> None:
                 y,
             )
             y += line_gap
-            _draw_legend_line(painter, QColor("#6b7280"), 2, x, y - 4, "Bones", x + 36, y)
+            _draw_legend_line(
+                painter, QColor("#6b7280"), 2, x, y - 4, "Bones", x + 36, y
+            )
             y += line_gap
-            _draw_legend_line(painter, QColor("#dc2626"), 2, x, y - 4, "Muscles", x + 36, y)
+            _draw_legend_line(
+                painter, QColor("#dc2626"), 2, x, y - 4, "Muscles", x + 36, y
+            )
             y += line_gap
             _draw_legend_line(
                 painter,
@@ -5669,9 +9805,13 @@ def launch_model_editor() -> None:
                 y,
             )
             y += line_gap
-            _draw_legend_line(painter, QColor("#2563eb"), 1, x, y - 4, "z axis", x + 36, y)
+            _draw_legend_line(
+                painter, QColor("#2563eb"), 1, x, y - 4, "z axis", x + 36, y
+            )
             y += line_gap
-            _draw_legend_line(painter, QColor("#6b7280"), 4, x, y - 4, "Rotational axis", x + 36, y)
+            _draw_legend_line(
+                painter, QColor("#6b7280"), 4, x, y - 4, "Rotational axis", x + 36, y
+            )
 
         def mousePressEvent(self, event) -> None:
             if event.button() == qt_right_button:
@@ -5689,7 +9829,9 @@ def launch_model_editor() -> None:
             Show standard orthographic plane choices for the model preview.
             """
             menu = QMenu(self)
-            plane_actions = {menu.addAction(f"{plane} plane"): plane for plane in ("XY", "YZ", "ZX")}
+            plane_actions = {
+                menu.addAction(f"{plane} plane"): plane for plane in ("XY", "YZ", "ZX")
+            }
             menu.addSeparator()
             subject_actions = {
                 menu.addAction(label): view
@@ -5730,14 +9872,21 @@ def launch_model_editor() -> None:
             self._press_mouse_position = None
             if pressed is None:
                 return
-            if abs(released.x() - pressed.x()) > 4 or abs(released.y() - pressed.y()) > 4:
+            if (
+                abs(released.x() - pressed.x()) > 4
+                or abs(released.y() - pressed.y()) > 4
+            ):
                 return
             clicked = released
-            marker_name = _nearest_projected_segment(self._projected_marker_positions, clicked)
+            marker_name = _nearest_projected_segment(
+                self._projected_marker_positions, clicked
+            )
             if marker_name is not None and self.on_marker_selected is not None:
                 self.on_marker_selected(marker_name)
                 return
-            segment_name = _nearest_projected_segment(self._projected_joint_positions, clicked)
+            segment_name = _nearest_projected_segment(
+                self._projected_joint_positions, clicked
+            )
             if segment_name is not None and self.on_segment_selected is not None:
                 self.on_segment_selected(segment_name)
 
@@ -5808,7 +9957,9 @@ def launch_model_editor() -> None:
 
             self.marker_list = QListWidget()
             self.marker_list.setAlternatingRowColors(True)
-            self.marker_list.itemSelectionChanged.connect(self._on_marker_selection_changed)
+            self.marker_list.itemSelectionChanged.connect(
+                self._on_marker_selection_changed
+            )
             self.marker_name = QLineEdit()
             self.marker_name.setPlaceholderText("New or selected marker name")
             self.marker_position = QLineEdit()
@@ -5851,7 +10002,9 @@ def launch_model_editor() -> None:
             self.muscle_tree = QTreeWidget()
             self.muscle_tree.setHeaderLabel("Muscles")
             self.muscle_tree.setAlternatingRowColors(True)
-            self.muscle_tree.itemSelectionChanged.connect(self._on_muscle_selection_changed)
+            self.muscle_tree.itemSelectionChanged.connect(
+                self._on_muscle_selection_changed
+            )
             self.optimal_length = QLineEdit()
             self.maximal_force = QLineEdit()
             self.tendon_slack_length = QLineEdit()
@@ -5883,9 +10036,13 @@ def launch_model_editor() -> None:
             self.insertion_name = QLineEdit()
             self.insertion_parent = QLineEdit()
             self.insertion_position = QLineEdit()
-            self.apply_path_endpoints_button = QPushButton("Apply origin/insertion changes")
+            self.apply_path_endpoints_button = QPushButton(
+                "Apply origin/insertion changes"
+            )
             self.apply_path_endpoints_button.setObjectName("PrimaryActionButton")
-            self.apply_path_endpoints_button.clicked.connect(self._apply_path_endpoint_changes)
+            self.apply_path_endpoints_button.clicked.connect(
+                self._apply_path_endpoint_changes
+            )
 
             muscle_form = QFormLayout()
             muscle_form.addRow("New group name", self.group_name)
@@ -5906,7 +10063,9 @@ def launch_model_editor() -> None:
 
             self.via_point_list = QListWidget()
             self.via_point_list.setAlternatingRowColors(True)
-            self.via_point_list.itemSelectionChanged.connect(self._on_via_point_selection_changed)
+            self.via_point_list.itemSelectionChanged.connect(
+                self._on_via_point_selection_changed
+            )
             self.via_point_name = QLineEdit()
             self.via_point_name.setPlaceholderText("New or selected via-point name")
             self.via_point_parent = QLineEdit()
@@ -5982,7 +10141,7 @@ def launch_model_editor() -> None:
             open_button.clicked.connect(self._open_model)
             new_c3d_model_button = QPushButton("New from C3D")
             new_c3d_model_button.setObjectName("PrimaryActionButton")
-            new_c3d_model_button.clicked.connect(self._new_model_from_c3d)
+            new_c3d_model_button.clicked.connect(lambda: self._new_model_from_c3d())
             save_button = QPushButton("Export model")
             save_button.setObjectName("PrimaryActionButton")
             save_button.clicked.connect(self._save_model)
@@ -6034,8 +10193,16 @@ def launch_model_editor() -> None:
             except Exception as error:
                 QMessageBox.critical(self, "Unable to open model", str(error))
 
-        def _new_model_from_c3d(self) -> None:
-            dialog = C3dModelCreationDialog()
+        def _new_model_from_c3d(
+            self,
+            *,
+            initial_preset: str | C3dModelPreset | None = None,
+            initial_c3d_folder: str | Path | None = None,
+        ) -> None:
+            dialog = C3dModelCreationDialog(
+                initial_preset=initial_preset,
+                initial_c3d_folder=initial_c3d_folder,
+            )
             if _exec_dialog(dialog) != _dialog_accepted_value():
                 return
             if dialog.selected_preset() == C3dModelPreset.FROM_SCRATCH:
@@ -6049,21 +10216,32 @@ def launch_model_editor() -> None:
                 return
             selected_c3d_file = dialog.selected_c3d_file()
             if selected_c3d_file is not None:
-                self._new_model_from_c3d_file(selected_c3d_file, dialog.selected_preset())
+                self._new_model_from_c3d_file(
+                    selected_c3d_file, dialog.selected_preset()
+                )
                 return
-            calibration_folder = QFileDialog.getExistingDirectory(
-                self,
-                "Select calibration folder",
-                "",
-            )
-            if not calibration_folder:
-                return
-            try:
+            selected_c3d_folder = dialog.selected_c3d_folder()
+            if selected_c3d_folder is None:
+                calibration_folder = QFileDialog.getExistingDirectory(
+                    self,
+                    "Select calibration folder",
+                    "",
+                )
+                if not calibration_folder:
+                    return
                 folder_path = Path(calibration_folder)
-                progress_dialog, progress_callback = self._c3d_folder_generation_progress_reporter()
+            else:
+                folder_path = selected_c3d_folder
+            try:
+                progress_dialog, progress_callback = (
+                    self._c3d_folder_generation_progress_reporter()
+                )
                 result = create_model_from_c3d_folder(
                     calibration_folder=folder_path,
                     preset=dialog.selected_preset(),
+                    static_virtual_points=_static_virtual_point_definitions_from_draft(
+                        dialog.workflow_draft
+                    ),
                     progress_callback=progress_callback,
                 )
                 progress_callback("Refreshing model editor...")
@@ -6106,7 +10284,9 @@ def launch_model_editor() -> None:
             progress_callback("Preparing C3D model generation...")
             return progress_dialog, progress_callback
 
-        def _new_model_from_c3d_file(self, filepath: Path, preset: C3dModelPreset) -> None:
+        def _new_model_from_c3d_file(
+            self, filepath: Path, preset: C3dModelPreset
+        ) -> None:
             try:
                 template = template_for_c3d_model_preset(preset)
                 result = create_model_from_marker_data(
@@ -6129,7 +10309,11 @@ def launch_model_editor() -> None:
             if self.model is None:
                 QMessageBox.information(self, "No model", "Open a model before saving.")
                 return
-            default_name = "" if self.current_filepath is None else str(self.current_filepath.with_suffix(".bioMod"))
+            default_name = (
+                ""
+                if self.current_filepath is None
+                else str(self.current_filepath.with_suffix(".bioMod"))
+            )
             filepath, _ = QFileDialog.getSaveFileName(
                 self,
                 "Export model",
@@ -6145,10 +10329,18 @@ def launch_model_editor() -> None:
 
         def _write_model_graphviz(self) -> None:
             if self.model is None:
-                QMessageBox.information(self, "No model", "Open a model before writing a graph.")
+                QMessageBox.information(
+                    self, "No model", "Open a model before writing a graph."
+                )
                 return
-            default_name = "" if self.current_filepath is None else str(self.current_filepath.with_suffix(".dot"))
-            filepath, _ = QFileDialog.getSaveFileName(self, "Write model graph", default_name, "Graphviz DOT (*.dot)")
+            default_name = (
+                ""
+                if self.current_filepath is None
+                else str(self.current_filepath.with_suffix(".dot"))
+            )
+            filepath, _ = QFileDialog.getSaveFileName(
+                self, "Write model graph", default_name, "Graphviz DOT (*.dot)"
+            )
             if not filepath:
                 return
             try:
@@ -6158,7 +10350,9 @@ def launch_model_editor() -> None:
 
         def _plot_muscles(self) -> None:
             if self.model is None:
-                QMessageBox.information(self, "No model", "Open a model before plotting muscles.")
+                QMessageBox.information(
+                    self, "No model", "Open a model before plotting muscles."
+                )
                 return
             try:
                 muscle_validator = MuscleValidator(self.model)
@@ -6205,7 +10399,9 @@ def launch_model_editor() -> None:
             self.tree.expandAll()
 
         def _select_segment_from_preview(self, segment_name: str) -> None:
-            items = self.tree.findItems(segment_name, qt_match_recursive | qt_match_exact)
+            items = self.tree.findItems(
+                segment_name, qt_match_recursive | qt_match_exact
+            )
             if items:
                 self.tree.setCurrentItem(items[0])
 
@@ -6245,7 +10441,11 @@ def launch_model_editor() -> None:
             self.marker_list.addItems(list(segment.markers.keys()))
 
         def _on_marker_selection_changed(self) -> None:
-            if self.model is None or self.current_segment_name is None or not self.marker_list.selectedItems():
+            if (
+                self.model is None
+                or self.current_segment_name is None
+                or not self.marker_list.selectedItems()
+            ):
                 return
             marker_name = self.marker_list.selectedItems()[0].text()
             marker = self.model.segments[self.current_segment_name].markers[marker_name]
@@ -6264,7 +10464,11 @@ def launch_model_editor() -> None:
             )
 
         def _apply_marker_changes(self) -> None:
-            if self.model is None or self.current_segment_name is None or not self.marker_list.selectedItems():
+            if (
+                self.model is None
+                or self.current_segment_name is None
+                or not self.marker_list.selectedItems()
+            ):
                 return
             try:
                 old_name = self.marker_list.selectedItems()[0].text()
@@ -6295,7 +10499,11 @@ def launch_model_editor() -> None:
                 QMessageBox.critical(self, "Unable to add marker", str(error))
 
         def _remove_marker(self) -> None:
-            if self.model is None or self.current_segment_name is None or not self.marker_list.selectedItems():
+            if (
+                self.model is None
+                or self.current_segment_name is None
+                or not self.marker_list.selectedItems()
+            ):
                 return
             marker_name = self.marker_list.selectedItems()[0].text()
             remove_marker(self.model.segments[self.current_segment_name], marker_name)
@@ -6303,7 +10511,11 @@ def launch_model_editor() -> None:
             self.preview.set_model(self.model)
 
         def _attach_marker_to_segment(self) -> None:
-            if self.model is None or self.current_segment_name is None or not self.marker_list.selectedItems():
+            if (
+                self.model is None
+                or self.current_segment_name is None
+                or not self.marker_list.selectedItems()
+            ):
                 return
             try:
                 marker_name = self.marker_list.selectedItems()[0].text()
@@ -6343,7 +10555,9 @@ def launch_model_editor() -> None:
             if self.model is None or not self.muscle_tree.selectedItems():
                 return None
             item = self.muscle_tree.selectedItems()[0]
-            muscle_group_name = item.text(0) if item.parent() is None else item.parent().text(0)
+            muscle_group_name = (
+                item.text(0) if item.parent() is None else item.parent().text(0)
+            )
             return self.model.muscle_groups[muscle_group_name]
 
         def _on_muscle_selection_changed(self) -> None:
@@ -6353,10 +10567,14 @@ def launch_model_editor() -> None:
             data = get_muscle_editor_data(muscle)
             self.optimal_length.setText(_format_optional_float(data.optimal_length))
             self.maximal_force.setText(_format_optional_float(data.maximal_force))
-            self.tendon_slack_length.setText(_format_optional_float(data.tendon_slack_length))
+            self.tendon_slack_length.setText(
+                _format_optional_float(data.tendon_slack_length)
+            )
             self.pennation_angle.setText(_format_optional_float(data.pennation_angle))
             self.maximal_velocity.setText(_format_optional_float(data.maximal_velocity))
-            self.maximal_excitation.setText(_format_optional_float(data.maximal_excitation))
+            self.maximal_excitation.setText(
+                _format_optional_float(data.maximal_excitation)
+            )
             origin = get_origin_editor_data(muscle)
             insertion = get_insertion_editor_data(muscle)
             self.origin_name.setText(origin.name)
@@ -6375,12 +10593,22 @@ def launch_model_editor() -> None:
                 apply_muscle_editor_data(
                     muscle,
                     MuscleEditorData(
-                        optimal_length=_parse_optional_float(self.optimal_length.text()),
+                        optimal_length=_parse_optional_float(
+                            self.optimal_length.text()
+                        ),
                         maximal_force=_parse_optional_float(self.maximal_force.text()),
-                        tendon_slack_length=_parse_optional_float(self.tendon_slack_length.text()),
-                        pennation_angle=_parse_optional_float(self.pennation_angle.text()),
-                        maximal_velocity=_parse_optional_float(self.maximal_velocity.text()),
-                        maximal_excitation=_parse_optional_float(self.maximal_excitation.text()),
+                        tendon_slack_length=_parse_optional_float(
+                            self.tendon_slack_length.text()
+                        ),
+                        pennation_angle=_parse_optional_float(
+                            self.pennation_angle.text()
+                        ),
+                        maximal_velocity=_parse_optional_float(
+                            self.maximal_velocity.text()
+                        ),
+                        maximal_excitation=_parse_optional_float(
+                            self.maximal_excitation.text()
+                        ),
                     ),
                 )
                 self.preview.set_model(self.model)
@@ -6447,7 +10675,9 @@ def launch_model_editor() -> None:
                     ViaPointEditorData(
                         name=self.origin_name.text().strip(),
                         parent_name=self.origin_parent.text().strip(),
-                        position=_parse_vector(self.origin_position.text(), expected_length=3),
+                        position=_parse_vector(
+                            self.origin_position.text(), expected_length=3
+                        ),
                     ),
                 )
                 apply_insertion_editor_data(
@@ -6455,12 +10685,16 @@ def launch_model_editor() -> None:
                     ViaPointEditorData(
                         name=self.insertion_name.text().strip(),
                         parent_name=self.insertion_parent.text().strip(),
-                        position=_parse_vector(self.insertion_position.text(), expected_length=3),
+                        position=_parse_vector(
+                            self.insertion_position.text(), expected_length=3
+                        ),
                     ),
                 )
                 self.preview.set_model(self.model)
             except Exception as error:
-                QMessageBox.critical(self, "Invalid origin/insertion values", str(error))
+                QMessageBox.critical(
+                    self, "Invalid origin/insertion values", str(error)
+                )
 
         def _on_via_point_selection_changed(self) -> None:
             muscle = self._selected_muscle()
@@ -6476,7 +10710,9 @@ def launch_model_editor() -> None:
             return ViaPointEditorData(
                 name=self.via_point_name.text().strip(),
                 parent_name=self.via_point_parent.text().strip(),
-                position=_parse_vector(self.via_point_position.text(), expected_length=3),
+                position=_parse_vector(
+                    self.via_point_position.text(), expected_length=3
+                ),
             )
 
         def _apply_via_point_changes(self) -> None:
@@ -6527,15 +10763,21 @@ def launch_model_editor() -> None:
                     q_min=_parse_float_list(self.q_min.text()),
                     q_max=_parse_float_list(self.q_max.text()),
                     mass=_parse_optional_float(self.mass.text()),
-                    center_of_mass=_parse_vector(self.center_of_mass.text(), expected_length=3),
-                    inertia_diagonal=_parse_vector(self.inertia_diagonal.text(), expected_length=3),
+                    center_of_mass=_parse_vector(
+                        self.center_of_mass.text(), expected_length=3
+                    ),
+                    inertia_diagonal=_parse_vector(
+                        self.inertia_diagonal.text(), expected_length=3
+                    ),
                 )
                 validate_parent_name(
                     model=self.model,
                     segment_name=self.current_segment_name,
                     parent_name=data.parent_name,
                 )
-                apply_segment_editor_data(self.model.segments[self.current_segment_name], data)
+                apply_segment_editor_data(
+                    self.model.segments[self.current_segment_name], data
+                )
                 self._populate_tree()
                 self.preview.set_model(self.model)
             except Exception as error:
@@ -6545,6 +10787,20 @@ def launch_model_editor() -> None:
     apply_biobuddy_gui_style(app)
     window = ModelEditorWindow()
     window.show()
+    if open_c3d_dialog or c3d_preset is not None or c3d_folder is not None:
+
+        def open_startup_c3d_dialog() -> None:
+            try:
+                window._new_model_from_c3d(
+                    initial_preset=c3d_preset,
+                    initial_c3d_folder=c3d_folder,
+                )
+            except Exception as error:
+                QMessageBox.critical(
+                    window, "Unable to open C3D model workflow", str(error)
+                )
+
+        QTimer.singleShot(0, open_startup_c3d_dialog)
     app.exec()
 
 
@@ -6599,22 +10855,31 @@ def _c3d_model_preset_from_cli_value(
         if normalized_value == preset.value.lower().replace("_", "-"):
             return preset
     available_values = ", ".join(sorted(aliases))
-    raise ValueError(f"Unsupported C3D model preset '{value}'. Available aliases: {available_values}.")
+    raise ValueError(
+        f"Unsupported C3D model preset '{value}'. Available aliases: {available_values}."
+    )
 
 
-def _format_c3d_creation_summary(result: C3dModelCreationResult, calibration_folder: Path) -> str:
+def _format_c3d_creation_summary(
+    result: C3dModelCreationResult, calibration_folder: Path
+) -> str:
     """
     Build a compact GUI summary for a generated C3D model.
     """
     marker_lines = []
     for trial_name, report in result.marker_reports.items():
-        missing = "none" if len(report.missing_markers) == 0 else ", ".join(report.missing_markers)
+        missing = (
+            "none"
+            if len(report.missing_markers) == 0
+            else ", ".join(report.missing_markers)
+        )
         marker_lines.append(
             f"{trial_name}: {report.complete_frame_count}/{report.total_frame_count} complete frames, "
             f"missing markers: {missing}"
         )
     quality_lines = [
-        f"{name}: raw plane angle {metric.mean_angle_degrees:.1f} deg" for name, metric in result.frame_quality.items()
+        f"{name}: raw plane angle {metric.mean_angle_degrees:.1f} deg"
+        for name, metric in result.frame_quality.items()
     ]
     return (
         f"Generated {len(result.model.segments)} segments from '{calibration_folder}'.\n\n"
@@ -6650,14 +10915,21 @@ def _list_widget_texts(list_widget) -> tuple[str, ...]:
     Return all marker names shown in a QListWidget, preserving duplicates.
     """
     return tuple(
-        list_widget.item(index).text().split("|", maxsplit=1)[0].strip() for index in range(list_widget.count())
+        list_widget.item(index).text().split("|", maxsplit=1)[0].strip()
+        for index in range(list_widget.count())
     )
 
 
 def _segment_marker_group_label(group) -> str:
-    markers = ", ".join(group.marker_names) if len(group.marker_names) != 0 else "no marker assigned yet"
+    markers = (
+        ", ".join(group.marker_names)
+        if len(group.marker_names) != 0
+        else "no marker assigned yet"
+    )
     parent = group.parent_name if group.parent_name else "-"
-    return f"{group.segment_name}: {markers} | type={group.segment_type} | parent={parent}"
+    return (
+        f"{group.segment_name}: {markers} | type={group.segment_type} | parent={parent}"
+    )
 
 
 def _marker_pool_from_draft(workflow_draft) -> tuple[str, ...]:
@@ -6665,7 +10937,9 @@ def _marker_pool_from_draft(workflow_draft) -> tuple[str, ...]:
     Return the known marker names for a C3D draft, even before a C3D file is loaded.
     """
     marker_names = []
-    marker_names.extend(sorted(_expected_marker_names_for_preset(workflow_draft.preset)))
+    marker_names.extend(
+        sorted(_expected_marker_names_for_preset(workflow_draft.preset))
+    )
     for group in workflow_draft.segment_marker_groups:
         marker_names.extend(group.marker_names)
     marker_names.extend(marker.name for marker in workflow_draft.virtual_markers)
@@ -6683,7 +10957,11 @@ def _unassigned_marker_names(
         for group in segment_marker_groups
         for marker_name in group.marker_names + group.technical_marker_names
     }
-    return tuple(marker_name for marker_name in marker_names if marker_name not in assigned_marker_names)
+    return tuple(
+        marker_name
+        for marker_name in marker_names
+        if marker_name not in assigned_marker_names
+    )
 
 
 def _virtual_marker_preview_marker_names_to_draw(
@@ -6732,21 +11010,29 @@ def _normalized_marker_name_candidates(marker_name: str) -> tuple[str, ...]:
     candidates = [marker_name]
     if ":" in marker_name:
         candidates.append(marker_name.split(":")[-1])
-    return tuple(dict.fromkeys(_normalized_marker_name(candidate) for candidate in candidates))
+    if "_" in marker_name:
+        candidates.append(marker_name.rsplit("_", maxsplit=1)[-1])
+    return tuple(
+        dict.fromkeys(_normalized_marker_name(candidate) for candidate in candidates)
+    )
 
 
 def _normalized_marker_name(marker_name: str) -> str:
     """
     Normalize marker names for template-to-C3D matching.
     """
-    return "".join(character for character in marker_name.upper() if character.isalnum())
+    return "".join(
+        character for character in marker_name.upper() if character.isalnum()
+    )
 
 
 def _strip_participant_prefix_from_c3d_data(c3d_data) -> None:
     """
     Remove a participant namespace prefix such as 'P01_MH:' from C3D marker names in place.
     """
-    stripped_names = _strip_participant_prefix_from_marker_names(tuple(c3d_data.marker_names))
+    stripped_names = _strip_participant_prefix_from_marker_names(
+        tuple(c3d_data.marker_names)
+    )
     if len(set(stripped_names)) != len(stripped_names):
         return
     c3d_data.marker_names = list(stripped_names)
@@ -6758,9 +11044,13 @@ def _strip_participant_prefix_from_marker_names(
     """
     Strip the text before ':' from marker names, preserving names without a separator.
     """
-    return tuple(
-        marker_name.split(":", maxsplit=1)[1] if ":" in marker_name else marker_name for marker_name in marker_names
-    )
+    stripped_names = []
+    for marker_name in marker_names:
+        if ":" in marker_name:
+            stripped_names.append(marker_name.split(":", maxsplit=1)[1])
+            continue
+        stripped_names.append(re.sub(r"^Skeleton_\d+_", "", marker_name))
+    return tuple(stripped_names)
 
 
 def _remap_c3d_workflow_draft_markers(workflow_draft, marker_mapping: dict[str, str]):
@@ -6769,7 +11059,9 @@ def _remap_c3d_workflow_draft_markers(workflow_draft, marker_mapping: dict[str, 
     """
 
     def remap_names(marker_names: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(marker_mapping.get(marker_name, marker_name) for marker_name in marker_names)
+        return tuple(
+            marker_mapping.get(marker_name, marker_name) for marker_name in marker_names
+        )
 
     return replace(
         workflow_draft,
@@ -6805,7 +11097,9 @@ def _format_marker_mapping_summary(marker_mapping: dict[str, str]) -> str:
     if not marker_mapping:
         return "No template marker matched the loaded C3D yet. Assign markers manually or update the template names."
     if not remapped:
-        return f"Marker names match the template ({len(marker_mapping)} matched markers)."
+        return (
+            f"Marker names match the template ({len(marker_mapping)} matched markers)."
+        )
     preview = "; ".join(remapped[:8])
     suffix = "" if len(remapped) <= 8 else f"; +{len(remapped) - 8} more"
     return f"Automatic marker name mapping: {preview}{suffix}"
@@ -6822,7 +11116,9 @@ def _load_virtual_marker_joint_names() -> dict:
         return {"default": "Joint", "pairs": []}
 
 
-def _joint_name_from_segments(proximal_segment_name: str, distal_segment_name: str) -> str:
+def _joint_name_from_segments(
+    proximal_segment_name: str, distal_segment_name: str
+) -> str:
     """
     Infer a joint name from proximal/distal segment names using an editable JSON mapping.
     """
@@ -6833,7 +11129,9 @@ def _joint_name_from_segments(proximal_segment_name: str, distal_segment_name: s
         proximal_segments = set(entry.get("proximal_segments", []))
         distal_segments = set(entry.get("distal_segments", []))
         if proximal in proximal_segments and distal in distal_segments:
-            return _lateralized_joint_name(entry.get("joint", mapping.get("default", "Joint")), distal)
+            return _lateralized_joint_name(
+                entry.get("joint", mapping.get("default", "Joint")), distal
+            )
     if distal:
         return distal
     if proximal:
@@ -6897,13 +11195,19 @@ def _parent_segment_name(workflow_draft, segment_name: str) -> str:
     return ""
 
 
-def _technical_markers_for_segment(workflow_draft, segment_name: str) -> tuple[str, ...]:
+def _technical_markers_for_segment(
+    workflow_draft, segment_name: str
+) -> tuple[str, ...]:
     """
     Return technical markers for one segment, falling back to assigned markers when none are flagged yet.
     """
     for group in workflow_draft.segment_marker_groups:
         if group.segment_name == segment_name:
-            return group.technical_marker_names if group.technical_marker_names else group.marker_names
+            return (
+                group.technical_marker_names
+                if group.technical_marker_names
+                else group.marker_names
+            )
     return ()
 
 
@@ -6915,7 +11219,9 @@ def _settings_anthropometry_model(combo) -> str:
     return "" if model == "none" else model
 
 
-def _segment_length_marker_groups(workflow_draft, segment_name: str) -> tuple[tuple[str, ...], tuple[str, ...], str]:
+def _segment_length_marker_groups(
+    workflow_draft, segment_name: str
+) -> tuple[tuple[str, ...], tuple[str, ...], str]:
     """
     Return proximal and distal marker groups used to estimate a segment length.
 
@@ -6924,7 +11230,9 @@ def _segment_length_marker_groups(workflow_draft, segment_name: str) -> tuple[tu
     """
     proximal_markers = _segment_origin_markers(workflow_draft, segment_name)
     child_name = _first_child_segment_name(workflow_draft, segment_name)
-    distal_markers = _segment_origin_markers(workflow_draft, child_name) if child_name else ()
+    distal_markers = (
+        _segment_origin_markers(workflow_draft, child_name) if child_name else ()
+    )
     source = (
         f"proximal={','.join(proximal_markers) or '-'}; "
         f"distal={','.join(distal_markers) or '-'}; child={child_name or '-'}"
@@ -6952,11 +11260,15 @@ def _first_child_segment_name(workflow_draft, segment_name: str) -> str:
     return ""
 
 
-def _segment_length_from_draft(workflow_draft, c3d_data, segment_name: str) -> tuple[float | None, str]:
+def _segment_length_from_draft(
+    workflow_draft, c3d_data, segment_name: str
+) -> tuple[float | None, str]:
     """
     Estimate a segment length from the main C3D and the anatomical origin definitions.
     """
-    proximal_markers, distal_markers, source = _segment_length_marker_groups(workflow_draft, segment_name)
+    proximal_markers, distal_markers, source = _segment_length_marker_groups(
+        workflow_draft, segment_name
+    )
     if len(proximal_markers) == 0 or len(distal_markers) == 0:
         return None, f"{source}; missing anatomical origin marker group."
     missing_markers = tuple(
@@ -6978,7 +11290,9 @@ def _mean_marker_group_series(c3d_data, marker_names: tuple[str, ...]) -> np.nda
     """
     Return the mean marker trajectory for a possibly duplicated marker group.
     """
-    positions = [c3d_data.get_position((marker_name,))[:3, 0, :] for marker_name in marker_names]
+    positions = [
+        c3d_data.get_position((marker_name,))[:3, 0, :] for marker_name in marker_names
+    ]
     return np.nanmean(np.stack(positions, axis=0), axis=0)
 
 
@@ -7003,10 +11317,12 @@ def _functional_algorithm_quality_text(method: str, rt_parent, rt_child) -> str:
         if method == "score":
             from ..model_modifiers.joint_center_tool import Score
 
-            _, cor_parent_local, cor_child_local, rt_parent_valid, rt_child_valid = Score.perform_algorithm(
-                rt_parent, rt_child
+            _, cor_parent_local, cor_child_local, rt_parent_valid, rt_child_valid = (
+                Score.perform_algorithm(rt_parent, rt_child)
             )
-            residuals = _score_residuals(rt_parent_valid, rt_child_valid, cor_parent_local, cor_child_local)
+            residuals = _score_residuals(
+                rt_parent_valid, rt_child_valid, cor_parent_local, cor_child_local
+            )
             return (
                 f"SCoRE residual={np.nanmean(residuals) * 1000:.1f} +/- {np.nanstd(residuals) * 1000:.1f} mm "
                 f"over {len(rt_parent_valid)} algorithm frames"
@@ -7024,7 +11340,9 @@ def _functional_algorithm_quality_text(method: str, rt_parent, rt_child) -> str:
                 rt_parent_valid,
                 rt_child_valid,
             ) = Sara.perform_algorithm(rt_parent, rt_child)
-            residuals = _sara_residual_angles(rt_parent_valid, rt_child_valid, aor_parent_local, aor_child_local)
+            residuals = _sara_residual_angles(
+                rt_parent_valid, rt_child_valid, aor_parent_local, aor_child_local
+            )
             return (
                 f"SARA residual={np.nanmean(residuals):.1f} +/- {np.nanstd(residuals):.1f} deg "
                 f"over {len(rt_parent_valid)} algorithm frames"
@@ -7034,7 +11352,543 @@ def _functional_algorithm_quality_text(method: str, rt_parent, rt_child) -> str:
     return "algorithm residual unavailable"
 
 
-def _score_residuals(rt_parent, rt_child, cor_parent_local: np.ndarray, cor_child_local: np.ndarray) -> np.ndarray:
+def _sara_static_axis_quality_text(
+    *,
+    method: str,
+    feature,
+    payload: dict[str, str],
+    static_data,
+    functional_data,
+    parent_marker_names: tuple[str, ...],
+    child_marker_names: tuple[str, ...],
+    use_diverse_functional_frames: bool,
+    manual_functional_frame_indices: tuple[int, ...] = (),
+) -> str:
+    """
+    Return a SARA-vs-static anatomical axis quality message when enough data is available.
+    """
+    if not _is_sara_direction_method(method) or static_data is None:
+        return ""
+    expected_markers = _sara_expected_axis_markers(feature, payload)
+    if len(expected_markers) < 2:
+        return ""
+    expected_start_markers = expected_markers[:1]
+    expected_end_markers = expected_markers[1:]
+    origin_markers = _sara_origin_markers(feature, payload, expected_markers)
+    required_static = (
+        parent_marker_names
+        + child_marker_names
+        + expected_start_markers
+        + expected_end_markers
+    )
+    required_functional = (
+        parent_marker_names
+        + child_marker_names
+        + expected_start_markers
+        + expected_end_markers
+    )
+    if any(
+        marker_name not in static_data.marker_names for marker_name in required_static
+    ):
+        return ""
+    if any(
+        marker_name not in functional_data.marker_names
+        for marker_name in required_functional
+    ):
+        return ""
+    if any(
+        marker_name not in functional_data.marker_names
+        for marker_name in origin_markers
+    ):
+        return ""
+    try:
+        from ..components.generic.rigidbody.segment_coordinate_system import (
+            SegmentCoordinateSystemUtils,
+        )
+        from ..model_modifiers.joint_center_tool import Sara
+
+        parent_static_data = static_data.get_partial_dict_data(parent_marker_names)
+        child_static_data = static_data.get_partial_dict_data(child_marker_names)
+        parent_functional_data = functional_data.get_partial_dict_data(
+            parent_marker_names
+        )
+        child_functional_data = functional_data.get_partial_dict_data(
+            child_marker_names
+        )
+        rt_parent_func = SegmentCoordinateSystemUtils.rigidify(
+            functional_data=parent_functional_data,
+            static_data=parent_static_data,
+        )
+        rt_child_func = SegmentCoordinateSystemUtils.rigidify(
+            functional_data=child_functional_data,
+            static_data=child_static_data,
+        )
+        rt_parent_func, rt_child_func, report = prepare_functional_rt_pair(
+            rt_parent_func,
+            rt_child_func,
+            _functional_frame_selection_options(
+                use_diverse_functional_frames,
+                manual_functional_frame_indices,
+            ),
+        )
+        original_axis_global = np.nanmean(
+            _mean_marker_series(functional_data, expected_end_markers)
+            - _mean_marker_series(functional_data, expected_start_markers),
+            axis=1,
+        )
+        origin_positions_global = (
+            functional_data.markers_center_position(origin_markers)
+            if len(origin_markers) != 0
+            else None
+        )
+        if (
+            _uses_selected_functional_frames(report)
+            and origin_positions_global is not None
+        ):
+            origin_positions_global = subset_points_by_frame(
+                origin_positions_global, report.selected_indices
+            )
+        (
+            _aor_mean_global,
+            aor_parent_local,
+            _aor_child_local,
+            _cor_mean_global,
+            _cor_parent_local,
+            _cor_child_local,
+            _rt_parent_valid,
+            _rt_child_valid,
+        ) = Sara.perform_algorithm(
+            rt_parent=rt_parent_func,
+            rt_child=rt_child_func,
+            original_axis_global=original_axis_global,
+            origin_positions_global=origin_positions_global,
+        )
+        rt_parent_static = SegmentCoordinateSystemUtils.rigidify(parent_static_data)
+        sara_static_direction = np.nanmean(
+            _rt_vector_series(rt_parent_static, aor_parent_local), axis=1
+        )
+        expected_static_direction = np.nanmean(
+            _mean_marker_series(static_data, expected_end_markers)
+            - _mean_marker_series(static_data, expected_start_markers),
+            axis=1,
+        )
+        deviation = _axis_angle_degrees(
+            sara_static_direction, expected_static_direction
+        )
+    except Exception as error:
+        return f"SARA/static axis deviation unavailable ({error})"
+    if not np.isfinite(deviation):
+        return "SARA/static axis deviation unavailable"
+    limit = _sara_static_deviation_limit_from_payload(payload)
+    axis_label = f"{','.join(expected_start_markers)}->{','.join(expected_end_markers)}"
+    if limit is not None and deviation > limit:
+        return (
+            f"SARA/static axis deviation={deviation:.1f} deg vs {axis_label}; "
+            f"WARNING >{limit:g} deg, anatomical fallback will be used"
+        )
+    if limit is not None:
+        return f"SARA/static axis deviation={deviation:.1f} deg vs {axis_label} (limit {limit:g} deg)"
+    return f"SARA/static axis deviation={deviation:.1f} deg vs {axis_label}"
+
+
+def _sara_expected_axis_markers(feature, payload: dict[str, str]) -> tuple[str, ...]:
+    """
+    Return the marker pair used as the static expected SARA axis.
+    """
+    return tuple(getattr(feature, "start_markers", ())) + tuple(
+        getattr(feature, "end_markers", ())
+    ) or (_split_marker_names(payload.get("expected axis", "")))
+
+
+def _sara_origin_markers(
+    feature, payload: dict[str, str], expected_markers: tuple[str, ...]
+) -> tuple[str, ...]:
+    """
+    Return SARA origin markers from a GUI feature payload.
+    """
+    origin_markers = tuple(
+        getattr(feature, "origin_markers", ())
+    ) or _split_marker_names(payload.get("origin markers", ""))
+    return origin_markers or expected_markers
+
+
+def _sara_static_deviation_limit_from_payload(payload: dict[str, str]) -> float | None:
+    """
+    Return the configured SARA/static axis deviation limit, if any.
+    """
+    text = payload.get("max static deviation", "").strip()
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        return DEFAULT_SARA_STATIC_AXIS_DEVIATION_LIMIT_DEGREES
+    return value if np.isfinite(value) and value > 0 else None
+
+
+def _axis_angle_degrees(first: np.ndarray, second: np.ndarray) -> float:
+    """
+    Return the oriented angle between two 3D vectors.
+    """
+    first = np.asarray(first, dtype=float).reshape(3)
+    second = np.asarray(second, dtype=float).reshape(3)
+    first_norm = np.linalg.norm(first)
+    second_norm = np.linalg.norm(second)
+    if first_norm <= 1e-12 or second_norm <= 1e-12:
+        return float("nan")
+    cosine = float(np.clip(np.dot(first / first_norm, second / second_norm), -1.0, 1.0))
+    return float(np.degrees(np.arccos(cosine)))
+
+
+def _sara_expected_global_axis(c3d_data, expected_markers: tuple[str, ...]):
+    """
+    Return the mean expected SARA axis in global coordinates, when markers exist.
+    """
+    if c3d_data is None or len(expected_markers) < 2:
+        return None
+    expected_start_markers = expected_markers[:1]
+    expected_end_markers = expected_markers[1:]
+    if any(
+        marker not in c3d_data.marker_names
+        for marker in expected_start_markers + expected_end_markers
+    ):
+        return None
+    return np.nanmean(
+        _mean_marker_series(c3d_data, expected_end_markers)
+        - _mean_marker_series(c3d_data, expected_start_markers),
+        axis=1,
+    )
+
+
+def _format_vector(vector: np.ndarray) -> str:
+    """
+    Format one 3D vector compactly for diagnostic reports.
+    """
+    vector = np.asarray(vector, dtype=float).reshape(3)
+    return "[" + ", ".join(f"{float(value): .4g}" for value in vector) + "]"
+
+
+def _local_axis_orientation_lines(label: str, vector: np.ndarray) -> list[str]:
+    """
+    Return local vector components and angles against X/Y/Z unit axes.
+    """
+    vector = np.asarray(vector, dtype=float).reshape(3)
+    axes = {
+        "X": np.asarray([1.0, 0.0, 0.0]),
+        "Y": np.asarray([0.0, 1.0, 0.0]),
+        "Z": np.asarray([0.0, 0.0, 1.0]),
+    }
+    angle_text = ", ".join(
+        f"{axis_name}={_axis_angle_degrees(vector, axis_vector):.1f} deg"
+        for axis_name, axis_vector in axes.items()
+    )
+    return [f"- {label}: {_format_vector(vector)}; angles to local axes: {angle_text}"]
+
+
+def _mean_local_vector(rt_series, global_vector: np.ndarray) -> np.ndarray:
+    """
+    Express one global vector in a RT time series and average it in local coordinates.
+    """
+    global_vector = np.asarray(global_vector, dtype=float).reshape(3)
+    local = np.zeros((3, len(rt_series)))
+    homogeneous = np.hstack((global_vector, 0.0))
+    for frame_index in range(len(rt_series)):
+        local[:, frame_index] = (rt_series[frame_index].inverse @ homogeneous).reshape(
+            4
+        )[:3]
+    return np.nanmean(local, axis=1)
+
+
+def _relative_xyz_euler_degrees(rt_parent, rt_child) -> np.ndarray:
+    """
+    Return relative parent-to-child XYZ Euler angles for an RT time series.
+    """
+    angles = np.zeros((3, len(rt_parent)))
+    for frame_index in range(len(rt_parent)):
+        relative_rt = rt_parent[frame_index].inverse @ rt_child[frame_index]
+        angles[:, frame_index] = np.rad2deg(
+            relative_rt.rotation_matrix.euler_angles("xyz")
+        )
+    return angles
+
+
+def _series_plot_lines(
+    title: str, values: np.ndarray, unit: str, width: int = 64
+) -> list[str]:
+    """
+    Return a compact text plot and summary for one finite time series.
+    """
+    finite_values = np.asarray(values, dtype=float)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    if finite_values.size == 0:
+        return [f"{title}: no finite values"]
+    count = min(width, finite_values.size)
+    indices = np.linspace(0, finite_values.size - 1, count).astype(int)
+    samples = finite_values[indices]
+    minimum = float(np.nanmin(samples))
+    maximum = float(np.nanmax(samples))
+    span = maximum - minimum
+    levels = " .:-=+*#%@"
+    if span <= 1e-12:
+        plot = levels[0] * count
+    else:
+        normalized = np.clip((samples - minimum) / span, 0.0, 1.0)
+        plot = "".join(
+            levels[int(round(value * (len(levels) - 1)))] for value in normalized
+        )
+    return [
+        f"{title}: mean={np.nanmean(finite_values):.3g} {unit}; std={np.nanstd(finite_values):.3g} {unit}; "
+        f"min={np.nanmin(finite_values):.3g}; max={np.nanmax(finite_values):.3g}; n={finite_values.size}",
+        f"    {plot}",
+    ]
+
+
+def _marker_weights_for_reconstruction(
+    marker_names: tuple[str, ...], high_weight_markers: tuple[str, ...]
+):
+    """
+    Return BioBuddy marker weights for a reconstruction diagnostic.
+    """
+    from ..components.real.rigidbody.marker_weight import MarkerWeight
+    from ..utils.named_list import NamedList
+
+    high_weight_marker_set = set(high_weight_markers)
+    marker_weights = NamedList[MarkerWeight]()
+    for marker_name in marker_names:
+        weight = 100.0 if marker_name in high_weight_marker_set else 1.0
+        marker_weights.append(MarkerWeight(marker_name, weight))
+    return marker_weights
+
+
+def _static_virtual_point_definitions_from_draft(workflow_draft) -> tuple[object, ...]:
+    """
+    Convert editable draft virtual points that are evaluable on the static C3D.
+    """
+    from .virtual_points import (
+        marker_mean_virtual_point,
+        predictive_rab2002_shoulder_cor,
+    )
+
+    definitions = []
+    for marker in workflow_draft.virtual_markers:
+        if marker.method == "marker_mean":
+            marker_names = _split_marker_names(marker.source)
+            if marker_names:
+                definitions.append(marker_mean_virtual_point(marker.name, marker_names))
+        elif marker.method == "rab2002_shoulder":
+            point_marker, mid_markers, fraction = _rab2002_markers_from_payload(
+                marker.source, marker.name, marker.segment_name
+            )
+            if point_marker and len(mid_markers) == 2:
+                definitions.append(
+                    predictive_rab2002_shoulder_cor(
+                        marker.name,
+                        point_marker,
+                        mid_markers[0],
+                        mid_markers[1],
+                        fraction=fraction,
+                    )
+                )
+    return tuple(definitions)
+
+
+def _diagnostic_template_for_c3d_model_preset(
+    preset: C3dModelPreset, *, use_marker_fallback: bool = False
+):
+    """
+    Return the regular diagnostic template or its marker-only fallback variant.
+    """
+    if not use_marker_fallback:
+        return template_for_c3d_model_preset(preset)
+    if preset == C3dModelPreset.LOWER_LIMBS:
+        from .lower_limb_template import lower_limb_template
+
+        return lower_limb_template(use_functional=False)
+    if preset == C3dModelPreset.MOTIVE_57:
+        from .motive_57_template import motive_57_template
+
+        return motive_57_template(use_functional=False)
+    if preset == C3dModelPreset.FULL_BODY:
+        from .full_body_model202_template import full_body_model202_template
+
+        return full_body_model202_template(use_functional=False)
+    if preset == C3dModelPreset.LOWER_LIMBS_ANATOMICAL:
+        return template_for_c3d_model_preset(preset)
+    raise NotImplementedError(
+        f"Preset '{preset.value}' does not provide a marker fallback diagnostic template."
+    )
+
+
+def _rotation_dof_plot_data(
+    model, q: np.ndarray, segment_name: str, frame_rate: float | None = None
+) -> dict[str, object] | None:
+    """
+    Return plottable rotation DoF data for one reconstructed segment.
+    """
+    rotation_dofs = _segment_rotation_dof_indices(model, segment_name)
+    if len(rotation_dofs) != 3:
+        return None
+    fps = float(frame_rate) if frame_rate is not None and frame_rate > 0 else 1.0
+    time = np.arange(q.shape[1], dtype=float) / fps
+    return {
+        "title": f"{segment_name} rotation DoFs from chain reconstruction",
+        "time": time,
+        "series": tuple(
+            (dof_name, np.rad2deg(np.asarray(q[dof_index], dtype=float)))
+            for dof_name, dof_index in rotation_dofs
+        ),
+    }
+
+
+def _combine_rotation_plot_data(
+    primary: dict[str, object] | None,
+    fallback: dict[str, object] | None,
+    *,
+    fallback_label_suffix: str,
+) -> dict[str, object] | None:
+    """
+    Overlay fallback rotation DoFs as dashed lines on the primary reconstruction plot.
+    """
+    if primary is None:
+        if fallback is None:
+            return None
+        return _styled_rotation_plot_data(
+            fallback, label_suffix=fallback_label_suffix, line_style="--"
+        )
+    if fallback is None:
+        return primary
+
+    primary_time = np.asarray(primary.get("time", ()), dtype=float)
+    fallback_time = np.asarray(fallback.get("time", ()), dtype=float)
+    frame_count = min(primary_time.size, fallback_time.size)
+    if frame_count == 0:
+        return primary
+
+    primary_series = _styled_rotation_series(
+        primary.get("series", ()), frame_count=frame_count, line_style="-"
+    )
+    fallback_series = _styled_rotation_series(
+        fallback.get("series", ()),
+        frame_count=frame_count,
+        label_suffix=fallback_label_suffix,
+        line_style="--",
+    )
+    return {
+        "title": str(primary.get("title", "Rotation DoF")) + " vs marker fallback",
+        "time": primary_time[:frame_count],
+        "series": primary_series + fallback_series,
+    }
+
+
+def _styled_rotation_plot_data(
+    plot_data: dict[str, object], *, label_suffix: str, line_style: str
+) -> dict[str, object]:
+    """
+    Return one plot data dict with labels/styles normalized for the plot widget.
+    """
+    time = np.asarray(plot_data.get("time", ()), dtype=float)
+    return {
+        "title": str(plot_data.get("title", "Rotation DoF")),
+        "time": time,
+        "series": _styled_rotation_series(
+            plot_data.get("series", ()),
+            frame_count=time.size,
+            label_suffix=label_suffix,
+            line_style=line_style,
+        ),
+    }
+
+
+def _styled_rotation_series(
+    series,
+    *,
+    frame_count: int,
+    label_suffix: str = "",
+    line_style: str,
+) -> tuple[tuple[str, np.ndarray, str], ...]:
+    """
+    Normalize rotation series to the `(label, values, linestyle)` plot format.
+    """
+    styled = []
+    for item in tuple(series):
+        if len(item) == 3:
+            label, values, _existing_style = item
+        else:
+            label, values = item
+        label = str(label)
+        if label_suffix:
+            label = f"{label} ({label_suffix})"
+        styled.append(
+            (label, np.asarray(values, dtype=float)[:frame_count], line_style)
+        )
+    return tuple(styled)
+
+
+def _relative_xyz_plot_data(
+    relative_xyz: np.ndarray, segment_name: str, frame_rate: float | None = None
+) -> dict[str, object] | None:
+    """
+    Return plottable XYZ relative rotations from proximal/distal rigid clusters.
+    """
+    values = np.asarray(relative_xyz, dtype=float)
+    if values.ndim != 2 or values.shape[0] != 3 or values.shape[1] == 0:
+        return None
+    fps = float(frame_rate) if frame_rate is not None and frame_rate > 0 else 1.0
+    time = np.arange(values.shape[1], dtype=float) / fps
+    return {
+        "title": f"{segment_name} relative rotations from functional marker clusters",
+        "time": time,
+        "series": (
+            ("X rotation", values[0]),
+            ("Y rotation", values[1]),
+            ("Z rotation", values[2]),
+        ),
+    }
+
+
+def _rotation_dof_summary_lines(model, q: np.ndarray, segment_name: str) -> list[str]:
+    """
+    Return compact numeric summaries for reconstructed rotation DoFs.
+    """
+    rotation_dofs = _segment_rotation_dof_indices(model, segment_name)
+    lines = ["", f"{segment_name} rotation DoFs from chain reconstruction"]
+    if len(rotation_dofs) != 3:
+        lines.append(
+            f"- Expected 3 rotation DoF for {segment_name}, found {len(rotation_dofs)}: "
+            + (", ".join(name for name, _ in rotation_dofs) or "-")
+        )
+        return lines
+    for dof_name, dof_index in rotation_dofs:
+        values = np.rad2deg(np.asarray(q[dof_index], dtype=float))
+        lines.append(
+            f"- {dof_name}: mean={np.nanmean(values):.2f} deg; "
+            f"range={np.nanmin(values):.2f}..{np.nanmax(values):.2f} deg"
+        )
+    return lines
+
+
+def _segment_rotation_dof_indices(
+    model, segment_name: str
+) -> tuple[tuple[str, int], ...]:
+    """
+    Return global q indices for rotation DoFs of one segment.
+    """
+    dof_indices = []
+    offset = 0
+    for segment in model.segments:
+        segment_dof_count = segment.nb_q
+        if segment.name == segment_name:
+            for local_index, dof_name in enumerate(segment.dof_names):
+                if "_rot" in dof_name or dof_name.lower().startswith("rot"):
+                    dof_indices.append((dof_name, offset + local_index))
+            break
+        offset += segment_dof_count
+    return tuple(dof_indices)
+
+
+def _score_residuals(
+    rt_parent, rt_child, cor_parent_local: np.ndarray, cor_child_local: np.ndarray
+) -> np.ndarray:
     """
     Return frame-by-frame distance between parent and child SCoRE center projections.
     """
@@ -7048,7 +11902,9 @@ def _score_residuals(rt_parent, rt_child, cor_parent_local: np.ndarray, cor_chil
     return residuals
 
 
-def _sara_residual_angles(rt_parent, rt_child, aor_parent_local: np.ndarray, aor_child_local: np.ndarray) -> np.ndarray:
+def _sara_residual_angles(
+    rt_parent, rt_child, aor_parent_local: np.ndarray, aor_child_local: np.ndarray
+) -> np.ndarray:
     """
     Return frame-by-frame angle between parent and child SARA axis directions, in degrees.
     """
@@ -7060,9 +11916,120 @@ def _sara_residual_angles(rt_parent, rt_child, aor_parent_local: np.ndarray, aor
         child_global = (rt_child[frame_index] @ child_local).reshape(4)[:3]
         denominator = np.linalg.norm(parent_global) * np.linalg.norm(child_global)
         residuals[frame_index] = np.rad2deg(
-            np.arccos(np.clip(np.dot(parent_global, child_global) / denominator, -1.0, 1.0))
+            np.arccos(
+                np.clip(np.dot(parent_global, child_global) / denominator, -1.0, 1.0)
+            )
         )
     return residuals
+
+
+def _rt_point_series(rt_series, local_point: np.ndarray) -> np.ndarray:
+    """
+    Transform one local 3D point through an RT time series.
+    """
+    local = np.hstack((np.asarray(local_point, dtype=float).reshape(3), 1.0))
+    points = np.zeros((3, len(rt_series)))
+    for frame_index in range(len(rt_series)):
+        points[:, frame_index] = (rt_series[frame_index] @ local).reshape(4)[:3]
+    return points
+
+
+def _rt_vector_series(rt_series, local_vector: np.ndarray) -> np.ndarray:
+    """
+    Transform one local 3D vector through an RT time series.
+    """
+    local = np.hstack((np.asarray(local_vector, dtype=float).reshape(3), 0.0))
+    vectors = np.zeros((3, len(rt_series)))
+    for frame_index in range(len(rt_series)):
+        vectors[:, frame_index] = (rt_series[frame_index] @ local).reshape(4)[:3]
+    return vectors
+
+
+def _selected_marker_xyz(
+    c3d_data, marker_name: str, selected_indices: tuple[int, ...]
+) -> np.ndarray:
+    """
+    Return marker xyz positions for the selected functional frames.
+    """
+    points = c3d_data.get_position((marker_name,))[:3, 0, :]
+    if selected_indices:
+        return points[:, selected_indices]
+    return points
+
+
+def _point_to_line_distances(
+    points: np.ndarray, line_start: np.ndarray, line_direction: np.ndarray
+) -> np.ndarray:
+    """
+    Return framewise distances from points to framewise 3D lines.
+    """
+    direction_norm = np.linalg.norm(line_direction, axis=0, keepdims=True)
+    unit = np.divide(
+        line_direction,
+        direction_norm,
+        out=np.zeros_like(line_direction),
+        where=direction_norm > 1e-12,
+    )
+    delta = points - line_start
+    projection = unit * np.sum(delta * unit, axis=0, keepdims=True)
+    return np.linalg.norm(delta - projection, axis=0)
+
+
+def _project_point_on_line(
+    point: tuple[float, float, float] | None,
+    line_start: tuple[float, float, float] | None,
+    line_end: tuple[float, float, float] | None,
+) -> tuple[float, float, float] | None:
+    """
+    Project one 3D point onto one 3D line.
+    """
+    if point is None or line_start is None or line_end is None:
+        return point
+    start = np.asarray(line_start, dtype=float)
+    vector = np.asarray(line_end, dtype=float) - start
+    norm = float(np.linalg.norm(vector))
+    if norm < 1e-12:
+        return point
+    unit = vector / norm
+    projected = start + unit * np.dot(np.asarray(point, dtype=float) - start, unit)
+    return tuple(float(value) for value in projected)
+
+
+def _residual_boxplot_data(
+    title: str, values: np.ndarray, unit: str
+) -> dict[str, object]:
+    """
+    Return normalized data for the residual boxplot widget.
+    """
+    return {
+        "title": title,
+        "values": np.asarray(values, dtype=float),
+        "unit": unit,
+    }
+
+
+def _histogram_lines(
+    title: str, values: np.ndarray, unit: str, bins: int = 10
+) -> list[str]:
+    """
+    Return a compact ASCII histogram for finite values.
+    """
+    finite_values = np.asarray(values, dtype=float)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    if finite_values.size == 0:
+        return [f"{title}: no finite values"]
+    counts, edges = np.histogram(
+        finite_values, bins=min(bins, max(1, finite_values.size))
+    )
+    max_count = max(int(np.max(counts)), 1)
+    lines = [
+        f"{title}: mean={np.nanmean(finite_values):.3g} {unit}; "
+        f"std={np.nanstd(finite_values):.3g} {unit}; n={finite_values.size}"
+    ]
+    for count, start, end in zip(counts, edges[:-1], edges[1:]):
+        bar = "#" * max(1, int(round(24 * count / max_count))) if count else ""
+        lines.append(f"    {start:8.3g} - {end:8.3g} {unit}: {bar} ({int(count)})")
+    return lines
 
 
 def _c3d_file_names_from_folder(folder_path: str) -> tuple[str, ...]:
@@ -7077,7 +12044,9 @@ def _c3d_file_names_from_folder(folder_path: str) -> tuple[str, ...]:
     return tuple(sorted(path.name for path in folder.glob("*.c3d")))
 
 
-def _matching_c3d_file_for_expected_name(folder_path: str, expected_name: str) -> Path | None:
+def _matching_c3d_file_for_expected_name(
+    folder_path: str, expected_name: str
+) -> Path | None:
     """
     Return the single C3D file matching an expected template name or participant-independent pattern.
     """
@@ -7093,13 +12062,17 @@ def _matching_c3d_file_for_expected_name(folder_path: str, expected_name: str) -
         patterns.append(f"*{expected_name.removeprefix('Test_')}")
     elif expected_name.lower() == "static.c3d":
         patterns.extend(("*Static.c3d", "*static*.c3d"))
+    elif "Func_" in expected_name:
+        patterns.append(expected_name.replace("Func_", ""))
     elif "_func_" in expected_name:
         patterns.append(f"*{expected_name.split('_func_', maxsplit=1)[1]}")
 
     matches = []
     for pattern in dict.fromkeys(patterns):
         matches.extend(folder.glob(pattern))
-    unique_matches = tuple(sorted(dict.fromkeys(path for path in matches if path.suffix.lower() == ".c3d")))
+    unique_matches = tuple(
+        sorted(dict.fromkeys(path for path in matches if path.suffix.lower() == ".c3d"))
+    )
     return unique_matches[0] if len(unique_matches) == 1 else None
 
 
@@ -7130,7 +12103,11 @@ def _source_with_c3d_assignment(source: str, source_path: str) -> str:
     if not source_path:
         return source
     c3d_name = Path(source_path).name
-    parts = [part.strip() for part in source.split(";") if part.strip() and not part.strip().startswith("c3d=")]
+    parts = [
+        part.strip()
+        for part in source.split(";")
+        if part.strip() and not part.strip().startswith("c3d=")
+    ]
     return "; ".join((f"c3d={c3d_name}", *parts))
 
 
@@ -7201,7 +12178,9 @@ def _export_model_to_path(model, filepath: str) -> None:
         ".bvh": model.to_bvh,
     }
     if suffix not in writers:
-        raise ValueError("Supported export extensions are .bioMod, .osim, .urdf, and .bvh.")
+        raise ValueError(
+            "Supported export extensions are .bioMod, .osim, .urdf, and .bvh."
+        )
     writers[suffix](filepath=filepath)
 
 
@@ -7220,10 +12199,16 @@ def _c3d_generation_log(
         "C3D file assignments:",
     ]
     for assignment in workflow_draft.file_assignments:
-        lines.append(f"- {assignment.role}: {_c3d_assignment_log_name(workflow_draft.preset, assignment)}")
+        lines.append(
+            f"- {assignment.role}: {_c3d_assignment_log_name(workflow_draft.preset, assignment)}"
+        )
     lines.extend(["", "Segments:"])
     for group in workflow_draft.segment_marker_groups:
-        technical = ", ".join(group.technical_marker_names) if group.technical_marker_names else "-"
+        technical = (
+            ", ".join(group.technical_marker_names)
+            if group.technical_marker_names
+            else "-"
+        )
         markers = ", ".join(group.marker_names) if group.marker_names else "-"
         parent = group.parent_name if group.parent_name else "-"
         lines.append(
@@ -7235,7 +12220,9 @@ def _c3d_generation_log(
         equation = marker.equation if marker.equation else "-"
         proximal, distal = _score_segments_from_payload(marker.equation)
         local_note = ""
-        if marker.method in {"score", "sara", "sara_direction"} | set(PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS):
+        if marker.method in {"score", "sara", "sara_direction"} | set(
+            PREDICTIVE_VIRTUAL_MARKER_METHOD_LABELS
+        ):
             local_note = (
                 f" | global marker added to marker pool; local offsets reserved for proximal={proximal or '-'} "
                 f"and distal={distal or '-'}"
@@ -7246,11 +12233,17 @@ def _c3d_generation_log(
         )
     lines.extend(["", "Anatomical frames:"])
     lines.extend(_anatomical_frame_instruction_lines(workflow_draft, prefix="- "))
-    lines.extend(["", "Segment settings:"])
+    lines.extend(["", "Chain definition:"])
     for setting in workflow_draft.segment_settings:
         anthropometry = setting.anthropometry_model or "-"
-        mass = "-" if setting.anthropometry_mass is None else f"{setting.anthropometry_mass:g} kg"
-        length = "-" if setting.segment_length is None else f"{setting.segment_length:g}"
+        mass = (
+            "-"
+            if setting.anthropometry_mass is None
+            else f"{setting.anthropometry_mass:g} kg"
+        )
+        length = (
+            "-" if setting.segment_length is None else f"{setting.segment_length:g}"
+        )
         lines.append(
             f"- {setting.segment_name}: translations={setting.translations or '-'}, rotations={setting.rotations or '-'}, "
             f"child_translation={setting.child_translation}, initial_rotation={setting.initial_rotation_method}, "
@@ -7265,7 +12258,9 @@ def _c3d_assignment_log_name(preset: C3dModelPreset, assignment) -> str:
     return assignment.source_path or assignment.generic_name
 
 
-def _anatomical_frame_instruction_lines(workflow_draft, prefix: str = "") -> tuple[str, ...]:
+def _anatomical_frame_instruction_lines(
+    workflow_draft, prefix: str = ""
+) -> tuple[str, ...]:
     """
     Return one readable local-frame recipe per segment.
 
@@ -7277,14 +12272,21 @@ def _anatomical_frame_instruction_lines(workflow_draft, prefix: str = "") -> tup
         axes = tuple(
             axis
             for axis in workflow_draft.axes
-            if axis.segment_name == group.segment_name and not _is_virtual_feature_axis(axis)
+            if axis.segment_name == group.segment_name
+            and not _is_virtual_feature_axis(axis)
         )[:2]
         if len(axes) == 0:
             continue
-        origin = ",".join(axes[0].origin_markers) if len(axes[0].origin_markers) != 0 else "-"
+        origin = (
+            ",".join(axes[0].origin_markers)
+            if len(axes[0].origin_markers) != 0
+            else "-"
+        )
         vector_lines = []
         for index, axis in enumerate(axes, start=1):
-            start = ",".join(axis.start_markers) if len(axis.start_markers) != 0 else "-"
+            start = (
+                ",".join(axis.start_markers) if len(axis.start_markers) != 0 else "-"
+            )
             if len(axis.end_markers) == 0:
                 vector_source = start
             else:
@@ -7293,7 +12295,10 @@ def _anatomical_frame_instruction_lines(workflow_draft, prefix: str = "") -> tup
             vector_lines.append(f"v{index}={axis.axis}{keep}: {vector_source}")
         if len(axes) < 2:
             vector_lines.append("v2=missing")
-        lines.append(f"{prefix}{group.segment_name}: origin={origin} | " + " | ".join(vector_lines))
+        lines.append(
+            f"{prefix}{group.segment_name}: origin={origin} | "
+            + " | ".join(vector_lines)
+        )
     return tuple(lines)
 
 
@@ -7301,7 +12306,9 @@ def _split_marker_names(text: str) -> tuple[str, ...]:
     """
     Split a comma/semicolon separated marker list while preserving duplicated markers.
     """
-    return tuple(marker.strip() for marker in text.replace(";", ",").split(",") if marker.strip())
+    return tuple(
+        marker.strip() for marker in text.replace(";", ",").split(",") if marker.strip()
+    )
 
 
 def _virtual_axis_name_from_feature_list_text(text: str) -> str | None:
@@ -7375,13 +12382,85 @@ def _key_value_payload(text: str) -> dict[str, str]:
     return values
 
 
-def _virtual_axis_from_source_names(source_names: tuple[str, ...], axes) -> object | None:
+def _default_rab2002_payload(marker_name: str = "", segment_name: str = "") -> str:
+    """
+    Return a side-aware editable Rab 2002 marker payload.
+    """
+    prefix_source = marker_name.strip() or segment_name.strip()
+    side = prefix_source[:1].upper()
+    if side not in {"L", "R"}:
+        side = "R"
+    return f"point={side}CAJ; mid={side}HME,{side}HLE; fraction=0.17"
+
+
+def _rab2002_markers_from_payload(
+    text: str, marker_name: str = "", segment_name: str = ""
+) -> tuple[str, tuple[str, ...], float]:
+    """
+    Extract CAJ/acromion marker, epicondyle markers, and fraction from a Rab 2002 payload.
+    """
+    payload = _key_value_payload(text)
+    defaults = _key_value_payload(_default_rab2002_payload(marker_name, segment_name))
+    point_marker = payload.get(
+        "point", payload.get("caj", payload.get("acromion", defaults["point"]))
+    ).strip()
+    mid_markers = _split_marker_names(
+        payload.get("mid", payload.get("epicondyles", defaults["mid"]))
+    )
+    if len(mid_markers) > 2:
+        mid_markers = mid_markers[:2]
+    try:
+        fraction = float(payload.get("fraction", defaults["fraction"]))
+    except ValueError:
+        fraction = float(defaults["fraction"])
+    return point_marker, mid_markers, fraction
+
+
+def _rab2002_geometry(
+    c3d_data, source: str, marker_name: str, segment_name: str, frame_index: int
+) -> (
+    tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ]
+    | None
+):
+    """
+    Return CAJ, epicondyle midpoint, and Rab 2002 GJC for the requested frame.
+    """
+    if c3d_data is None:
+        return None
+    point_marker, mid_markers, fraction = _rab2002_markers_from_payload(
+        source, marker_name, segment_name
+    )
+    if point_marker not in c3d_data.marker_names or len(mid_markers) != 2:
+        return None
+    if any(marker_name not in c3d_data.marker_names for marker_name in mid_markers):
+        return None
+    caj = _marker_frame_position(c3d_data, point_marker, frame_index)
+    epicondyle_mid = _mean_frame_position(c3d_data, mid_markers, frame_index)
+    if caj is None or epicondyle_mid is None:
+        return None
+    caj_array = np.asarray(caj, dtype=float)
+    epicondyle_mid_array = np.asarray(epicondyle_mid, dtype=float)
+    gjc = caj_array + float(fraction) * (epicondyle_mid_array - caj_array)
+    return caj, epicondyle_mid, tuple(float(value) for value in gjc)
+
+
+def _virtual_axis_from_source_names(
+    source_names: tuple[str, ...], axes
+) -> object | None:
     """
     Return the virtual SARA axis referenced by a source list, if any.
     """
     source_name_set = set(source_names)
     return next(
-        (axis for axis in axes if _is_virtual_feature_axis(axis) and axis.name in source_name_set),
+        (
+            axis
+            for axis in axes
+            if _is_virtual_feature_axis(axis) and axis.name in source_name_set
+        ),
         None,
     )
 
@@ -7410,7 +12489,11 @@ def _strip_score_segment_payload(text: str) -> str:
         stripped = part.strip()
         if stripped.startswith("helper="):
             helper_parts.append(stripped.split("=", maxsplit=1)[1].strip())
-        elif stripped and not stripped.startswith("proximal=") and not stripped.startswith("distal="):
+        elif (
+            stripped
+            and not stripped.startswith("proximal=")
+            and not stripped.startswith("distal=")
+        ):
             helper_parts.append(stripped)
     return "; ".join(helper_parts)
 
@@ -7432,7 +12515,9 @@ def _segment_preview_color(segment_index: int) -> str:
     return colors[segment_index % len(colors)]
 
 
-def _marker_preview_position(c3d_data, marker_name: str) -> tuple[float, float, float] | None:
+def _marker_preview_position(
+    c3d_data, marker_name: str
+) -> tuple[float, float, float] | None:
     """
     Return the mean 3D position of one visible C3D marker.
     """
@@ -7447,7 +12532,9 @@ def _marker_preview_position(c3d_data, marker_name: str) -> tuple[float, float, 
     return tuple(float(value) for value in point)
 
 
-def _marker_frame_position(c3d_data, marker_name: str, frame_index: int) -> tuple[float, float, float] | None:
+def _marker_frame_position(
+    c3d_data, marker_name: str, frame_index: int
+) -> tuple[float, float, float] | None:
     """
     Return the 3D position of one C3D marker at a given frame.
     """
@@ -7460,15 +12547,21 @@ def _marker_frame_position(c3d_data, marker_name: str, frame_index: int) -> tupl
     return tuple(float(value) for value in point)
 
 
-def _mean_preview_position(c3d_data, marker_names: tuple[str, ...]) -> tuple[float, float, float] | None:
+def _mean_preview_position(
+    c3d_data, marker_names: tuple[str, ...]
+) -> tuple[float, float, float] | None:
     """
     Return the mean point for a possibly duplicated marker list.
     """
-    points = [_marker_preview_position(c3d_data, marker_name) for marker_name in marker_names]
+    points = [
+        _marker_preview_position(c3d_data, marker_name) for marker_name in marker_names
+    ]
     points = [point for point in points if point is not None]
     if len(points) == 0:
         return None
-    return tuple(float(value) for value in np.mean(np.asarray(points, dtype=float), axis=0))
+    return tuple(
+        float(value) for value in np.mean(np.asarray(points, dtype=float), axis=0)
+    )
 
 
 def _mean_frame_position(
@@ -7477,11 +12570,16 @@ def _mean_frame_position(
     """
     Return the mean point for a possibly duplicated marker list at one frame.
     """
-    points = [_marker_frame_position(c3d_data, marker_name, frame_index) for marker_name in marker_names]
+    points = [
+        _marker_frame_position(c3d_data, marker_name, frame_index)
+        for marker_name in marker_names
+    ]
     points = [point for point in points if point is not None]
     if len(points) == 0:
         return None
-    return tuple(float(value) for value in np.mean(np.asarray(points, dtype=float), axis=0))
+    return tuple(
+        float(value) for value in np.mean(np.asarray(points, dtype=float), axis=0)
+    )
 
 
 def _mean_marker_series(c3d_data, marker_names: tuple[str, ...]) -> np.ndarray:
@@ -7514,11 +12612,61 @@ def _scaled_axis_end_point(
     return tuple(float(value) for value in end)
 
 
-def _marker_frame_span(c3d_data, marker_names: tuple[str, ...], frame_index: int) -> float:
+def _sara_static_fallback_axis_line(
+    c3d_data,
+    payload: dict[str, str],
+    expected_start_markers: tuple[str, ...],
+    expected_end_markers: tuple[str, ...],
+    sara_direction: np.ndarray,
+    frame_index: int,
+    scale_marker_names: tuple[str, ...],
+) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    """
+    Return the anatomical fallback line when a SARA direction is too far from the static epicondylar axis.
+    """
+    limit = _sara_static_deviation_limit_from_payload(payload)
+    if (
+        limit is None
+        or c3d_data is None
+        or len(expected_start_markers) == 0
+        or len(expected_end_markers) == 0
+    ):
+        return None
+    required_markers = expected_start_markers + expected_end_markers
+    if any(
+        marker_name not in c3d_data.marker_names for marker_name in required_markers
+    ):
+        return None
+    expected_direction = np.nanmean(
+        _mean_marker_series(c3d_data, expected_end_markers)
+        - _mean_marker_series(c3d_data, expected_start_markers),
+        axis=1,
+    )
+    deviation = _axis_angle_degrees(sara_direction, expected_direction)
+    if not np.isfinite(deviation) or deviation <= limit:
+        return None
+    start_point = _mean_frame_position(c3d_data, expected_start_markers, frame_index)
+    raw_end_point = _mean_frame_position(c3d_data, expected_end_markers, frame_index)
+    if start_point is None or raw_end_point is None:
+        return None
+    return (
+        start_point,
+        _scaled_axis_end_point(
+            c3d_data, start_point, raw_end_point, scale_marker_names, frame_index
+        ),
+    )
+
+
+def _marker_frame_span(
+    c3d_data, marker_names: tuple[str, ...], frame_index: int
+) -> float:
     """
     Return the largest marker spread at one frame.
     """
-    points = [_marker_frame_position(c3d_data, marker_name, frame_index) for marker_name in dict.fromkeys(marker_names)]
+    points = [
+        _marker_frame_position(c3d_data, marker_name, frame_index)
+        for marker_name in dict.fromkeys(marker_names)
+    ]
     points = [point for point in points if point is not None]
     if len(points) == 0:
         return 0.0
@@ -7562,13 +12710,17 @@ def _orthonormal_axes_from_vector_segments(segments) -> dict[str, np.ndarray]:
     kept_axis = kept_axis if kept_axis in raw_axes else axis_names[0]
     other_axis = next(axis_name for axis_name in axis_names if axis_name != kept_axis)
     kept_vector = raw_axes[kept_axis]
-    other_vector = raw_axes[other_axis] - np.dot(raw_axes[other_axis], kept_vector) * kept_vector
+    other_vector = (
+        raw_axes[other_axis] - np.dot(raw_axes[other_axis], kept_vector) * kept_vector
+    )
     other_norm = np.linalg.norm(other_vector)
     if other_norm <= 1e-12:
         return {kept_axis: kept_vector}
     axes = {kept_axis: kept_vector, other_axis: other_vector / other_norm}
 
-    missing_axis = next(axis_name for axis_name in ("x", "y", "z") if axis_name not in axes)
+    missing_axis = next(
+        axis_name for axis_name in ("x", "y", "z") if axis_name not in axes
+    )
     if missing_axis == "x":
         axes["x"] = _normalized_cross(axes["y"], axes["z"])
     elif missing_axis == "y":
@@ -7634,14 +12786,16 @@ def _preview_camera_matrix_for_plane(plane: str) -> np.ndarray:
     return np.asarray(matrices[normalized_plane], dtype=float)
 
 
-def _preview_camera_matrix_for_subject_view(view: str, markers: dict[str, np.ndarray]) -> np.ndarray:
+def _preview_camera_matrix_for_subject_view(
+    view: str, markers: dict[str, np.ndarray]
+) -> np.ndarray:
     """
     Return an orthographic camera matrix aligned with PCA-derived subject views.
 
-    The lab vertical is imposed as the global Y axis. The frontal plane is
+    The lab vertical is imposed as the global Z axis. The frontal plane is
     estimated from the marker cloud by finding the dominant horizontal PCA axis.
     """
-    vertical = np.asarray((0.0, 1.0, 0.0), dtype=float)
+    vertical = np.asarray((0.0, 0.0, 1.0), dtype=float)
     frontal_horizontal = _subject_frontal_horizontal_axis_from_pca(markers, vertical)
     if frontal_horizontal is None:
         raise ValueError("Face/back/side views require at least three 3D markers.")
@@ -7694,7 +12848,9 @@ def _subject_frontal_horizontal_axis_from_pca(
     return direction
 
 
-def _preview_depth(point: tuple[float, float, float], yaw: float | np.ndarray, pitch: float) -> float:
+def _preview_depth(
+    point: tuple[float, float, float], yaw: float | np.ndarray, pitch: float
+) -> float:
     """
     Return the camera-space depth of a 3D point for painter ordering.
     """
@@ -7709,7 +12865,9 @@ def _preview_camera_coordinates(
     Rotate a 3D point into a compact camera coordinate system.
     """
     if isinstance(yaw, np.ndarray):
-        screen_x, screen_y, depth = np.asarray(yaw, dtype=float) @ np.asarray(point, dtype=float)
+        screen_x, screen_y, depth = np.asarray(yaw, dtype=float) @ np.asarray(
+            point, dtype=float
+        )
         return float(screen_x), float(screen_y), float(depth)
     x, y, z = point
     cos_yaw = math.cos(yaw)
@@ -7723,7 +12881,9 @@ def _preview_camera_coordinates(
     return yaw_x, pitch_z, pitch_y
 
 
-def _segment_parent_choices(workflow_draft, excluded_segment_name: str = "") -> list[str]:
+def _segment_parent_choices(
+    workflow_draft, excluded_segment_name: str = ""
+) -> list[str]:
     """
     Return editable parent choices for a new C3D workflow segment.
     """
@@ -7800,7 +12960,9 @@ def _fit_projection(
     return transform
 
 
-def _nearest_projected_segment(projected_positions: dict[str, object], clicked_point, max_distance: float = 12.0):
+def _nearest_projected_segment(
+    projected_positions: dict[str, object], clicked_point, max_distance: float = 12.0
+):
     """
     Return the nearest projected segment if the click lands close enough.
     """

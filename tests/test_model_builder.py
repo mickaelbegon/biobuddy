@@ -1,7 +1,13 @@
 import numpy as np
 import pytest
 
-from biobuddy import BiomechanicalModelReal, DictData, Rotations, SegmentCoordinateSystemUtils, Translations
+from biobuddy import (
+    BiomechanicalModelReal,
+    DictData,
+    Rotations,
+    SegmentCoordinateSystemUtils,
+    Translations,
+)
 from biobuddy.gui.lower_limb_template import (
     LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES,
     lower_limb_template,
@@ -69,7 +75,9 @@ def test_template_reports_required_markers_from_frames_and_functional_trials():
     assert "LTOE5" in static_markers
     assert "trunk_score" in functional_markers
     assert functional_markers["trunk_score"] == tuple(
-        sorted(("LPSI", "RPSI", "LASI", "RASI", "T10", "T6", "C7", "C2", "CLAV", "STRN"))
+        sorted(
+            ("LPSI", "RPSI", "LASI", "RASI", "T10", "T6", "C7", "C2", "CLAV", "STRN")
+        )
     )
     assert "left_knee_sara" in functional_markers
     assert functional_markers["left_knee_sara"] == tuple(
@@ -81,7 +89,9 @@ def test_template_reports_required_markers_from_frames_and_functional_trials():
 def test_lower_limb_template_uses_lower_body_functional_c3d_patterns():
     template = lower_limb_template()
 
-    file_patterns = {trial.name: trial.file_pattern for trial in template.functional_trials}
+    file_patterns = {
+        trial.name: trial.file_pattern for trial in template.functional_trials
+    }
 
     assert file_patterns == LOWER_LIMB_FUNCTIONAL_C3D_FILENAMES
     assert all(pattern.startswith("*func_") for pattern in file_patterns.values())
@@ -91,7 +101,9 @@ def test_lower_limb_functional_origins_use_expected_virtual_points():
     template = lower_limb_template(use_functional=True)
     anatomical_template = lower_limb_template(use_functional=False)
     segments = {segment.name: segment for segment in template.segments}
-    anatomical_segments = {segment.name: segment for segment in anatomical_template.segments}
+    anatomical_segments = {
+        segment.name: segment for segment in anatomical_template.segments
+    }
 
     assert isinstance(segments["Trunk"].frame.origin, FunctionalCenterSpec)
     assert segments["Trunk"].frame.origin.trial_name == "trunk_score"
@@ -114,7 +126,9 @@ def test_lower_limb_functional_origins_use_expected_virtual_points():
     assert segments["LThigh"].frame.first_axis.name == Axis.Name.Z
     assert segments["LThigh"].frame.second_axis.fallback.name == Axis.Name.X
     assert segments["LThigh"].frame.axis_to_keep == Axis.Name.Z
-    assert isinstance(segments["LShank"].frame.origin, FunctionalAxisProjectionPointSpec)
+    assert isinstance(
+        segments["LShank"].frame.origin, FunctionalAxisProjectionPointSpec
+    )
     assert segments["LShank"].frame.origin.point_marker_names == ("LKNE", "LKNEM")
     assert segments["LShank"].frame.first_axis.name == Axis.Name.Z
     assert segments["LShank"].frame.second_axis.fallback.name == Axis.Name.X
@@ -127,7 +141,9 @@ def test_lower_limb_functional_origins_use_expected_virtual_points():
     assert anatomical_segments["Trunk"].frame.origin.marker_names == ("CLAV",)
 
 
-def test_functional_axis_projection_transfers_projected_point_from_functional_trial(monkeypatch):
+def test_functional_axis_projection_reprojects_static_point_onto_transferred_axis(
+    monkeypatch,
+):
     def marker(position):
         values = np.ones((4, 2))
         values[:3, :] = np.asarray(position, dtype=float)[:, np.newaxis]
@@ -145,7 +161,13 @@ def test_functional_axis_projection_transfers_projected_point_from_functional_tr
             "point_b": marker([3.0, 0.0, 0.0]),
         }
     )
-    static_data = DictData({"fallback": marker([0.0, 0.0, 0.0])})
+    static_data = DictData(
+        {
+            "fallback": marker([0.0, 0.0, 0.0]),
+            "point_a": marker([0.5, 2.0, 0.0]),
+            "point_b": marker([0.5, 2.0, 0.0]),
+        }
+    )
     captured = {}
 
     class FakeEndpoint:
@@ -153,8 +175,8 @@ def test_functional_axis_projection_transfers_projected_point_from_functional_tr
             self.function = lambda markers, model: np.asarray(value, dtype=float)
 
     class FakeAxis:
-        start = FakeEndpoint([2.0, 0.0, 0.0, 1.0])
-        end = FakeEndpoint([2.0, 0.0, 1.0, 1.0])
+        start = FakeEndpoint([0.0, 0.0, 0.0, 1.0])
+        end = FakeEndpoint([1.0, 0.0, 0.0, 1.0])
 
     def fake_sara(**kwargs):
         captured["origin_positions_global"] = kwargs["origin_positions_global"]
@@ -174,10 +196,63 @@ def test_functional_axis_projection_transfers_projected_point_from_functional_tr
     )
 
     projected_point = projection.to_callable({"knee": functional_trial})
-    np.testing.assert_allclose(projected_point(static_data, BiomechanicalModelReal()), [2.0, 0.0, 0.0, 1.0])
+    np.testing.assert_allclose(
+        projected_point(static_data, BiomechanicalModelReal()), [0.5, 0.0, 0.0, 1.0]
+    )
     np.testing.assert_allclose(
         captured["origin_positions_global"](functional_trial, BiomechanicalModelReal()),
-        functional_trial.markers_center_position(["point_a", "point_b"])[:3, :],
+        functional_trial.markers_center_position(["origin_a", "origin_b"])[:3, :],
+    )
+
+
+def test_functional_sara_axis_falls_back_when_static_axis_deviation_is_too_large(
+    monkeypatch,
+):
+    def marker(position):
+        return np.asarray(
+            [position[0], position[1], position[2], 1.0], dtype=float
+        ).reshape(4, 1)
+
+    data = DictData(
+        {
+            "parent": marker([0.0, 0.0, 0.0]),
+            "child": marker([0.0, 0.0, 0.0]),
+            "axis_start": marker([0.0, 0.0, 0.0]),
+            "axis_end": marker([1.0, 0.0, 0.0]),
+            "origin": marker([0.0, 0.0, 0.0]),
+        }
+    )
+
+    class FakeEndpoint:
+        def __init__(self, value):
+            self.function = lambda markers, model: np.asarray(value, dtype=float)
+
+    class FakeAxis:
+        start = FakeEndpoint([0.0, 0.0, 0.0, 1.0])
+        end = FakeEndpoint([0.0, 1.0, 0.0, 1.0])
+
+    monkeypatch.setattr(
+        SegmentCoordinateSystemUtils, "sara", lambda **_kwargs: FakeAxis()
+    )
+
+    fallback = AxisSpec.from_markers(Axis.Name.Z, "axis_start", "axis_end")
+    sara_axis = FunctionalAxisSpec(
+        method=FunctionalMethod.SARA_DIRECTION,
+        trial_name="knee",
+        fallback=fallback,
+        parent_marker_names=("parent",),
+        child_marker_names=("child",),
+        expected_axis=fallback,
+        origin_marker_names=("origin",),
+        max_static_axis_deviation_degrees=30.0,
+    ).to_axis({"knee": data})
+
+    model = BiomechanicalModelReal()
+    np.testing.assert_allclose(
+        sara_axis.start.function(data, model).reshape(4), [0.0, 0.0, 0.0, 1.0]
+    )
+    np.testing.assert_allclose(
+        sara_axis.end.function(data, model).reshape(4), [1.0, 0.0, 0.0, 1.0]
     )
 
 
@@ -199,7 +274,9 @@ def test_template_marker_availability_reports_static_and_functional_trials():
     template = lower_limb_template()
     data = _synthetic_lower_limb_data()
 
-    reports = template_marker_availability(template, data, {"left_knee_sara": data, "ignored": data})
+    reports = template_marker_availability(
+        template, data, {"left_knee_sara": data, "ignored": data}
+    )
 
     assert set(reports) == {"static", "left_knee_sara"}
     assert reports["static"].complete_frame_count == 3
@@ -257,7 +334,11 @@ def test_c3d_model_creation_applies_virtual_features_before_generation():
         static_data=data,
         preset=C3dModelPreset.LOWER_LIMBS,
         static_virtual_points=(pointing_virtual_point("LASI", "RawLASI"),),
-        static_virtual_axes=(marker_pair_virtual_axis("PelvisLeftRight", ("LPSI", "RawLASI"), ("RPSI", "RASI")),),
+        static_virtual_axes=(
+            marker_pair_virtual_axis(
+                "PelvisLeftRight", ("LPSI", "RawLASI"), ("RPSI", "RASI")
+            ),
+        ),
     )
 
     assert "LASI" in result.static_data.marker_names
@@ -276,15 +357,34 @@ def test_c3d_model_creation_presets_are_explicit_about_supported_generation():
         C3dModelPreset.LOWER_LIMBS_ANATOMICAL,
         C3dModelPreset.UPPER_LIMB,
     )
-    assert template_for_c3d_model_preset(C3dModelPreset.LOWER_LIMBS).root_segment_name == "Pelvis"
-    assert required_functional_markers(template_for_c3d_model_preset(C3dModelPreset.LOWER_LIMBS)) != {}
-    assert required_functional_markers(template_for_c3d_model_preset(C3dModelPreset.LOWER_LIMBS_ANATOMICAL)) == {}
-    assert template_for_c3d_model_preset(C3dModelPreset.UPPER_LIMB).name == "Upper-limb from calibration C3D"
+    assert (
+        template_for_c3d_model_preset(C3dModelPreset.LOWER_LIMBS).root_segment_name
+        == "Pelvis"
+    )
+    assert (
+        required_functional_markers(
+            template_for_c3d_model_preset(C3dModelPreset.LOWER_LIMBS)
+        )
+        != {}
+    )
+    assert (
+        required_functional_markers(
+            template_for_c3d_model_preset(C3dModelPreset.LOWER_LIMBS_ANATOMICAL)
+        )
+        == {}
+    )
+    assert (
+        template_for_c3d_model_preset(C3dModelPreset.UPPER_LIMB).name
+        == "Upper-limb from calibration C3D"
+    )
     full_body_template = template_for_c3d_model_preset(C3dModelPreset.FULL_BODY)
     assert full_body_template.name == "Full body Model202 from calibration C3D"
     assert required_functional_markers(full_body_template) != {}
     motive_57_template = template_for_c3d_model_preset(C3dModelPreset.MOTIVE_57)
-    assert motive_57_template.name == "BioBuddy Motive (57) from calibration C3D (SCoRE/SARA)"
+    assert (
+        motive_57_template.name
+        == "BioBuddy Motive (57) from calibration C3D (SCoRE/SARA)"
+    )
     assert required_functional_markers(motive_57_template) != {}
     with pytest.raises(NotImplementedError, match="Template-free"):
         template_for_c3d_model_preset(C3dModelPreset.FROM_SCRATCH)
@@ -292,7 +392,9 @@ def test_c3d_model_creation_presets_are_explicit_about_supported_generation():
 
 def test_c3d_model_presets_report_virtual_features_to_reconstruct():
     lower_limb_features = c3d_model_preset_virtual_features(C3dModelPreset.LOWER_LIMBS)
-    lower_limb_anatomical_features = c3d_model_preset_virtual_features(C3dModelPreset.LOWER_LIMBS_ANATOMICAL)
+    lower_limb_anatomical_features = c3d_model_preset_virtual_features(
+        C3dModelPreset.LOWER_LIMBS_ANATOMICAL
+    )
     upper_limb_features = c3d_model_preset_virtual_features(C3dModelPreset.UPPER_LIMB)
     full_body_features = c3d_model_preset_virtual_features(C3dModelPreset.FULL_BODY)
     motive_57_features = c3d_model_preset_virtual_features(C3dModelPreset.MOTIVE_57)
@@ -312,22 +414,42 @@ def test_c3d_model_presets_report_virtual_features_to_reconstruct():
         and "child markers=LTHI,LTHIB,LTHID" in feature.description
         for feature in lower_limb_features
     )
-    assert any(feature.name == "CoR_LFoot_wrt_LShank" and feature.role == "score" for feature in lower_limb_features)
     assert any(
-        feature.name == "Proj_LKnee_on_Axis_LKnee_SARA" and feature.role == "axis_projection"
+        feature.name == "CoR_LFoot_wrt_LShank" and feature.role == "score"
         for feature in lower_limb_features
     )
-    assert any(feature.name == "Axis_LKnee_SARA" and feature.role == "sara_axis" for feature in lower_limb_features)
-    assert any(feature.name == "Axis_RKnee_SARA" and feature.feature_type == "axis" for feature in lower_limb_features)
+    assert any(
+        feature.name == "Proj_LKnee_on_Axis_LKnee_SARA"
+        and feature.role == "axis_projection"
+        for feature in lower_limb_features
+    )
+    assert any(
+        feature.name == "Axis_LKnee_SARA" and feature.role == "sara_axis"
+        for feature in lower_limb_features
+    )
+    assert any(
+        feature.name == "Axis_RKnee_SARA" and feature.feature_type == "axis"
+        for feature in lower_limb_features
+    )
     assert len(lower_limb_features) == 9
     assert lower_limb_anatomical_features == ()
     assert c3d_model_preset_virtual_features(C3dModelPreset.FROM_SCRATCH) == ()
     assert any(feature.name == "Thorax_virtual_7" for feature in upper_limb_features)
-    assert any(feature.feature_type == "axis" and feature.name == "Clavicule_u_axis" for feature in upper_limb_features)
-    assert any(feature.name == "CoR_Thorax_wrt_Pelvis" and feature.role == "score" for feature in full_body_features)
-    assert any(feature.name == "Axis_JambeD_SARA" and feature.feature_type == "axis" for feature in full_body_features)
     assert any(
-        feature.name == "CoR_JambeD_wrt_CuisseD" and feature.role == "axis_projection" for feature in full_body_features
+        feature.feature_type == "axis" and feature.name == "Clavicule_u_axis"
+        for feature in upper_limb_features
+    )
+    assert any(
+        feature.name == "CoR_Thorax_wrt_Pelvis" and feature.role == "score"
+        for feature in full_body_features
+    )
+    assert any(
+        feature.name == "Axis_JambeD_SARA" and feature.feature_type == "axis"
+        for feature in full_body_features
+    )
+    assert any(
+        feature.name == "CoR_JambeD_wrt_CuisseD" and feature.role == "axis_projection"
+        for feature in full_body_features
     )
     assert any(
         feature.name == "RGJC"
@@ -343,9 +465,13 @@ def test_c3d_model_presets_report_virtual_features_to_reconstruct():
         and "mid=LHME,LHLE" in feature.description
         for feature in motive_57_features
     )
-    assert any(feature.name == "Axis_RKnee_SARA" and feature.role == "sara_axis" for feature in motive_57_features)
     assert any(
-        feature.name == "CoR_RFoot_wrt_RShank" and "child markers=RFCC,RFM5,RFM2,RFM1" in feature.description
+        feature.name == "Axis_RKnee_SARA" and feature.role == "sara_axis"
+        for feature in motive_57_features
+    )
+    assert any(
+        feature.name == "CoR_RFoot_wrt_RShank"
+        and "child markers=RFCC,RFM5,RFM2,RFM1" in feature.description
         for feature in motive_57_features
     )
 
@@ -403,8 +529,12 @@ def test_lower_limb_template_can_disable_score_and_sara():
 
 def test_lower_limb_functional_template_uses_sara_for_knee_axis():
     template = lower_limb_template(use_functional=True)
-    left_shank = next(segment for segment in template.segments if segment.name == "LShank")
-    right_shank = next(segment for segment in template.segments if segment.name == "RShank")
+    left_shank = next(
+        segment for segment in template.segments if segment.name == "LShank"
+    )
+    right_shank = next(
+        segment for segment in template.segments if segment.name == "RShank"
+    )
 
     left_axis = left_shank.frame.second_axis
     right_axis = right_shank.frame.second_axis
@@ -457,7 +587,9 @@ def test_dynamic_segment_frames_follow_marker_motion_and_marker_means():
 def test_lower_limb_template_generates_real_model_from_static_markers():
     template = lower_limb_template()
 
-    model = build_real_model(template=template, static_data=_synthetic_lower_limb_data())
+    model = build_real_model(
+        template=template, static_data=_synthetic_lower_limb_data()
+    )
 
     assert "root" not in model.segment_names
     assert model.segments["Pelvis"].parent_name == "base"
@@ -478,7 +610,9 @@ def test_lower_limb_template_generates_real_model_from_static_markers():
 
 
 def test_lower_limb_model_creation_returns_score_and_no_score_variants():
-    variants = create_lower_limb_model_variants_from_marker_data(static_data=_synthetic_lower_limb_data())
+    variants = create_lower_limb_model_variants_from_marker_data(
+        static_data=_synthetic_lower_limb_data()
+    )
 
     assert variants.score.output_filename == "lower_body_score.bioMod"
     assert variants.no_score.output_filename == "lower_body_no_score.bioMod"
@@ -489,7 +623,9 @@ def test_lower_limb_model_creation_returns_score_and_no_score_variants():
 
 
 def test_generated_lower_limb_model_can_be_saved_to_biomod(tmp_path):
-    model = build_real_model(template=lower_limb_template(), static_data=_synthetic_lower_limb_data())
+    model = build_real_model(
+        template=lower_limb_template(), static_data=_synthetic_lower_limb_data()
+    )
     filepath = tmp_path / "lower_body.bioMod"
 
     model.to_biomod(filepath=str(filepath), with_mesh=False)
@@ -501,10 +637,13 @@ def test_generated_lower_limb_model_can_be_saved_to_biomod(tmp_path):
 
 
 def test_marker_can_be_attached_to_another_segment_without_moving_globally():
-    model = build_real_model(template=lower_limb_template(), static_data=_synthetic_lower_limb_data())
+    model = build_real_model(
+        template=lower_limb_template(), static_data=_synthetic_lower_limb_data()
+    )
 
     source_global = (
-        model.segment_coordinate_system_in_global("LFoot") @ model.segments["LFoot"].markers["LTOE"].position
+        model.segment_coordinate_system_in_global("LFoot")
+        @ model.segments["LFoot"].markers["LTOE"].position
     )
     attached = attach_marker_to_segment(
         model=model,
@@ -512,7 +651,9 @@ def test_marker_can_be_attached_to_another_segment_without_moving_globally():
         marker_name="LTOE",
         target_segment_name="LShank",
     )
-    target_global = model.segment_coordinate_system_in_global("LShank") @ attached.position
+    target_global = (
+        model.segment_coordinate_system_in_global("LShank") @ attached.position
+    )
 
     assert "LTOE" in model.segments["LShank"].marker_names
     np.testing.assert_allclose(target_global, source_global)

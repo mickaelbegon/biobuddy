@@ -18,7 +18,7 @@ from ..components.generic.rigidbody.segment_coordinate_system import (
 )
 from ..components.real.biomechanical_model_real import BiomechanicalModelReal
 from ..utils.enums import Rotations, Translations
-from ..utils.marker_data import C3dData, MarkerData
+from ..utils.marker_data import C3dData, MarkerData, marker_data_with_stripped_prefixes
 
 ProgressCallback = Callable[[str], None]
 
@@ -60,7 +60,9 @@ class MarkerEndpointSpec:
             raise ValueError("A marker endpoint must contain at least one marker.")
 
     @classmethod
-    def from_value(cls, value: str | tuple[str, ...] | list[str] | "MarkerEndpointSpec") -> "MarkerEndpointSpec":
+    def from_value(
+        cls, value: str | tuple[str, ...] | list[str] | "MarkerEndpointSpec"
+    ) -> "MarkerEndpointSpec":
         """
         Normalize a marker name or marker list into an endpoint specification.
         """
@@ -103,7 +105,11 @@ class FunctionalCenterSpec:
         """
         Return the functional center callable when data is available, otherwise use the fallback point.
         """
-        if self.method != FunctionalMethod.SCORE or functional_data is None or self.trial_name not in functional_data:
+        if (
+            self.method != FunctionalMethod.SCORE
+            or functional_data is None
+            or self.trial_name not in functional_data
+        ):
             return self.fallback.to_callable()
         return SegmentCoordinateSystemUtils.score(
             functional_data=functional_data[self.trial_name],
@@ -127,6 +133,7 @@ class FunctionalAxisProjectionPointSpec:
     origin_marker_names: tuple[str, ...]
     point_marker_names: tuple[str, ...]
     fallback: MarkerEndpointSpec
+    max_static_axis_deviation_degrees: float | None = None
 
     @property
     def marker_names(self) -> tuple[str, ...]:
@@ -154,19 +161,41 @@ class FunctionalAxisProjectionPointSpec:
 
         functional_trial = functional_data[self.trial_name]
 
-        def projected_point(markers: MarkerData, model: BiomechanicalModelReal) -> np.ndarray:
-            sara_axis = SegmentCoordinateSystemUtils.sara(
+        def projected_point(
+            markers: MarkerData, model: BiomechanicalModelReal
+        ) -> np.ndarray:
+            sara_axis = _sara_axis_with_static_fallback(
                 name=self.expected_axis.name,
                 functional_data=functional_trial,
                 parent_marker_names=list(self.parent_marker_names),
                 child_marker_names=list(self.child_marker_names),
-                expected_rotation_axis_orientation=self.expected_axis.to_axis(functional_data=None),
+                expected_axis=self.expected_axis,
+                fallback_axis=self.expected_axis,
                 origin_positions_global=lambda sara_markers, sara_model: sara_markers.markers_center_position(
-                    list(self.point_marker_names)
-                )[:3, :],
+                    list(self.origin_marker_names)
+                )[
+                    :3, :
+                ],
+                max_static_axis_deviation_degrees=self.max_static_axis_deviation_degrees,
                 visualize=False,
             )
-            return sara_axis.start.function(markers, model)
+            axis_start = sara_axis.start.function(markers, model)[:3].reshape(3, 1)
+            axis_end = sara_axis.end.function(markers, model)[:3].reshape(3, 1)
+            point = markers.markers_center_position(list(self.point_marker_names))[
+                :3, :
+            ]
+            axis_vector = axis_end - axis_start
+            axis_norm = np.linalg.norm(axis_vector, axis=0, keepdims=True)
+            axis_unit = np.divide(
+                axis_vector,
+                axis_norm,
+                out=np.zeros_like(axis_vector),
+                where=axis_norm > 1e-12,
+            )
+            distance = np.sum((point - axis_start) * axis_unit, axis=0, keepdims=True)
+            projected = np.ones((4, markers.nb_frames))
+            projected[:3, :] = axis_start + axis_unit * distance
+            return np.nanmean(projected, axis=1)
 
         return projected_point
 
@@ -217,10 +246,14 @@ class AxisSpec:
         """
         Evaluate the raw, non-normalized axis vector over all frames.
         """
-        return _evaluate_axis_endpoint(self.end, data) - _evaluate_axis_endpoint(self.start, data)
+        return _evaluate_axis_endpoint(self.end, data) - _evaluate_axis_endpoint(
+            self.start, data
+        )
 
 
-def _axis_endpoint_to_axis_value(endpoint, functional_data: dict[str, MarkerData] | None):
+def _axis_endpoint_to_axis_value(
+    endpoint, functional_data: dict[str, MarkerData] | None
+):
     """
     Return a marker-name shortcut when possible, otherwise a callable endpoint.
     """
@@ -251,6 +284,7 @@ class FunctionalAxisSpec:
     child_marker_names: tuple[str, ...] = ()
     expected_axis: AxisSpec | None = None
     origin_marker_names: tuple[str, ...] = ()
+    max_static_axis_deviation_degrees: float | None = None
 
     def to_axis(self, functional_data: dict[str, MarkerData] | None) -> Axis:
         """
@@ -265,17 +299,130 @@ class FunctionalAxisSpec:
         if self.expected_axis is None or len(self.origin_marker_names) == 0:
             return self.fallback.to_axis(functional_data=None)
 
-        return SegmentCoordinateSystemUtils.sara(
+        return _sara_axis_with_static_fallback(
             name=self.fallback.name,
             functional_data=functional_data[self.trial_name],
             parent_marker_names=list(self.parent_marker_names),
             child_marker_names=list(self.child_marker_names),
-            expected_rotation_axis_orientation=self.expected_axis.to_axis(functional_data=None),
+            expected_axis=self.expected_axis,
+            fallback_axis=self.fallback,
             origin_positions_global=lambda markers, model: markers.markers_center_position(
                 list(self.origin_marker_names)
-            )[:3, :],
+            )[
+                :3, :
+            ],
+            max_static_axis_deviation_degrees=self.max_static_axis_deviation_degrees,
             visualize=False,
         )
+
+
+def _sara_axis_with_static_fallback(
+    *,
+    name: Axis.Name,
+    functional_data: MarkerData,
+    parent_marker_names: list[str],
+    child_marker_names: list[str],
+    expected_axis: AxisSpec,
+    fallback_axis: AxisSpec,
+    origin_positions_global: Callable | None,
+    max_static_axis_deviation_degrees: float | None,
+    visualize: bool,
+) -> Axis:
+    """
+    Return a SARA axis that falls back to its anatomical axis when static quality is too poor.
+    """
+    sara_axis = SegmentCoordinateSystemUtils.sara(
+        name=name,
+        functional_data=functional_data,
+        parent_marker_names=parent_marker_names,
+        child_marker_names=child_marker_names,
+        expected_rotation_axis_orientation=expected_axis.to_axis(functional_data=None),
+        origin_positions_global=origin_positions_global,
+        visualize=visualize,
+    )
+    if max_static_axis_deviation_degrees is None:
+        return sara_axis
+
+    fallback = fallback_axis.to_axis(functional_data=None)
+    selected_points_cache = {}
+
+    def selected_points(
+        markers: MarkerData, model: BiomechanicalModelReal
+    ) -> tuple[np.ndarray, np.ndarray]:
+        cache_key = id(markers)
+        if cache_key not in selected_points_cache:
+            sara_start = np.asarray(
+                sara_axis.start.function(markers, model), dtype=float
+            )
+            sara_end = np.asarray(sara_axis.end.function(markers, model), dtype=float)
+            fallback_start = np.asarray(
+                fallback.start.function(markers, model), dtype=float
+            )
+            fallback_end = np.asarray(
+                fallback.end.function(markers, model), dtype=float
+            )
+            deviation = _axis_deviation_degrees(
+                sara_start, sara_end, fallback_start, fallback_end
+            )
+            use_fallback = bool(
+                np.isfinite(deviation)
+                and deviation > float(max_static_axis_deviation_degrees)
+            )
+            selected_points_cache[cache_key] = (
+                fallback_start if use_fallback else sara_start,
+                fallback_end if use_fallback else sara_end,
+            )
+        return selected_points_cache[cache_key]
+
+    return Axis(
+        name=name,
+        start=lambda markers, model: selected_points(markers, model)[0],
+        end=lambda markers, model: selected_points(markers, model)[1],
+    )
+
+
+def _axis_deviation_degrees(
+    start_a: np.ndarray, end_a: np.ndarray, start_b: np.ndarray, end_b: np.ndarray
+) -> float:
+    """
+    Return the oriented angle between two static axis directions.
+    """
+    direction_a = _mean_axis_direction(start_a, end_a)
+    direction_b = _mean_axis_direction(start_b, end_b)
+    norm_a = np.linalg.norm(direction_a)
+    norm_b = np.linalg.norm(direction_b)
+    if norm_a <= 1e-12 or norm_b <= 1e-12:
+        return float("nan")
+    cosine = float(
+        np.clip(np.dot(direction_a / norm_a, direction_b / norm_b), -1.0, 1.0)
+    )
+    return float(np.degrees(np.arccos(cosine)))
+
+
+def _mean_axis_direction(start: np.ndarray, end: np.ndarray) -> np.ndarray:
+    """
+    Collapse an axis endpoint pair to one finite 3D direction.
+    """
+    start_points = _as_point_series(start)
+    end_points = _as_point_series(end)
+    frame_count = min(start_points.shape[1], end_points.shape[1])
+    if frame_count == 0:
+        return np.full((3,), np.nan)
+    return np.nanmean(
+        end_points[:, :frame_count] - start_points[:, :frame_count], axis=1
+    )
+
+
+def _as_point_series(value: np.ndarray) -> np.ndarray:
+    """
+    Normalize a point or point time series to shape 3 x frames.
+    """
+    points = np.asarray(value, dtype=float)
+    if points.ndim == 1:
+        return points[:3].reshape(3, 1)
+    if points.ndim == 2:
+        return points[:3, :]
+    return np.asarray(points[:3], dtype=float).reshape(3, -1)
 
 
 @dataclass(frozen=True)
@@ -284,18 +431,24 @@ class LocalFrameSpec:
     Segment coordinate-system definition.
     """
 
-    origin: MarkerEndpointSpec | FunctionalCenterSpec | FunctionalAxisProjectionPointSpec
+    origin: (
+        MarkerEndpointSpec | FunctionalCenterSpec | FunctionalAxisProjectionPointSpec
+    )
     first_axis: AxisSpec
     second_axis: AxisSpec | FunctionalAxisSpec
     axis_to_keep: Axis.Name
 
-    def to_scs(self, functional_data: dict[str, MarkerData] | None = None) -> SegmentCoordinateSystem:
+    def to_scs(
+        self, functional_data: dict[str, MarkerData] | None = None
+    ) -> SegmentCoordinateSystem:
         """
         Return the BioBuddy generic segment coordinate system.
         """
         origin = (
             self.origin.to_callable(functional_data)
-            if isinstance(self.origin, (FunctionalCenterSpec, FunctionalAxisProjectionPointSpec))
+            if isinstance(
+                self.origin, (FunctionalCenterSpec, FunctionalAxisProjectionPointSpec)
+            )
             else self.origin.to_callable()
         )
         first_axis = self.first_axis.to_axis(functional_data=functional_data)
@@ -316,7 +469,9 @@ class LocalFrameSpec:
         Return the raw anatomical axes used for quality metrics.
         """
         second_axis = (
-            self.second_axis.fallback if isinstance(self.second_axis, FunctionalAxisSpec) else self.second_axis
+            self.second_axis.fallback
+            if isinstance(self.second_axis, FunctionalAxisSpec)
+            else self.second_axis
         )
         return self.first_axis, second_axis
 
@@ -324,7 +479,9 @@ class LocalFrameSpec:
         """
         Return a marker-defined origin for dynamic visualization.
         """
-        if isinstance(self.origin, (FunctionalCenterSpec, FunctionalAxisProjectionPointSpec)):
+        if isinstance(
+            self.origin, (FunctionalCenterSpec, FunctionalAxisProjectionPointSpec)
+        ):
             return self.origin.fallback
         return self.origin
 
@@ -369,6 +526,14 @@ class FunctionalTrialSpec:
     file_pattern: str
     required_markers: tuple[str, ...]
     method: FunctionalMethod
+    alternate_file_patterns: tuple[str, ...] = ()
+
+    @property
+    def file_patterns(self) -> tuple[str, ...]:
+        """
+        Return all accepted filename patterns, ordered from canonical to fallback.
+        """
+        return (self.file_pattern,) + tuple(self.alternate_file_patterns)
 
 
 @dataclass(frozen=True)
@@ -400,7 +565,9 @@ class MarkerAvailabilityReport:
 
     @property
     def missing_markers(self) -> tuple[str, ...]:
-        return tuple(name for name, marker in self.markers.items() if not marker.is_present)
+        return tuple(
+            name for name, marker in self.markers.items() if not marker.is_present
+        )
 
 
 @dataclass(frozen=True)
@@ -440,7 +607,9 @@ class ModelTemplate:
         marker_segments = {}
         for attachment in self.marker_attachments:
             marker_segments[attachment.name] = tuple(
-                dict.fromkeys(marker_segments.get(attachment.name, ()) + attachment.segment_names)
+                dict.fromkeys(
+                    marker_segments.get(attachment.name, ()) + attachment.segment_names
+                )
             )
         return marker_segments
 
@@ -464,7 +633,10 @@ def required_functional_markers(template: ModelTemplate) -> dict[str, tuple[str,
     """
     Return required markers for each optional functional calibration trial.
     """
-    return {trial.name: tuple(sorted(trial.required_markers)) for trial in template.functional_trials}
+    return {
+        trial.name: tuple(sorted(trial.required_markers))
+        for trial in template.functional_trials
+    }
 
 
 def required_markers(template: ModelTemplate) -> dict[str, tuple[str, ...]]:
@@ -520,13 +692,17 @@ def template_marker_availability(
     """
     Report marker availability for the static trial and any provided functional trials.
     """
-    reports = {"static": marker_availability(static_data, required_static_markers(template))}
+    reports = {
+        "static": marker_availability(static_data, required_static_markers(template))
+    }
     if functional_data is None:
         return reports
     functional_requirements = required_functional_markers(template)
     for trial_name, data in functional_data.items():
         if trial_name in functional_requirements:
-            reports[trial_name] = marker_availability(data, functional_requirements[trial_name])
+            reports[trial_name] = marker_availability(
+                data, functional_requirements[trial_name]
+            )
     return reports
 
 
@@ -541,7 +717,9 @@ def _marker_names_from_frame(frame: LocalFrameSpec) -> set[str]:
 
 
 def _marker_names_from_origin(
-    origin: MarkerEndpointSpec | FunctionalCenterSpec | FunctionalAxisProjectionPointSpec,
+    origin: (
+        MarkerEndpointSpec | FunctionalCenterSpec | FunctionalAxisProjectionPointSpec
+    ),
 ) -> set[str]:
     if isinstance(origin, FunctionalCenterSpec):
         marker_names = set(origin.fallback.marker_names)
@@ -574,7 +752,9 @@ def build_generic_model(
     Build a generic BioBuddy model from a model template.
     """
     model = BiomechanicalModel()
-    inertia_parameters_by_segment = {} if inertia_parameters_by_segment is None else inertia_parameters_by_segment
+    inertia_parameters_by_segment = (
+        {} if inertia_parameters_by_segment is None else inertia_parameters_by_segment
+    )
     for segment_spec in template.segments:
         segment = Segment(
             name=segment_spec.name,
@@ -582,7 +762,9 @@ def build_generic_model(
             translations=segment_spec.translations,
             rotations=segment_spec.rotations,
             segment_coordinate_system=(
-                None if segment_spec.frame is None else segment_spec.frame.to_scs(functional_data=functional_data)
+                None
+                if segment_spec.frame is None
+                else segment_spec.frame.to_scs(functional_data=functional_data)
             ),
             mesh=(
                 None
@@ -617,12 +799,18 @@ def build_real_model(
     """
     Generate a real model from a template and marker calibration data.
     """
-    missing_markers = sorted(set(required_static_markers(template)) - set(static_data.marker_names))
+    missing_markers = sorted(
+        set(required_static_markers(template)) - set(static_data.marker_names)
+    )
     if missing_markers:
-        raise ValueError(f"Missing required static markers: {', '.join(missing_markers)}")
+        raise ValueError(
+            f"Missing required static markers: {', '.join(missing_markers)}"
+        )
 
     inertia_parameters_by_segment = (
-        {} if template.inertia_parameters_factory is None else template.inertia_parameters_factory(static_data)
+        {}
+        if template.inertia_parameters_factory is None
+        else template.inertia_parameters_factory(static_data)
     )
     model = build_generic_model(
         template=template,
@@ -630,10 +818,12 @@ def build_real_model(
         inertia_parameters_by_segment=inertia_parameters_by_segment,
     ).to_real(static_data)
     if template.root_segment_name is not None and "root" in model.segment_names:
-        model.segments[template.root_segment_name].parent_name = model.segments["root"].parent_name
-        model.segments[template.root_segment_name].segment_coordinate_system = model.segments[
+        model.segments[template.root_segment_name].parent_name = model.segments[
             "root"
-        ].segment_coordinate_system
+        ].parent_name
+        model.segments[template.root_segment_name].segment_coordinate_system = (
+            model.segments["root"].segment_coordinate_system
+        )
         model.segments._remove("root")
     return model
 
@@ -641,6 +831,7 @@ def build_real_model(
 def load_functional_c3d_trials(
     template: ModelTemplate,
     calibration_folder: Path,
+    marker_name_prefixes_to_strip: tuple[str, ...] = (),
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, MarkerData]:
     """
@@ -648,19 +839,34 @@ def load_functional_c3d_trials(
     """
     functional_data = {}
     for trial_spec in template.functional_trials:
-        matches = list(calibration_folder.glob(trial_spec.file_pattern))
+        matches = []
+        matched_pattern = None
+        for file_pattern in trial_spec.file_patterns:
+            matches = list(calibration_folder.glob(file_pattern))
+            if len(matches) != 0:
+                matched_pattern = file_pattern
+                break
         if len(matches) == 0:
             continue
         if len(matches) > 1:
-            raise RuntimeError(f"Expected one '{trial_spec.name}' trial, found {len(matches)}.")
+            raise RuntimeError(
+                f"Expected one '{trial_spec.name}' trial matching '{matched_pattern}', found {len(matches)}."
+            )
         if progress_callback is not None:
-            progress_callback(f"Loading functional C3D {trial_spec.name}: {matches[0].name}")
+            progress_callback(
+                f"Loading functional C3D {trial_spec.name}: {matches[0].name}"
+            )
         data = C3dData(str(matches[0]))
+        data = marker_data_with_stripped_prefixes(data, marker_name_prefixes_to_strip)
         if progress_callback is not None:
             progress_callback(f"Checking functional markers: {trial_spec.name}")
-        missing_markers = sorted(set(trial_spec.required_markers) - set(data.marker_names))
+        missing_markers = sorted(
+            set(trial_spec.required_markers) - set(data.marker_names)
+        )
         if missing_markers:
-            raise ValueError(f"Trial '{trial_spec.name}' is missing markers: {', '.join(missing_markers)}")
+            raise ValueError(
+                f"Trial '{trial_spec.name}' is missing markers: {', '.join(missing_markers)}"
+            )
         functional_data[trial_spec.name] = data
     return functional_data
 
@@ -689,11 +895,17 @@ def build_real_model_from_c3d_folder(
             f"Expected exactly one static trial matching one of {patterns}, found {len(static_matches)}."
         )
     static_data = C3dData(str(static_matches[0]))
-    functional_data = load_functional_c3d_trials(template=template, calibration_folder=calibration_folder)
-    return build_real_model(template=template, static_data=static_data, functional_data=functional_data)
+    functional_data = load_functional_c3d_trials(
+        template=template, calibration_folder=calibration_folder
+    )
+    return build_real_model(
+        template=template, static_data=static_data, functional_data=functional_data
+    )
 
 
-def compute_frame_quality(template: ModelTemplate, data: MarkerData) -> dict[str, FrameQuality]:
+def compute_frame_quality(
+    template: ModelTemplate, data: MarkerData
+) -> dict[str, FrameQuality]:
     """
     Compute quality indicators for each marker-defined segment frame.
 
@@ -727,7 +939,9 @@ def compute_frame_quality(template: ModelTemplate, data: MarkerData) -> dict[str
     return quality
 
 
-def compute_dynamic_segment_frames(template: ModelTemplate, data: MarkerData) -> dict[str, np.ndarray]:
+def compute_dynamic_segment_frames(
+    template: ModelTemplate, data: MarkerData
+) -> dict[str, np.ndarray]:
     """
     Compute dynamic global segment frames from marker-defined template frames.
 
@@ -741,7 +955,9 @@ def compute_dynamic_segment_frames(template: ModelTemplate, data: MarkerData) ->
         if segment.frame is None:
             continue
         first_axis, second_axis = segment.frame.quality_axes()
-        first_axis, second_axis, third_name = _ordered_axes_and_third_name(first_axis, second_axis)
+        first_axis, second_axis, third_name = _ordered_axes_and_third_name(
+            first_axis, second_axis
+        )
         first_vector = first_axis.vector(data)
         second_vector = second_axis.vector(data)
         axis_to_keep = segment.frame.axis_to_keep
@@ -749,7 +965,9 @@ def compute_dynamic_segment_frames(template: ModelTemplate, data: MarkerData) ->
         first_name = first_axis.name
         second_name = second_axis.name
         if first_name == second_name:
-            raise ValueError(f"Segment '{segment.name}' defines two axes with the same name.")
+            raise ValueError(
+                f"Segment '{segment.name}' defines two axes with the same name."
+            )
 
         third_vector = np.cross(first_vector, second_vector, axis=0)
         if axis_to_keep == first_name:
@@ -757,7 +975,9 @@ def compute_dynamic_segment_frames(template: ModelTemplate, data: MarkerData) ->
         elif axis_to_keep == second_name:
             first_vector = np.cross(second_vector, third_vector, axis=0)
         else:
-            raise ValueError(f"Segment '{segment.name}' axis_to_keep must be one of the two defined axes.")
+            raise ValueError(
+                f"Segment '{segment.name}' axis_to_keep must be one of the two defined axes."
+            )
 
         rt = np.zeros((4, 4, data.nb_frames))
         rt[:3, first_name, :] = _normalize(first_vector)
@@ -777,7 +997,9 @@ def _third_axis_name(first_name: Axis.Name, second_name: Axis.Name) -> Axis.Name
     return missing.pop()
 
 
-def _ordered_axes_and_third_name(first_axis: AxisSpec, second_axis: AxisSpec) -> tuple[AxisSpec, AxisSpec, Axis.Name]:
+def _ordered_axes_and_third_name(
+    first_axis: AxisSpec, second_axis: AxisSpec
+) -> tuple[AxisSpec, AxisSpec, Axis.Name]:
     """
     Match the axis ordering used by ``SegmentCoordinateSystem.get_axes``.
     """
