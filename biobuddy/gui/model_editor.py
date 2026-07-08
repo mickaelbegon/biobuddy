@@ -107,6 +107,7 @@ VIRTUAL_MARKER_METHOD_DISPLAY_LABELS = {"axis_projection": "projection on axis"}
 SARA_DIRECTION_METHODS = {"sara", "sara_direction"}
 WORKFLOW_PLAYBACK_DEFAULT_FPS = 30.0
 DEFAULT_SARA_STATIC_AXIS_DEVIATION_LIMIT_DEGREES = 30.0
+FUNCTIONAL_RECONSTRUCTION_QLD_MAX_FRAMES = 20
 
 
 def _is_sara_direction_method(method: str) -> bool:
@@ -141,6 +142,42 @@ def _workflow_playback_timer_interval_ms(c3d_data) -> int:
     Return the timer interval needed to follow the C3D frame rate.
     """
     return max(1, int(round(1000.0 / _workflow_playback_fps(c3d_data))))
+
+
+def _functional_frame_selection_summary(
+    frame_count: int,
+    selection_ranges: tuple[tuple[int, int], ...],
+    *,
+    enabled: bool,
+) -> str:
+    """
+    Return the short status text shown next to the manual functional-frame selector.
+    """
+    frame_count = max(0, int(frame_count))
+    if frame_count == 0:
+        return "no frames"
+    if not enabled:
+        return f"inactive: all valid frames used ({frame_count})"
+    normalized_ranges = []
+    selected_count = 0
+    for start_frame, end_frame in selection_ranges:
+        start = max(0, min(int(start_frame), int(end_frame)))
+        end = min(frame_count - 1, max(int(start_frame), int(end_frame)))
+        if end < start:
+            continue
+        normalized_ranges.append((start, end))
+        selected_count += end - start + 1
+    if selected_count == 0:
+        return f"0/{frame_count} frames"
+    if selected_count == frame_count:
+        return f"{frame_count}/{frame_count} frames: all"
+    ranges_text = ", ".join(
+        f"{start + 1}-{end + 1}" if start != end else f"{start + 1}"
+        for start, end in normalized_ranges[:3]
+    )
+    if len(normalized_ranges) > 3:
+        ranges_text += ", ..."
+    return f"{selected_count}/{frame_count} frames: {ranges_text}"
 
 
 def launch_model_editor(
@@ -4563,7 +4600,7 @@ def launch_model_editor(
                 self._update_virtual_marker_preview
             )
             self.use_manual_functional_frames_checkbox = QCheckBox(
-                "Use selected functional frame zones"
+                "Use selected frames"
             )
             self.use_manual_functional_frames_checkbox.setToolTip(
                 "Use the blue frame zones under the preview frame slider for functional SCoRE/SARA calculations."
@@ -4635,6 +4672,21 @@ def launch_model_editor(
             )
             self.functional_frame_range_bar.on_selection_changed = (
                 self._update_manual_functional_frame_selection
+            )
+            self.functional_frame_selection_label = QLabel("Selected frames")
+            self.functional_frame_selection_label.setToolTip(
+                "Selected frames are the functional frames used by SCoRE/SARA. Enable 'Use selected frames', "
+                "then drag this row to paint the useful intervals."
+            )
+            self.functional_frame_selection_summary_label = QLabel(
+                "inactive: all valid frames used (0)"
+            )
+            self.functional_frame_selection_summary_label.setObjectName(
+                "MutedInfoLabel"
+            )
+            self.functional_frame_selection_summary_label.setToolTip(
+                "Frame selection affects functional virtual markers and axes only; the main frame slider still "
+                "controls the preview frame."
             )
             self.virtual_marker_equation_edit = QLineEdit()
             self.virtual_marker_equation_edit.hide()
@@ -5010,6 +5062,8 @@ def launch_model_editor(
                     self.virtual_marker_frame_slider,
                     self.virtual_marker_frame_label,
                     self.functional_frame_range_bar,
+                    self.functional_frame_selection_label,
+                    self.functional_frame_selection_summary_label,
                 )
             )
             self.workflow_frame_anatomical_index = self.workflow_frame_stack.addWidget(
@@ -5051,7 +5105,9 @@ def launch_model_editor(
             layout.addWidget(self.workflow_canvas_stack, 1)
             return panel
 
-        def _workflow_frame_slider_page(self, slider, label, range_bar=None):
+        def _workflow_frame_slider_page(
+            self, slider, label, range_bar=None, range_label=None, range_summary=None
+        ):
             """
             Return one fixed-height frame-control row for the shared preview panel.
             """
@@ -5085,9 +5141,17 @@ def launch_model_editor(
                     + 8
                 )
                 right_spacer_width = max(label.sizeHint().width(), 92)
-                range_row.addSpacing(left_spacer_width)
+                if range_label is None:
+                    range_row.addSpacing(left_spacer_width)
+                else:
+                    range_label.setMinimumWidth(left_spacer_width)
+                    range_row.addWidget(range_label)
                 range_row.addWidget(range_bar, 1)
-                range_row.addSpacing(right_spacer_width)
+                if range_summary is None:
+                    range_row.addSpacing(right_spacer_width)
+                else:
+                    range_summary.setMinimumWidth(right_spacer_width)
+                    range_row.addWidget(range_summary)
                 page_layout.addLayout(range_row)
             return page
 
@@ -7548,6 +7612,7 @@ def launch_model_editor(
                 )
             self.functional_frame_range_bar.set_frame_count(frame_count)
             self._sync_functional_frame_range_bar_enabled()
+            self._update_functional_frame_selection_summary_label()
 
         def _mirror_initial_rotation_c3d_source(self, *_args) -> None:
             if (
@@ -7860,12 +7925,23 @@ def launch_model_editor(
                 self.use_manual_functional_frames_checkbox.isChecked()
                 and frame_count > 1
             )
+            self._update_functional_frame_selection_summary_label()
+
+        def _update_functional_frame_selection_summary_label(self) -> None:
+            self.functional_frame_selection_summary_label.setText(
+                _functional_frame_selection_summary(
+                    self.functional_frame_range_bar.frame_count,
+                    self.functional_frame_range_bar.selection_ranges,
+                    enabled=self.use_manual_functional_frames_checkbox.isChecked(),
+                )
+            )
 
         def _set_virtual_marker_frame_from_range_drag(self, frame_index: int) -> None:
             self.virtual_marker_frame_slider.setValue(frame_index)
             QApplication.processEvents()
 
         def _update_manual_functional_frame_selection(self) -> None:
+            self._update_functional_frame_selection_summary_label()
             if not self.use_manual_functional_frames_checkbox.isChecked():
                 return
             self._update_virtual_marker_preview()
@@ -8789,6 +8865,7 @@ def launch_model_editor(
                     parent_marker_names,
                     child_marker_names,
                     source_label,
+                    tuple(report.selected_indices),
                     progress_callback,
                 )
             )
@@ -8872,6 +8949,7 @@ def launch_model_editor(
             high_weight_parent_markers: tuple[str, ...],
             high_weight_child_markers: tuple[str, ...],
             source_label: str,
+            reconstruction_frame_indices: tuple[int, ...],
             progress_callback,
         ) -> tuple[tuple[str, ...], dict[str, object] | None]:
             """
@@ -8911,6 +8989,7 @@ def launch_model_editor(
                 child_segment_name,
                 high_weight_parent_markers,
                 high_weight_child_markers,
+                reconstruction_frame_indices,
                 "SARA chain",
             )
 
@@ -8925,6 +9004,7 @@ def launch_model_editor(
                     child_segment_name,
                     high_weight_parent_markers,
                     high_weight_child_markers,
+                    reconstruction_frame_indices,
                     progress_callback,
                 )
             )
@@ -8942,6 +9022,7 @@ def launch_model_editor(
             child_segment_name: str,
             high_weight_parent_markers: tuple[str, ...],
             high_weight_child_markers: tuple[str, ...],
+            reconstruction_frame_indices: tuple[int, ...],
             progress_callback,
         ) -> tuple[tuple[str, ...], dict[str, object] | None]:
             """
@@ -8969,6 +9050,7 @@ def launch_model_editor(
                 child_segment_name,
                 high_weight_parent_markers,
                 high_weight_child_markers,
+                reconstruction_frame_indices,
                 "marker fallback chain",
             )
 
@@ -8981,6 +9063,7 @@ def launch_model_editor(
             child_segment_name: str,
             high_weight_parent_markers: tuple[str, ...],
             high_weight_child_markers: tuple[str, ...],
+            reconstruction_frame_indices: tuple[int, ...],
             probe_label: str,
         ) -> tuple[tuple[str, ...], dict[str, object] | None]:
             """
@@ -9000,7 +9083,14 @@ def launch_model_editor(
                     ),
                     None,
                 )
+            frame_indices, frame_note = _diagnostic_reconstruction_frame_indices(
+                reconstruction_frame_indices,
+                functional_data.nb_frames,
+                method,
+            )
             marker_positions = functional_data.get_position(marker_names)[:3, :, :]
+            if len(frame_indices) != 0:
+                marker_positions = marker_positions[:, :, frame_indices]
             frame_count = marker_positions.shape[2]
             frame_rate = _c3d_frame_rate(functional_data)
             high_weight_markers = tuple(
@@ -9017,6 +9107,8 @@ def launch_model_editor(
                     functional_data,
                     child_segment_name,
                     frame_rate,
+                    frame_indices,
+                    frame_note,
                     probe_label=probe_label,
                 )
             return self._qld_reconstruction_probe_lines(
@@ -9029,6 +9121,8 @@ def launch_model_editor(
                 child_segment_name,
                 high_weight_markers,
                 frame_rate,
+                frame_indices,
+                frame_note,
                 probe_label=probe_label,
             )
 
@@ -9112,6 +9206,8 @@ def launch_model_editor(
             knee_segment_name: str,
             high_weight_markers: tuple[str, ...],
             frame_rate: float | None,
+            frame_indices: tuple[int, ...],
+            frame_note: str,
             probe_label: str = "chain",
         ) -> tuple[tuple[str, ...], dict[str, object] | None]:
             try:
@@ -9128,11 +9224,12 @@ def launch_model_editor(
                 "",
                 f"{probe_label} - QLD reconstruction probe ({source_label})",
                 f"- Frames used: {frame_count}",
+                f"- Frame selection: {frame_note}",
                 f"- q shape: {q.shape[0]} DoF x {q.shape[1]} frames",
                 f"- Marker weights: 100 for {', '.join(high_weight_markers) or '-'}; 1 for the other model markers in this C3D.",
             ]
             rotation_plot = _rotation_dof_plot_data(
-                model, q, knee_segment_name, frame_rate
+                model, q, knee_segment_name, frame_rate, frame_indices
             )
             lines.extend(_rotation_dof_summary_lines(model, q, knee_segment_name))
             if residuals is not None:
@@ -9153,6 +9250,8 @@ def launch_model_editor(
             functional_data,
             knee_segment_name: str,
             frame_rate: float | None,
+            frame_indices: tuple[int, ...],
+            frame_note: str,
             probe_label: str = "chain",
         ) -> tuple[tuple[str, ...], dict[str, object] | None]:
             try:
@@ -9209,11 +9308,12 @@ def launch_model_editor(
                 "",
                 f"{probe_label} - EKF reconstruction probe",
                 f"- Frames used: {q_values.shape[1]}",
+                f"- Frame selection: {frame_note}",
                 f"- q shape: {q_values.shape[0]} DoF x {q_values.shape[1]} frames",
                 "- Marker weights: biorbd EKF does not expose per-marker weights here; use QLD for the 100/1 weighted reconstruction.",
             ]
             rotation_plot = _rotation_dof_plot_data(
-                model, q_values, knee_segment_name, frame_rate
+                model, q_values, knee_segment_name, frame_rate, frame_indices
             )
             lines.extend(
                 _rotation_dof_summary_lines(model, q_values, knee_segment_name)
@@ -11719,8 +11819,45 @@ def _diagnostic_template_for_c3d_model_preset(
     )
 
 
+def _diagnostic_reconstruction_frame_indices(
+    selected_indices: tuple[int, ...],
+    frame_count: int,
+    method: str,
+) -> tuple[tuple[int, ...], str]:
+    """
+    Return the frame indices used by the reconstruction diagnostic.
+
+    QLD is intentionally capped because it solves a nonlinear least-squares problem
+    frame-by-frame in the GUI thread.
+    """
+    if frame_count <= 0:
+        return (), "no frames"
+    indices = tuple(
+        int(index) for index in selected_indices if 0 <= int(index) < int(frame_count)
+    )
+    if len(indices) == 0:
+        indices = tuple(range(frame_count))
+    original_count = len(indices)
+    if method == "QLD" and len(indices) > FUNCTIONAL_RECONSTRUCTION_QLD_MAX_FRAMES:
+        sample_positions = np.linspace(
+            0,
+            len(indices) - 1,
+            FUNCTIONAL_RECONSTRUCTION_QLD_MAX_FRAMES,
+        ).astype(int)
+        indices = tuple(indices[int(position)] for position in sample_positions)
+        return (
+            indices,
+            f"{len(indices)} / {original_count} selected frames, downsampled for QLD responsiveness",
+        )
+    return indices, f"{len(indices)} selected frames"
+
+
 def _rotation_dof_plot_data(
-    model, q: np.ndarray, segment_name: str, frame_rate: float | None = None
+    model,
+    q: np.ndarray,
+    segment_name: str,
+    frame_rate: float | None = None,
+    frame_indices: tuple[int, ...] = (),
 ) -> dict[str, object] | None:
     """
     Return plottable rotation DoF data for one reconstructed segment.
@@ -11729,7 +11866,10 @@ def _rotation_dof_plot_data(
     if len(rotation_dofs) != 3:
         return None
     fps = float(frame_rate) if frame_rate is not None and frame_rate > 0 else 1.0
-    time = np.arange(q.shape[1], dtype=float) / fps
+    if len(frame_indices) == q.shape[1]:
+        time = np.asarray(frame_indices, dtype=float) / fps
+    else:
+        time = np.arange(q.shape[1], dtype=float) / fps
     return {
         "title": f"{segment_name} rotation DoFs from chain reconstruction",
         "time": time,

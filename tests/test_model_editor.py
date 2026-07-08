@@ -20,6 +20,7 @@ from biobuddy.gui.model_editor import (
     _c3d_file_names_from_folder,
     _c3d_generation_log,
     _export_model_to_path,
+    _functional_frame_selection_summary,
     _joint_name_from_segments,
     _marker_frame_position,
     _matching_c3d_file_for_expected_name,
@@ -113,6 +114,22 @@ def test_workflow_playback_interval_uses_c3d_frame_rate():
     assert _c3d_frame_rate(FakeC3dData()) == 100.0
     assert _workflow_playback_timer_interval_ms(FakeC3dData()) == 10
     assert _workflow_playback_timer_interval_ms(None) == 33
+
+
+def test_functional_frame_selection_summary_describes_manual_use():
+    assert _functional_frame_selection_summary(0, (), enabled=True) == "no frames"
+    assert (
+        _functional_frame_selection_summary(12, ((0, 11),), enabled=False)
+        == "inactive: all valid frames used (12)"
+    )
+    assert (
+        _functional_frame_selection_summary(12, ((1, 3), (7, 7)), enabled=True)
+        == "4/12 frames: 2-4, 8"
+    )
+    assert (
+        _functional_frame_selection_summary(12, ((0, 11),), enabled=True)
+        == "12/12 frames: all"
+    )
 
 
 def test_matching_c3d_file_accepts_short_motive_functional_names(tmp_path):
