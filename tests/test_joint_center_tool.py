@@ -1,14 +1,194 @@
 import os
 
 from biobuddy.utils.named_list import NamedList
-from biobuddy import BiomechanicalModelReal, JointCenterTool, Score, Sara, C3dData, MarkerWeight, Rotations, Axis
-from biobuddy.model_modifiers.joint_center_tool import RigidSegmentIdentification, JointCoordinateModifier, get_svd
+from biobuddy import (
+    BiomechanicalModelReal,
+    JointCenterTool,
+    Score,
+    Sara,
+    C3dData,
+    MarkerWeight,
+    Rotations,
+    Axis,
+    DictData,
+    SegmentCoordinateSystemUtils,
+)
+from biobuddy.model_modifiers.joint_center_tool import (
+    RigidSegmentIdentification,
+    JointCoordinateModifier,
+    get_svd,
+)
 from biobuddy.utils.linear_algebra import RotoTransMatrix, RotoTransMatrixTimeSeries
 import numpy as np
 import numpy.testing as npt
 import pytest
 
 from test_utils import remove_temporary_biomods, MockEmptyC3dData
+
+
+def _unit(vector: np.ndarray | list[float]) -> np.ndarray:
+    vector = np.asarray(vector, dtype=float)
+    return vector / np.linalg.norm(vector)
+
+
+def _basis_from_first_axis(first_axis: np.ndarray) -> np.ndarray:
+    first_axis = _unit(first_axis)
+    candidate = np.array([0.0, 0.0, 1.0])
+    if abs(float(np.dot(first_axis, candidate))) > 0.9:
+        candidate = np.array([0.0, 1.0, 0.0])
+    second_axis = _unit(np.cross(candidate, first_axis))
+    third_axis = np.cross(first_axis, second_axis)
+    return np.column_stack((first_axis, second_axis, third_axis))
+
+
+def _rotation_about_x(angle: float) -> np.ndarray:
+    cos_angle = np.cos(angle)
+    sin_angle = np.sin(angle)
+    return np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, cos_angle, -sin_angle],
+            [0.0, sin_angle, cos_angle],
+        ]
+    )
+
+
+def _global_direction(
+    rt: RotoTransMatrixTimeSeries, local_axis: np.ndarray
+) -> np.ndarray:
+    global_directions = np.zeros((3, len(rt)))
+    local_axis = np.asarray(local_axis, dtype=float).reshape(3)
+    for frame_index in range(len(rt)):
+        global_direction = rt[frame_index].rotation_matrix.rotation_matrix @ local_axis
+        global_directions[:, frame_index] = global_direction / np.linalg.norm(
+            global_direction
+        )
+    return global_directions
+
+
+def _perfect_hinge_rt_and_markers(
+    nb_frames: int = 60,
+) -> tuple[
+    RotoTransMatrixTimeSeries,
+    RotoTransMatrixTimeSeries,
+    DictData,
+    DictData,
+    tuple[str, ...],
+    tuple[str, ...],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
+    """
+    Build a perfect two-segment hinge with parent 6-DoF motion and child 1-DoF relative rotation.
+
+    The first frame is the static calibration pose. Marker clouds have zero centroid so
+    ``rigidify`` recovers the expected technical frames without an extra centroid offset.
+    """
+    parent_axis_local = _unit([0.25, 0.86, -0.44])
+    child_axis_local = _unit([0.0, 0.0, 1.0])
+    parent_axis_basis = _basis_from_first_axis(parent_axis_local)
+    child_axis_basis = _basis_from_first_axis(child_axis_local)
+    parent_hinge_local = np.array([0.08, -0.03, 0.02])
+    child_hinge_local = np.array([-0.04, 0.06, 0.03])
+    parent_marker_local = np.array(
+        [
+            [0.18, 0.02, -0.05],
+            [-0.12, 0.11, 0.03],
+            [0.04, -0.16, 0.10],
+            [-0.10, 0.03, -0.08],
+        ],
+        dtype=float,
+    )
+    child_marker_local = np.array(
+        [
+            [0.16, -0.04, 0.06],
+            [-0.08, 0.12, -0.07],
+            [0.02, -0.13, -0.10],
+            [-0.10, 0.05, 0.11],
+        ],
+        dtype=float,
+    )
+    parent_marker_local -= parent_marker_local.mean(axis=0)
+    child_marker_local -= child_marker_local.mean(axis=0)
+    parent_names = tuple(f"P{i + 1}" for i in range(4))
+    child_names = tuple(f"C{i + 1}" for i in range(4))
+    markers = {
+        **{name: np.ones((4, nb_frames)) for name in parent_names},
+        **{name: np.ones((4, nb_frames)) for name in child_names},
+    }
+    hinge_origin_global = np.ones((4, nb_frames))
+    rt_parent = RotoTransMatrixTimeSeries(nb_frames)
+    rt_child = RotoTransMatrixTimeSeries(nb_frames)
+    for frame_index in range(nb_frames):
+        parent_angles = np.array(
+            [
+                0.15 * np.sin(frame_index / 14.0),
+                0.10 * np.sin(frame_index / 19.0),
+                0.08 * np.sin(frame_index / 11.0),
+            ]
+        )
+        parent_translation = np.array(
+            [
+                0.10 * np.sin(frame_index / 17.0),
+                -0.04 * np.sin(frame_index / 23.0),
+                0.06 * np.sin(frame_index / 29.0),
+            ]
+        )
+        if frame_index == 0:
+            parent_angles = np.zeros(3)
+            parent_translation = np.zeros(3)
+        parent_rt = RotoTransMatrix.from_euler_angles_and_translation(
+            "xyz", parent_angles, parent_translation
+        )
+        parent_rotation = parent_rt.rotation_matrix.rotation_matrix
+        parent_translation = parent_rt.translation.reshape(3)
+        hinge_angle = -1.2 + 2.4 * frame_index / (nb_frames - 1)
+        child_rotation = (
+            parent_rotation
+            @ parent_axis_basis
+            @ _rotation_about_x(hinge_angle)
+            @ child_axis_basis.T
+        )
+        child_translation = (
+            parent_rotation @ parent_hinge_local
+            + parent_translation
+            - child_rotation @ child_hinge_local
+        )
+        rt_parent[frame_index] = parent_rt
+        rt_child[frame_index] = RotoTransMatrix.from_rotation_matrix_and_translation(
+            child_rotation, child_translation
+        )
+        hinge_origin_global[:3, frame_index] = (
+            parent_rotation @ parent_hinge_local + parent_translation
+        )
+        for marker_index, marker_position in enumerate(parent_marker_local):
+            markers[parent_names[marker_index]][:3, frame_index] = (
+                parent_rotation @ marker_position + parent_translation
+            )
+        for marker_index, marker_position in enumerate(child_marker_local):
+            markers[child_names[marker_index]][:3, frame_index] = (
+                child_rotation @ marker_position + child_translation
+            )
+    functional_data = DictData(markers)
+    static_data = DictData(
+        {marker_name: values[:, 0:1] for marker_name, values in markers.items()}
+    )
+    return (
+        rt_parent,
+        rt_child,
+        functional_data,
+        static_data,
+        parent_names,
+        child_names,
+        parent_axis_local,
+        child_axis_local,
+        parent_hinge_local,
+        child_hinge_local,
+        hinge_origin_global,
+    )
 
 
 def visualize_modified_model_output(
@@ -55,11 +235,19 @@ def test_score_and_sara_without_ghost_segments(initialize_whole_trial_reconstruc
 
     # --- Paths --- #
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    leg_model_filepath = parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
-    score_biomod_filepath = parent_path + "/examples/models/leg_without_ghost_parents_score.bioMod"
+    leg_model_filepath = (
+        parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
+    )
+    score_biomod_filepath = (
+        parent_path + "/examples/models/leg_without_ghost_parents_score.bioMod"
+    )
 
-    hip_functional_trial_path = parent_path + "/examples/data/functional_trials/right_hip.c3d"
-    knee_functional_trial_path = parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    hip_functional_trial_path = (
+        parent_path + "/examples/data/functional_trials/right_hip.c3d"
+    )
+    knee_functional_trial_path = (
+        parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    )
     hip_c3d = C3dData(
         hip_functional_trial_path, first_frame=1, last_frame=499
     )  # Marker inversion happening after the 500th frame in the example data!
@@ -162,7 +350,9 @@ def test_score_and_sara_without_ghost_segments(initialize_whole_trial_reconstruc
         )
         # The rotation is the result from SARA (and is less stable numerically)
         npt.assert_almost_equal(
-            score_model.segments["tibia_r"].segment_coordinate_system.scs.rotation_matrix.rotation_matrix,
+            score_model.segments[
+                "tibia_r"
+            ].segment_coordinate_system.scs.rotation_matrix.rotation_matrix,
             # Both rotation and translation parts were modified
             np.array(
                 [
@@ -182,7 +372,9 @@ def test_score_and_sara_without_ghost_segments(initialize_whole_trial_reconstruc
         )
         # The rotation is the result from SARA (and is less stable numerically)
         npt.assert_almost_equal(
-            score_model.segments["tibia_r"].segment_coordinate_system.scs.rotation_matrix.rotation_matrix,
+            score_model.segments[
+                "tibia_r"
+            ].segment_coordinate_system.scs.rotation_matrix.rotation_matrix,
             np.array(
                 [
                     [-0.99777, 0.06546, 0.01267],
@@ -230,8 +422,13 @@ def test_score_and_sara_without_ghost_segments(initialize_whole_trial_reconstruc
         method="lm",
     )
     original_markers_reconstructed = scaled_model.markers_in_global(original_optimal_q)
-    original_marker_position_diff = hip_c3d.get_position(list(marker_weights.keys())) - original_markers_reconstructed
-    original_marker_tracking_error = np.sum(original_marker_position_diff[:3, :, :] ** 2)
+    original_marker_position_diff = (
+        hip_c3d.get_position(list(marker_weights.keys()))
+        - original_markers_reconstructed
+    )
+    original_marker_tracking_error = np.sum(
+        original_marker_position_diff[:3, :, :] ** 2
+    )
 
     new_optimal_q, _ = score_model.inverse_kinematics(
         marker_positions=hip_c3d.get_position(list(marker_weights.keys()))[:3, :, :],
@@ -240,14 +437,22 @@ def test_score_and_sara_without_ghost_segments(initialize_whole_trial_reconstruc
         method="lm",
     )
     new_markers_reconstructed = score_model.markers_in_global(new_optimal_q)
-    new_marker_position_diff = hip_c3d.get_position(list(marker_weights.keys())) - new_markers_reconstructed
+    new_marker_position_diff = (
+        hip_c3d.get_position(list(marker_weights.keys())) - new_markers_reconstructed
+    )
     new_marker_tracking_error = np.sum(new_marker_position_diff[:3, :, :] ** 2)
 
-    npt.assert_almost_equal(original_marker_tracking_error, 1.2695623487402687, decimal=2)
+    npt.assert_almost_equal(
+        original_marker_tracking_error, 1.2695623487402687, decimal=2
+    )
     if initialize_whole_trial_reconstruction:
-        npt.assert_almost_equal(new_marker_tracking_error, 0.8292538655934063, decimal=2)
+        npt.assert_almost_equal(
+            new_marker_tracking_error, 0.8292538655934063, decimal=2
+        )
     else:
-        npt.assert_almost_equal(new_marker_tracking_error, 0.8338653905600818, decimal=2)
+        npt.assert_almost_equal(
+            new_marker_tracking_error, 0.8338653905600818, decimal=2
+        )
     npt.assert_array_less(new_marker_tracking_error, original_marker_tracking_error)
 
     # Animate the output
@@ -260,7 +465,11 @@ def test_score_and_sara_without_ghost_segments(initialize_whole_trial_reconstruc
             show_labels=False,
         )
         visualize_modified_model_output(
-            leg_model_filepath, score_biomod_filepath, original_optimal_q, new_optimal_q, pyomarkers
+            leg_model_filepath,
+            score_biomod_filepath,
+            original_optimal_q,
+            new_optimal_q,
+            pyomarkers,
         )
 
     # Knee
@@ -282,22 +491,40 @@ def test_score_and_sara_without_ghost_segments(initialize_whole_trial_reconstruc
     if animate:
         from pyorerun import PyoMarkers
 
-        pyomarkers = PyoMarkers(data=knee_c3d.get_position(marker_names), channels=marker_names, show_labels=False)
+        pyomarkers = PyoMarkers(
+            data=knee_c3d.get_position(marker_names),
+            channels=marker_names,
+            show_labels=False,
+        )
         visualize_modified_model_output(
-            leg_model_filepath, score_biomod_filepath, original_optimal_q, new_optimal_q, pyomarkers
+            leg_model_filepath,
+            score_biomod_filepath,
+            original_optimal_q,
+            new_optimal_q,
+            pyomarkers,
         )
 
     markers_index = scaled_model.markers_indices(marker_names)
 
-    original_markers_reconstructed = scaled_model.markers_in_global(original_optimal_q)[:3, markers_index, :]
-    original_marker_position_diff = knee_c3d.get_position(marker_names)[:3, :, :] - original_markers_reconstructed
+    original_markers_reconstructed = scaled_model.markers_in_global(original_optimal_q)[
+        :3, markers_index, :
+    ]
+    original_marker_position_diff = (
+        knee_c3d.get_position(marker_names)[:3, :, :] - original_markers_reconstructed
+    )
     original_marker_tracking_error = np.sum(original_marker_position_diff**2)
 
-    new_markers_reconstructed = score_model.markers_in_global(new_optimal_q)[:3, markers_index, :]
-    new_marker_position_diff = knee_c3d.get_position(marker_names)[:3, :, :] - new_markers_reconstructed
+    new_markers_reconstructed = score_model.markers_in_global(new_optimal_q)[
+        :3, markers_index, :
+    ]
+    new_marker_position_diff = (
+        knee_c3d.get_position(marker_names)[:3, :, :] - new_markers_reconstructed
+    )
     new_marker_tracking_error = np.sum(new_marker_position_diff**2)
 
-    npt.assert_almost_equal(original_marker_tracking_error, 4.705350581055244, decimal=2)
+    npt.assert_almost_equal(
+        original_marker_tracking_error, 4.705350581055244, decimal=2
+    )
     if initialize_whole_trial_reconstruction:
         npt.assert_almost_equal(new_marker_tracking_error, 2.956894901165191, decimal=2)
     else:
@@ -318,13 +545,25 @@ def test_score_and_sara_without_ghost_segments(initialize_whole_trial_reconstruc
 
         for muscle in muscle_group.muscles:
             # Test that the origin and insertion have been updated locally
-            origin_scaled = scaled_model.muscle_groups[muscle_group.name].muscles[muscle.name].origin_position.position
-            insertion_scaled = (
-                scaled_model.muscle_groups[muscle_group.name].muscles[muscle.name].insertion_position.position
+            origin_scaled = (
+                scaled_model.muscle_groups[muscle_group.name]
+                .muscles[muscle.name]
+                .origin_position.position
             )
-            origin_score = score_model.muscle_groups[muscle_group.name].muscles[muscle.name].origin_position.position
+            insertion_scaled = (
+                scaled_model.muscle_groups[muscle_group.name]
+                .muscles[muscle.name]
+                .insertion_position.position
+            )
+            origin_score = (
+                score_model.muscle_groups[muscle_group.name]
+                .muscles[muscle.name]
+                .origin_position.position
+            )
             insertion_score = (
-                score_model.muscle_groups[muscle_group.name].muscles[muscle.name].insertion_position.position
+                score_model.muscle_groups[muscle_group.name]
+                .muscles[muscle.name]
+                .insertion_position.position
             )
             if muscle_group.origin_parent_name == "pelvis":
                 # pelvis did not move so should be the same
@@ -335,10 +574,18 @@ def test_score_and_sara_without_ghost_segments(initialize_whole_trial_reconstruc
             # So that they stay at the same place in the global reference frame
             scaled_origin_in_global = scaled_model.muscle_origin_in_global(muscle.name)
             score_origin_in_global = score_model.muscle_origin_in_global(muscle.name)
-            npt.assert_almost_equal(scaled_origin_in_global, score_origin_in_global, decimal=5)
-            scaled_insertion_in_global = scaled_model.muscle_insertion_in_global(muscle.name)
-            score_insertion_in_global = score_model.muscle_insertion_in_global(muscle.name)
-            npt.assert_almost_equal(scaled_insertion_in_global, score_insertion_in_global, decimal=5)
+            npt.assert_almost_equal(
+                scaled_origin_in_global, score_origin_in_global, decimal=5
+            )
+            scaled_insertion_in_global = scaled_model.muscle_insertion_in_global(
+                muscle.name
+            )
+            score_insertion_in_global = score_model.muscle_insertion_in_global(
+                muscle.name
+            )
+            npt.assert_almost_equal(
+                scaled_insertion_in_global, score_insertion_in_global, decimal=5
+            )
 
             # Test the position of the via points
             via_points_scaled = scaled_model.via_points_in_global(muscle.name)
@@ -360,10 +607,16 @@ def test_score_and_sara_with_ghost_segments():
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     leg_model_filepath = parent_path + "/examples/models/leg_with_ghost_parents.bioMod"
-    score_biomod_filepath = parent_path + "/examples/models/leg_with_ghost_parents_score.bioMod"
+    score_biomod_filepath = (
+        parent_path + "/examples/models/leg_with_ghost_parents_score.bioMod"
+    )
 
-    hip_functional_trial_path = parent_path + "/examples/data/functional_trials/right_hip.c3d"
-    knee_functional_trial_path = parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    hip_functional_trial_path = (
+        parent_path + "/examples/data/functional_trials/right_hip.c3d"
+    )
+    knee_functional_trial_path = (
+        parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    )
     hip_c3d = C3dData(
         hip_functional_trial_path, first_frame=250, last_frame=349
     )  # Marker inversion happening after the 500th frame in the example data!
@@ -424,16 +677,22 @@ def test_score_and_sara_with_ghost_segments():
     score_model.to_biomod(score_biomod_filepath)
 
     # Test the joints' new RT
-    assert score_model.segments["femur_r_parent_offset"].segment_coordinate_system.is_in_local
+    assert score_model.segments[
+        "femur_r_parent_offset"
+    ].segment_coordinate_system.is_in_local
     # The translation is the result from SCoRE (and should not change)
     npt.assert_almost_equal(
-        score_model.segments["femur_r_parent_offset"].segment_coordinate_system.scs.translation,
+        score_model.segments[
+            "femur_r_parent_offset"
+        ].segment_coordinate_system.scs.translation,
         np.array([-0.0361767, -0.03531768, -0.01128449]),
         decimal=3,
     )
     # The rotation should not change
     npt.assert_almost_equal(
-        score_model.segments["femur_r_parent_offset"].segment_coordinate_system.scs.rotation_matrix.rotation_matrix,
+        score_model.segments[
+            "femur_r_parent_offset"
+        ].segment_coordinate_system.scs.rotation_matrix.rotation_matrix,
         np.array(
             [
                 [1.0, 0.0, 0.0],
@@ -457,16 +716,22 @@ def test_score_and_sara_with_ghost_segments():
         decimal=3,
     )
 
-    assert score_model.segments["tibia_r_parent_offset"].segment_coordinate_system.is_in_local
+    assert score_model.segments[
+        "tibia_r_parent_offset"
+    ].segment_coordinate_system.is_in_local
     # The translation is the result from SCoRE (and should not change)
     npt.assert_almost_equal(
-        score_model.segments["tibia_r_parent_offset"].segment_coordinate_system.scs.translation,
+        score_model.segments[
+            "tibia_r_parent_offset"
+        ].segment_coordinate_system.scs.translation,
         np.array([0.00075506, -0.37070545, -0.00658972]),
         decimal=3,
     )
     # The rotation is the result from SARA (and is less stable numerically)
     npt.assert_almost_equal(
-        score_model.segments["tibia_r_parent_offset"].segment_coordinate_system.scs.rotation_matrix.rotation_matrix,
+        score_model.segments[
+            "tibia_r_parent_offset"
+        ].segment_coordinate_system.scs.rotation_matrix.rotation_matrix,
         np.array(
             [
                 [0.99736617, -0.01657078, -0.07061256],
@@ -480,31 +745,72 @@ def test_score_and_sara_with_ghost_segments():
     assert score_model.segments["tibia_r"].segment_coordinate_system.is_in_local
     npt.assert_almost_equal(
         score_model.segments["tibia_r"].segment_coordinate_system.scs.rt_matrix,
-        np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]),
+        np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        ),
     )
 
     # Test that the original model did not change
-    assert scaled_model.segments["femur_r_parent_offset"].segment_coordinate_system.is_in_local
+    assert scaled_model.segments[
+        "femur_r_parent_offset"
+    ].segment_coordinate_system.is_in_local
     npt.assert_almost_equal(
-        scaled_model.segments["femur_r_parent_offset"].segment_coordinate_system.scs.rt_matrix,
+        scaled_model.segments[
+            "femur_r_parent_offset"
+        ].segment_coordinate_system.scs.rt_matrix,
         np.array(
-            [[1.0, 0.0, 0.0, -0.067759], [0.0, 1.0, 0.0, -0.06335], [0.0, 0.0, 1.0, 0.080026], [0.0, 0.0, 0.0, 1.0]]
+            [
+                [1.0, 0.0, 0.0, -0.067759],
+                [0.0, 1.0, 0.0, -0.06335],
+                [0.0, 0.0, 1.0, 0.080026],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
         ),
     )
     assert scaled_model.segments["femur_r"].segment_coordinate_system.is_in_local
     npt.assert_almost_equal(
         scaled_model.segments["femur_r"].segment_coordinate_system.scs.rt_matrix,
-        np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]),
+        np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        ),
     )
-    assert scaled_model.segments["tibia_r_parent_offset"].segment_coordinate_system.is_in_local
+    assert scaled_model.segments[
+        "tibia_r_parent_offset"
+    ].segment_coordinate_system.is_in_local
     npt.assert_almost_equal(
-        scaled_model.segments["tibia_r_parent_offset"].segment_coordinate_system.scs.rt_matrix,
-        np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, -0.387741], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]),
+        scaled_model.segments[
+            "tibia_r_parent_offset"
+        ].segment_coordinate_system.scs.rt_matrix,
+        np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, -0.387741],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        ),
     )
     assert scaled_model.segments["tibia_r"].segment_coordinate_system.is_in_local
     npt.assert_almost_equal(
         scaled_model.segments["tibia_r"].segment_coordinate_system.scs.rt_matrix,
-        np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]),
+        np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        ),
     )
 
     # Test the reconstruction for the original model and the output model with the functional joint centers
@@ -516,8 +822,13 @@ def test_score_and_sara_with_ghost_segments():
         method="lm",
     )
     original_markers_reconstructed = scaled_model.markers_in_global(original_optimal_q)
-    original_marker_position_diff = hip_c3d.get_position(list(marker_weights.keys())) - original_markers_reconstructed
-    original_marker_tracking_error = np.sum(original_marker_position_diff[:3, :, :] ** 2)
+    original_marker_position_diff = (
+        hip_c3d.get_position(list(marker_weights.keys()))
+        - original_markers_reconstructed
+    )
+    original_marker_tracking_error = np.sum(
+        original_marker_position_diff[:3, :, :] ** 2
+    )
 
     new_optimal_q, _ = score_model.inverse_kinematics(
         marker_positions=hip_c3d.get_position(list(marker_weights.keys()))[:3, :, :],
@@ -526,11 +837,15 @@ def test_score_and_sara_with_ghost_segments():
         method="lm",
     )
     new_markers_reconstructed = score_model.markers_in_global(new_optimal_q)
-    new_marker_position_diff = hip_c3d.get_position(list(marker_weights.keys())) - new_markers_reconstructed
+    new_marker_position_diff = (
+        hip_c3d.get_position(list(marker_weights.keys())) - new_markers_reconstructed
+    )
     new_marker_tracking_error = np.sum(new_marker_position_diff[:3, :, :] ** 2)
 
     # The error is worse because it is a small test (for the tests to run quickly)
-    npt.assert_almost_equal(original_marker_tracking_error, 0.28506843278583055, decimal=2)
+    npt.assert_almost_equal(
+        original_marker_tracking_error, 0.28506843278583055, decimal=2
+    )
     npt.assert_almost_equal(new_marker_tracking_error, 1.541524705667391, decimal=2)
 
     # Animate the output
@@ -543,7 +858,11 @@ def test_score_and_sara_with_ghost_segments():
             show_labels=False,
         )
         visualize_modified_model_output(
-            leg_model_filepath, score_biomod_filepath, original_optimal_q, new_optimal_q, pyomarkers
+            leg_model_filepath,
+            score_biomod_filepath,
+            original_optimal_q,
+            new_optimal_q,
+            pyomarkers,
         )
 
     # Knee
@@ -565,23 +884,41 @@ def test_score_and_sara_with_ghost_segments():
     if animate:
         from pyorerun import PyoMarkers
 
-        pyomarkers = PyoMarkers(data=knee_c3d.get_position(marker_names), channels=marker_names, show_labels=False)
+        pyomarkers = PyoMarkers(
+            data=knee_c3d.get_position(marker_names),
+            channels=marker_names,
+            show_labels=False,
+        )
         visualize_modified_model_output(
-            leg_model_filepath, score_biomod_filepath, original_optimal_q, new_optimal_q, pyomarkers
+            leg_model_filepath,
+            score_biomod_filepath,
+            original_optimal_q,
+            new_optimal_q,
+            pyomarkers,
         )
 
     markers_index = scaled_model.markers_indices(marker_names)
 
-    original_markers_reconstructed = scaled_model.markers_in_global(original_optimal_q)[:3, markers_index, :]
-    original_marker_position_diff = knee_c3d.get_position(marker_names)[:3, :, :] - original_markers_reconstructed
+    original_markers_reconstructed = scaled_model.markers_in_global(original_optimal_q)[
+        :3, markers_index, :
+    ]
+    original_marker_position_diff = (
+        knee_c3d.get_position(marker_names)[:3, :, :] - original_markers_reconstructed
+    )
     original_marker_tracking_error = np.sum(original_marker_position_diff**2)
 
-    new_markers_reconstructed = score_model.markers_in_global(new_optimal_q)[:3, markers_index, :]
-    new_marker_position_diff = knee_c3d.get_position(marker_names)[:3, :, :] - new_markers_reconstructed
+    new_markers_reconstructed = score_model.markers_in_global(new_optimal_q)[
+        :3, markers_index, :
+    ]
+    new_marker_position_diff = (
+        knee_c3d.get_position(marker_names)[:3, :, :] - new_markers_reconstructed
+    )
     new_marker_tracking_error = np.sum(new_marker_position_diff**2)
 
     # The error is worse because it is a unit test (for the tests to run quickly)
-    npt.assert_almost_equal(original_marker_tracking_error, 0.8846482105592899, decimal=2)
+    npt.assert_almost_equal(
+        original_marker_tracking_error, 0.8846482105592899, decimal=2
+    )
     npt.assert_almost_equal(new_marker_tracking_error, 0.9470458799111221, decimal=2)
 
     # Test replace_joint_centers
@@ -598,13 +935,25 @@ def test_score_and_sara_with_ghost_segments():
 
         for muscle in muscle_group.muscles:
             # Test that the origin and insertion have been updated locally
-            origin_scaled = scaled_model.muscle_groups[muscle_group.name].muscles[muscle.name].origin_position.position
-            insertion_scaled = (
-                scaled_model.muscle_groups[muscle_group.name].muscles[muscle.name].insertion_position.position
+            origin_scaled = (
+                scaled_model.muscle_groups[muscle_group.name]
+                .muscles[muscle.name]
+                .origin_position.position
             )
-            origin_score = score_model.muscle_groups[muscle_group.name].muscles[muscle.name].origin_position.position
+            insertion_scaled = (
+                scaled_model.muscle_groups[muscle_group.name]
+                .muscles[muscle.name]
+                .insertion_position.position
+            )
+            origin_score = (
+                score_model.muscle_groups[muscle_group.name]
+                .muscles[muscle.name]
+                .origin_position.position
+            )
             insertion_score = (
-                score_model.muscle_groups[muscle_group.name].muscles[muscle.name].insertion_position.position
+                score_model.muscle_groups[muscle_group.name]
+                .muscles[muscle.name]
+                .insertion_position.position
             )
             if muscle_group.origin_parent_name == "pelvis":
                 # pelvis did not move so should be the same
@@ -615,10 +964,18 @@ def test_score_and_sara_with_ghost_segments():
             # So that they stay at the same place in the global reference frame
             scaled_origin_in_global = scaled_model.muscle_origin_in_global(muscle.name)
             score_origin_in_global = score_model.muscle_origin_in_global(muscle.name)
-            npt.assert_almost_equal(scaled_origin_in_global, score_origin_in_global, decimal=5)
-            scaled_insertion_in_global = scaled_model.muscle_insertion_in_global(muscle.name)
-            score_insertion_in_global = score_model.muscle_insertion_in_global(muscle.name)
-            npt.assert_almost_equal(scaled_insertion_in_global, score_insertion_in_global, decimal=5)
+            npt.assert_almost_equal(
+                scaled_origin_in_global, score_origin_in_global, decimal=5
+            )
+            scaled_insertion_in_global = scaled_model.muscle_insertion_in_global(
+                muscle.name
+            )
+            score_insertion_in_global = score_model.muscle_insertion_in_global(
+                muscle.name
+            )
+            npt.assert_almost_equal(
+                scaled_insertion_in_global, score_insertion_in_global, decimal=5
+            )
 
             # Test the position of the via points
             via_points_scaled = scaled_model.via_points_in_global(muscle.name)
@@ -637,7 +994,9 @@ def test_init_rigid_segment_identification():
 
     # Set up
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    knee_functional_trial_path = parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    knee_functional_trial_path = (
+        parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    )
     c3d_data = C3dData(knee_functional_trial_path, first_frame=300, last_frame=399)
 
     # Create a test instance
@@ -686,7 +1045,8 @@ def test_init_rigid_segment_identification():
 
     # Test with no markers
     with pytest.raises(
-        RuntimeError, match=r"The functional trial file does not contain any frame. Please check the trial again."
+        RuntimeError,
+        match=r"The functional trial file does not contain any frame. Please check the trial again.",
     ):
         rsi_no_markers = Score(
             MockEmptyC3dData(),
@@ -715,7 +1075,9 @@ def test_marker_residual():
 
     # Set up
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    knee_functional_trial_path = parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    knee_functional_trial_path = (
+        parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    )
     c3d_data = C3dData(knee_functional_trial_path, first_frame=300, last_frame=399)
 
     # Create a test instance
@@ -737,12 +1099,16 @@ def test_marker_residual():
     functional_markers_in_global = np.ones((4, 2))  # 4D, 2 markers
 
     # When RT is identity and markers match, residual should be 0
-    residual = rsi.marker_residual(optimal_rt, static_markers_in_local, functional_markers_in_global)
+    residual = rsi.marker_residual(
+        optimal_rt, static_markers_in_local, functional_markers_in_global
+    )
     assert residual == 0
 
     # When markers don't match, residual should be positive
     functional_markers_in_global = np.ones((4, 2)) * 2
-    residual = rsi.marker_residual(optimal_rt, static_markers_in_local, functional_markers_in_global)
+    residual = rsi.marker_residual(
+        optimal_rt, static_markers_in_local, functional_markers_in_global
+    )
     assert residual > 0
 
     # Test get_good_frames
@@ -772,7 +1138,9 @@ def test_marker_residual():
     markers = np.random.rand(3, 2, 10) * 0.0001  # 3D, 2 markers, 10 frames
     markers = np.vstack((markers, np.ones((1, 2, 10))))  # Add homogeneous coordinate
     static_markers = np.random.rand(3, 2) * 0.0001  # 3D, 2 markers
-    static_markers = np.vstack((static_markers, np.ones((1, 2))))  # Add homogeneous coordinate
+    static_markers = np.vstack(
+        (static_markers, np.ones((1, 2)))
+    )  # Add homogeneous coordinate
     marker_names = ["marker1", "marker2"]
 
     # Test with valid inputs
@@ -784,7 +1152,10 @@ def test_marker_residual():
     npt.assert_almost_equal(result[2], np.zeros((3, 2)), decimal=3)  # Static centered
 
     # Test with mismatched marker names
-    with pytest.raises(RuntimeError, match=r"The marker_names \['marker1'\] do not match the number of markers 2."):
+    with pytest.raises(
+        RuntimeError,
+        match=r"The marker_names \['marker1'\] do not match the number of markers 2.",
+    ):
         rsi.check_optimal_rt_inputs(markers, static_markers, ["marker1"])
 
     # Test with marker movement
@@ -803,8 +1174,12 @@ def test_longitudinal_axis():
 
     # Set up
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    leg_model_filepath = parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
-    knee_functional_trial_path = parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    leg_model_filepath = (
+        parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
+    )
+    knee_functional_trial_path = (
+        parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    )
     knee_c3d = C3dData(knee_functional_trial_path, first_frame=300, last_frame=399)
 
     child_name = "tibia_r"
@@ -882,8 +1257,12 @@ def test_original_rotation_axis_axis():
 
     # Set up
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    leg_model_filepath = parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
-    knee_functional_trial_path = parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    leg_model_filepath = (
+        parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
+    )
+    knee_functional_trial_path = (
+        parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    )
     knee_c3d = C3dData(knee_functional_trial_path, first_frame=300, last_frame=399)
 
     child_name = "tibia_r"
@@ -925,7 +1304,9 @@ def test_original_rotation_axis_axis():
         animate_rt=False,
     )
 
-    original_axis_global, original_axis_local = sara._original_rotation_axis(scaled_model)
+    original_axis_global, original_axis_local = sara._original_rotation_axis(
+        scaled_model
+    )
     npt.assert_almost_equal(
         original_axis_global.reshape(
             3,
@@ -956,7 +1337,9 @@ def test_original_rotation_axis_axis():
         ),
         decimal=4,
     )
-    npt.assert_almost_equal(rt_tibia.translation, np.array([0.00498373, -0.37616619, -0.0030206]), decimal=4)
+    npt.assert_almost_equal(
+        rt_tibia.translation, np.array([0.00498373, -0.37616619, -0.0030206]), decimal=4
+    )
 
     # Test the other direction
     sara = Sara(
@@ -972,7 +1355,9 @@ def test_original_rotation_axis_axis():
         initialize_whole_trial_reconstruction=False,
         animate_rt=False,
     )
-    original_axis_global, original_axis_local = sara._original_rotation_axis(scaled_model)
+    original_axis_global, original_axis_local = sara._original_rotation_axis(
+        scaled_model
+    )
     npt.assert_almost_equal(
         original_axis_global.reshape(
             3,
@@ -1003,7 +1388,9 @@ def test_original_rotation_axis_axis():
         ),
         decimal=4,
     )
-    npt.assert_almost_equal(rt_tibia.translation, np.array([0.00498373, -0.37616619, -0.0030206]), decimal=4)
+    npt.assert_almost_equal(
+        rt_tibia.translation, np.array([0.00498373, -0.37616619, -0.0030206]), decimal=4
+    )
     # Make sure the axis are in opposite direction
     npt.assert_almost_equal(
         rt_tibia_reverse.rotation_matrix.rotation_matrix @ np.array([0, 0, 1]),
@@ -1017,7 +1404,9 @@ def test_add():
 
     # Set up
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    leg_model_filepath = parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
+    leg_model_filepath = (
+        parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
+    )
     scaled_model = BiomechanicalModelReal().from_biomod(
         filepath=leg_model_filepath,
     )
@@ -1026,7 +1415,9 @@ def test_add():
     jct = JointCenterTool(scaled_model)
 
     # Test adding an invalid task
-    with pytest.raises(RuntimeError, match="The joint center must be a Score or Sara object."):
+    with pytest.raises(
+        RuntimeError, match="The joint center must be a Score or Sara object."
+    ):
         jct.add("not a Score or Sara object")
 
 
@@ -1061,11 +1452,24 @@ def test_get_svd():
     # U is too sensitive to be tested :(
     npt.assert_almost_equal(
         S,
-        np.array([4.47213595e00, 4.46062656e00, 4.46062656e00, 3.20641084e-01, 3.20641084e-01, 5.40977915e-16]),
+        np.array(
+            [
+                4.47213595e00,
+                4.46062656e00,
+                4.46062656e00,
+                3.20641084e-01,
+                3.20641084e-01,
+                5.40977915e-16,
+            ]
+        ),
         decimal=3,
     )
-    npt.assert_almost_equal(V[0, :], np.array([-0.70710678, 0.0, 0.0, -0.0, 0.0, 0.70710678]), decimal=3)
-    npt.assert_almost_equal(b[:6], np.array([-0.1, -0.2, -0.3, -0.1, -0.2, -0.3]), decimal=3)
+    npt.assert_almost_equal(
+        V[0, :], np.array([-0.70710678, 0.0, 0.0, -0.0, 0.0, 0.70710678]), decimal=3
+    )
+    npt.assert_almost_equal(
+        b[:6], np.array([-0.1, -0.2, -0.3, -0.1, -0.2, -0.3]), decimal=3
+    )
 
 
 def test_score_perform_algorithm():
@@ -1092,8 +1496,8 @@ def test_score_perform_algorithm():
         )
 
     # Run Score algorithm
-    cor_global, cor_parent, cor_child, rt_parent_out, rt_child_out = Score.perform_algorithm(
-        rt_parent, rt_child, recursive_outlier_removal=False
+    cor_global, cor_parent, cor_child, rt_parent_out, rt_child_out = (
+        Score.perform_algorithm(rt_parent, rt_child, recursive_outlier_removal=False)
     )
 
     # Check that CoR is close to expected
@@ -1123,12 +1527,21 @@ def test_sara_perform_algorithm():
         )
         # Child rotates around X-axis through CoR
         angle = i * 0.1
-        rt_child[i] = RotoTransMatrix.from_euler_angles_and_translation("xyz", np.array([angle, 0, 0]), cor_expected)
+        rt_child[i] = RotoTransMatrix.from_euler_angles_and_translation(
+            "xyz", np.array([angle, 0, 0]), cor_expected
+        )
 
     # Run Sara algorithm
-    aor_global, aor_parent, aor_child, cor_global, cor_parent, cor_child, rt_parent_out, rt_child_out = (
-        Sara.perform_algorithm(rt_parent, rt_child, recursive_outlier_removal=False)
-    )
+    (
+        aor_global,
+        aor_parent,
+        aor_child,
+        cor_global,
+        cor_parent,
+        cor_child,
+        rt_parent_out,
+        rt_child_out,
+    ) = Sara.perform_algorithm(rt_parent, rt_child, recursive_outlier_removal=False)
 
     # Check that AoR is close to expected (X-axis)
     aor_global_normalized = aor_global / np.linalg.norm(aor_global)
@@ -1139,6 +1552,112 @@ def test_sara_perform_algorithm():
 
     # Check that output RT matrices have same length
     assert len(rt_parent_out) == len(rt_child_out)
+
+
+def test_sara_perfect_hinge_assigns_local_axes_to_the_correct_segments():
+    """
+    SARA should return the parent AoR in the parent local frame and the child AoR
+    in the child local frame when the input RTs are exact model segment frames.
+    """
+    (
+        rt_parent,
+        rt_child,
+        _functional_data,
+        _static_data,
+        _parent_names,
+        _child_names,
+        parent_axis_local,
+        child_axis_local,
+        parent_hinge_local,
+        child_hinge_local,
+        hinge_origin_global,
+    ) = _perfect_hinge_rt_and_markers()
+
+    (
+        _aor_global,
+        aor_parent_local,
+        aor_child_local,
+        _cor_global,
+        cor_parent_local,
+        cor_child_local,
+        _rt_parent_out,
+        _rt_child_out,
+    ) = Sara.perform_algorithm(
+        rt_parent,
+        rt_child,
+        origin_positions_global=hinge_origin_global,
+        recursive_outlier_removal=False,
+    )
+
+    assert abs(float(np.dot(aor_parent_local, parent_axis_local))) > 1.0 - 1e-10
+    assert abs(float(np.dot(aor_child_local, child_axis_local))) > 1.0 - 1e-10
+    parent_global_directions = _global_direction(rt_parent, aor_parent_local)
+    child_global_directions = _global_direction(rt_child, aor_child_local)
+    global_alignment = np.sum(
+        parent_global_directions * child_global_directions, axis=0
+    )
+    npt.assert_array_less(1.0 - 1e-10, np.abs(global_alignment))
+    npt.assert_almost_equal(cor_parent_local.reshape(3), parent_hinge_local, decimal=10)
+    npt.assert_almost_equal(cor_child_local.reshape(3), child_hinge_local, decimal=10)
+
+
+def test_sara_perfect_marker_hinge_uses_static_technical_frames_after_rigidify():
+    """
+    With marker-based rigidification, SARA local axes are expressed in the
+    static technical marker frames. This guards against swapping parent and child
+    columns while documenting why the child local axis can look different from a
+    nominal model-local axis.
+    """
+    (
+        _rt_parent,
+        _rt_child,
+        functional_data,
+        static_data,
+        parent_names,
+        child_names,
+        parent_axis_local,
+        _child_axis_local,
+        _parent_hinge_local,
+        _child_hinge_local,
+        _hinge_origin_global,
+    ) = _perfect_hinge_rt_and_markers()
+
+    parent_functional_data = functional_data.get_partial_dict_data(parent_names)
+    child_functional_data = functional_data.get_partial_dict_data(child_names)
+    parent_static_data = static_data.get_partial_dict_data(parent_names)
+    child_static_data = static_data.get_partial_dict_data(child_names)
+    rt_parent = SegmentCoordinateSystemUtils.rigidify(
+        functional_data=parent_functional_data,
+        static_data=parent_static_data,
+    )
+    rt_child = SegmentCoordinateSystemUtils.rigidify(
+        functional_data=child_functional_data,
+        static_data=child_static_data,
+    )
+
+    (
+        _aor_global,
+        aor_parent_local,
+        aor_child_local,
+        _cor_global,
+        _cor_parent_local,
+        _cor_child_local,
+        _rt_parent_out,
+        _rt_child_out,
+    ) = Sara.perform_algorithm(
+        rt_parent,
+        rt_child,
+        recursive_outlier_removal=False,
+    )
+
+    assert abs(float(np.dot(aor_parent_local, parent_axis_local))) > 1.0 - 1e-10
+    assert abs(float(np.dot(aor_child_local, parent_axis_local))) > 1.0 - 1e-10
+    parent_global_directions = _global_direction(rt_parent, aor_parent_local)
+    child_global_directions = _global_direction(rt_child, aor_child_local)
+    global_alignment = np.sum(
+        parent_global_directions * child_global_directions, axis=0
+    )
+    npt.assert_array_less(1.0 - 1e-10, np.abs(global_alignment))
 
 
 def test_sara_perform_algorithm_with_origin_positions():
@@ -1162,16 +1681,27 @@ def test_sara_perform_algorithm_with_origin_positions():
         )
         # Child rotates around X-axis through CoR
         angle = i * 0.1
-        rt_child[i] = RotoTransMatrix.from_euler_angles_and_translation("xyz", np.array([angle, 0, 0]), cor_expected)
+        rt_child[i] = RotoTransMatrix.from_euler_angles_and_translation(
+            "xyz", np.array([angle, 0, 0]), cor_expected
+        )
 
     # Run Sara algorithm
-    aor_global, aor_parent, aor_child, cor_global, cor_parent, cor_child, rt_parent_out, rt_child_out = (
-        Sara.perform_algorithm(
-            rt_parent,
-            rt_child,
-            origin_positions_global=np.repeat(cor_expected[:, np.newaxis], nb_frames, axis=1),
-            recursive_outlier_removal=False,
-        )
+    (
+        aor_global,
+        aor_parent,
+        aor_child,
+        cor_global,
+        cor_parent,
+        cor_child,
+        rt_parent_out,
+        rt_child_out,
+    ) = Sara.perform_algorithm(
+        rt_parent,
+        rt_child,
+        origin_positions_global=np.repeat(
+            cor_expected[:, np.newaxis], nb_frames, axis=1
+        ),
+        recursive_outlier_removal=False,
     )
 
     # Check that AoR is close to expected (X-axis)
@@ -1180,13 +1710,17 @@ def test_sara_perform_algorithm_with_origin_positions():
 
     # Check that CoR is close to expected on all axes
     npt.assert_almost_equal(cor_global[1:], cor_expected[1:], decimal=1)
-    npt.assert_almost_equal(cor_global, np.array([0.25365385, 0.17884615, 0.26826923]), decimal=6)
+    npt.assert_almost_equal(
+        cor_global, np.array([0.25365385, 0.17884615, 0.26826923]), decimal=6
+    )
 
 
 def test_joint_coordinate_modifier():
     """Test JointCoordinateModifier class"""
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    leg_model_filepath = parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
+    leg_model_filepath = (
+        parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
+    )
     original_model = BiomechanicalModelReal().from_biomod(filepath=leg_model_filepath)
 
     # Create modifier
@@ -1194,7 +1728,10 @@ def test_joint_coordinate_modifier():
 
     # Test that new_model is a copy
     assert modifier.new_model is not modifier.original_model
-    assert modifier.new_model.segments["femur_r"].name == original_model.segments["femur_r"].name
+    assert (
+        modifier.new_model.segments["femur_r"].name
+        == original_model.segments["femur_r"].name
+    )
 
     # Test set_new_model
     new_model = BiomechanicalModelReal().from_biomod(filepath=leg_model_filepath)
@@ -1205,7 +1742,9 @@ def test_joint_coordinate_modifier():
 def test_check_marker_labeling():
     """Test check_marker_labeling method"""
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    knee_functional_trial_path = parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    knee_functional_trial_path = (
+        parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    )
     c3d_data = C3dData(knee_functional_trial_path, first_frame=300, last_frame=399)
 
     parent_name = "femur_r"
@@ -1233,14 +1772,18 @@ def test_check_marker_labeling():
     bad_data[:, 0, 10] += 0.1  # Add large jump
     score.parent_markers_global = bad_data
 
-    with pytest.raises(RuntimeError, match="The parent markers .* seem to be mislabeled"):
+    with pytest.raises(
+        RuntimeError, match="The parent markers .* seem to be mislabeled"
+    ):
         score.check_marker_labeling()
 
 
 def test_check_marker_positions():
     """Test check_marker_positions method"""
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    knee_functional_trial_path = parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    knee_functional_trial_path = (
+        parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    )
     c3d_data = C3dData(knee_functional_trial_path, first_frame=300, last_frame=399)
 
     parent_name = "femur_r"
@@ -1257,8 +1800,12 @@ def test_check_marker_positions():
     )
 
     # Set up marker data
-    score.parent_static_markers_in_global = c3d_data.get_position(parent_marker_names)[:, :, 0:1]
-    score.child_static_markers_in_global = c3d_data.get_position(child_marker_names)[:, :, 0:1]
+    score.parent_static_markers_in_global = c3d_data.get_position(parent_marker_names)[
+        :, :, 0:1
+    ]
+    score.child_static_markers_in_global = c3d_data.get_position(child_marker_names)[
+        :, :, 0:1
+    ]
     score.parent_markers_global = c3d_data.get_position(parent_marker_names)
     score.child_markers_global = c3d_data.get_position(child_marker_names)
 
@@ -1280,8 +1827,12 @@ def test_check_marker_positions():
 def test_extract_scs_from_axis():
     """Test Sara._extract_scs_from_axis"""
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    leg_model_filepath = parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
-    knee_functional_trial_path = parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    leg_model_filepath = (
+        parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
+    )
+    knee_functional_trial_path = (
+        parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    )
     knee_c3d = C3dData(knee_functional_trial_path, first_frame=300, last_frame=399)
 
     scaled_model = BiomechanicalModelReal().from_biomod(filepath=leg_model_filepath)
@@ -1304,7 +1855,9 @@ def test_extract_scs_from_axis():
     longitudinal_axis = np.array([0, 1, 0, 1], dtype=np.float64).reshape(4, 1)  # Y-axis
 
     # Extract SCS
-    scs = sara._extract_scs_from_axis(scaled_model, aor_local, joint_center, longitudinal_axis)
+    scs = sara._extract_scs_from_axis(
+        scaled_model, aor_local, joint_center, longitudinal_axis
+    )
 
     # Check that result is a valid RT matrix
     assert isinstance(scs, RotoTransMatrix)
@@ -1344,8 +1897,8 @@ def test_score_with_nan_frames():
             )
 
     # Run Score algorithm
-    cor_global, cor_parent, cor_child, rt_parent_out, rt_child_out = Score.perform_algorithm(
-        rt_parent, rt_child, recursive_outlier_removal=False
+    cor_global, cor_parent, cor_child, rt_parent_out, rt_child_out = (
+        Score.perform_algorithm(rt_parent, rt_child, recursive_outlier_removal=False)
     )
 
     # Check that algorithm still works
@@ -1356,8 +1909,12 @@ def test_score_with_nan_frames():
 def test_sara_with_longitudinal_axis_direction():
     """Test Sara with different longitudinal axis directions"""
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    leg_model_filepath = parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
-    knee_functional_trial_path = parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    leg_model_filepath = (
+        parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
+    )
+    knee_functional_trial_path = (
+        parent_path + "/examples/data/functional_trials/right_knee.c3d"
+    )
     knee_c3d = C3dData(knee_functional_trial_path, first_frame=300, last_frame=399)
 
     scaled_model = BiomechanicalModelReal().from_biomod(filepath=leg_model_filepath)
@@ -1375,7 +1932,9 @@ def test_sara_with_longitudinal_axis_direction():
         expected_rotation_axis_orientation=Axis("right_knee_sara", "RLFE", "RMFE"),
     )
 
-    joint_center_forward, long_axis_forward = sara_forward._longitudinal_axis(scaled_model)
+    joint_center_forward, long_axis_forward = sara_forward._longitudinal_axis(
+        scaled_model
+    )
 
     # Test with is_longitudinal_axis_from_jcs_to_distal_markers=False
     sara_backward = Sara(
@@ -1390,7 +1949,9 @@ def test_sara_with_longitudinal_axis_direction():
         expected_rotation_axis_orientation=Axis("right_knee_sara", "RLFE", "RMFE"),
     )
 
-    joint_center_backward, long_axis_backward = sara_backward._longitudinal_axis(scaled_model)
+    joint_center_backward, long_axis_backward = sara_backward._longitudinal_axis(
+        scaled_model
+    )
 
     # Joint centers should be the same
     npt.assert_almost_equal(joint_center_forward, joint_center_backward)

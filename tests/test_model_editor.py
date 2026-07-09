@@ -20,7 +20,6 @@ from biobuddy.gui.model_editor import (
     _c3d_file_names_from_folder,
     _c3d_generation_log,
     _export_model_to_path,
-    _functional_frame_selection_summary,
     _joint_name_from_segments,
     _marker_frame_position,
     _matching_c3d_file_for_expected_name,
@@ -114,22 +113,6 @@ def test_workflow_playback_interval_uses_c3d_frame_rate():
     assert _c3d_frame_rate(FakeC3dData()) == 100.0
     assert _workflow_playback_timer_interval_ms(FakeC3dData()) == 10
     assert _workflow_playback_timer_interval_ms(None) == 33
-
-
-def test_functional_frame_selection_summary_describes_manual_use():
-    assert _functional_frame_selection_summary(0, (), enabled=True) == "no frames"
-    assert (
-        _functional_frame_selection_summary(12, ((0, 11),), enabled=False)
-        == "inactive: all valid frames used (12)"
-    )
-    assert (
-        _functional_frame_selection_summary(12, ((1, 3), (7, 7)), enabled=True)
-        == "4/12 frames: 2-4, 8"
-    )
-    assert (
-        _functional_frame_selection_summary(12, ((0, 11),), enabled=True)
-        == "12/12 frames: all"
-    )
 
 
 def test_matching_c3d_file_accepts_short_motive_functional_names(tmp_path):
@@ -301,6 +284,18 @@ def test_preview_projection_keeps_positive_z_visually_up():
 
     assert projected_high_y > projected_low_y
     assert transform((0.0, projected_high_y))[1] < transform((0.0, projected_low_y))[1]
+
+
+def test_preview_projection_ignores_non_finite_points():
+    transform = _fit_projection(
+        [(0.0, 0.0), (np.nan, 1.0), (np.inf, 2.0)],
+        100,
+        80,
+        lambda x, y: (x, y),
+    )
+
+    assert np.all(np.isfinite(transform((0.0, 0.0))))
+    assert np.all(np.isfinite(transform((np.nan, np.inf))))
 
 
 def test_preview_camera_matrix_for_standard_planes():
@@ -587,6 +582,19 @@ def test_marker_frame_position_reads_selected_frame():
             return values
 
     assert _marker_frame_position(FakeC3dData(), "LASI", 1) == (4.0, 5.0, 6.0)
+
+
+def test_marker_frame_position_rejects_non_finite_coordinates():
+    class FakeC3dData:
+        marker_names = ["LASI"]
+        nb_frames = 1
+
+        def get_position(self, marker_names):
+            values = np.ones((4, 1, 1))
+            values[:3, 0, 0] = (1.0, np.inf, 3.0)
+            return values
+
+    assert _marker_frame_position(FakeC3dData(), "LASI", 0) is None
 
 
 def test_rab2002_geometry_uses_static_markers_and_editable_fraction():
