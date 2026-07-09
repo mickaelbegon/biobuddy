@@ -11,10 +11,9 @@ from .c3d_model_creation import (
 )
 
 DEFAULT_MOTIVE_57_C3D_FOLDER = Path("/Users/mickaelbegon/Downloads/data/Motive")
-DEFAULT_P6_MOTIVE_C3D_FOLDER = Path(
-    "/Users/mickaelbegon/Documents/GIT/captury_models/local_trials/2026-06-30_P6_flat/Motive"
-)
-DEFAULT_P6_MOTIVE_MARKER_PREFIXES = ("Skeleton_001_",)
+DEFAULT_EXAMPLES_DATA_FOLDER = Path(__file__).resolve().parents[2] / "examples" / "data"
+DEFAULT_P6_MOTIVE_C3D_FOLDER = DEFAULT_EXAMPLES_DATA_FOLDER / "motive_57_p6"
+DEFAULT_P6_MOTIVE_MARKER_PREFIXES = ()
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -44,7 +43,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--p6-motive",
         action="store_true",
         help=(
-            "Shortcut for --preset motive_57 with the flattened P6 Motive C3D folder "
+            "Shortcut for --preset motive_57 with the bundled lightweight P6 Motive C3D example "
             f"({DEFAULT_P6_MOTIVE_C3D_FOLDER})."
         ),
     )

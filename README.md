@@ -411,7 +411,10 @@ folder for this preset. The lightweight C3D files in `examples/data/full_body_mo
 full-body Model202 calibration folder; they are renamed to generic `Test_*` names, stripped from participant prefixes,
 filtered to frames where the markers required by the corresponding SCoRE/SARA/static role are valid, subsampled to one
 valid frame out of ten, and saved without analog channels. For this full-body preset, `Test_anato.c3d` is used as the
-main C3D so the model starts from the anatomical posture.
+main C3D so the model starts from the anatomical posture. The lightweight C3D files in
+`examples/data/motive_57_p6` provide a ready-to-use Motive (57) calibration folder; they are renamed to generic
+`Example_*` names, stripped from capture skeleton prefixes, filtered to valid static/SCoRE/SARA frames, subsampled to
+one valid frame out of five, and saved without analog channels.
 ![model_graph](docs/images/model_graph.png)
 
 

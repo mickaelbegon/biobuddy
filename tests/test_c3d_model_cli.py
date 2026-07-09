@@ -82,7 +82,7 @@ def test_build_c3d_model_cli_p6_shortcut_uses_p6_folder(monkeypatch):
                 "output": None,
                 "add_default_virtual_points": True,
                 "with_mesh": True,
-                "marker_name_prefixes_to_strip": ("Skeleton_001_",),
+                "marker_name_prefixes_to_strip": (),
                 "quiet": True,
             },
         )
