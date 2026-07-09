@@ -31,9 +31,7 @@ def requires_initialization(method):
     @wraps(method)
     def wrapper(self, *args, **kwargs):
         if not self.is_initialized:
-            raise RuntimeError(
-                f"{method.__name__} cannot be called because the object is not initialized."
-            )
+            raise RuntimeError(f"{method.__name__} cannot be called because the object is not initialized.")
         return method(self, *args, **kwargs)
 
     return wrapper
@@ -74,13 +72,8 @@ class ModelDynamics:
         else:
             # In global -> need to transform it into local coordinates
             parent_name = self.segments[segment_name].parent_name
-            parent_scs = self.segment_coordinate_system_in_global(
-                segment_name=parent_name
-            )
-            scs_in_local = (
-                parent_scs.inverse
-                @ self.segments[segment_name].segment_coordinate_system.scs
-            )
+            parent_scs = self.segment_coordinate_system_in_global(segment_name=parent_name)
+            scs_in_local = parent_scs.inverse @ self.segments[segment_name].segment_coordinate_system.scs
             return RotoTransMatrix.from_closest_rt_matrix(scs_in_local.rt_matrix)
 
     @requires_initialization
@@ -112,16 +105,12 @@ class ModelDynamics:
                 if current_parent_name == "base":
                     break
                 current_segment = self.segments[current_parent_name]
-                rt_to_global = (
-                    current_segment.segment_coordinate_system.scs @ rt_to_global
-                )
+                rt_to_global = current_segment.segment_coordinate_system.scs @ rt_to_global
 
             return RotoTransMatrix.from_closest_rt_matrix(rt_to_global.rt_matrix)
 
     @requires_initialization
-    def rt_from_parent_offset_to_real_segment(
-        self, segment_name: str
-    ) -> RotoTransMatrix:
+    def rt_from_parent_offset_to_real_segment(self, segment_name: str) -> RotoTransMatrix:
         """
         Computes the RotoTransMatrix from the [segment_name]_parent_offset to the real [segment_name] segment.
         """
@@ -135,15 +124,10 @@ class ModelDynamics:
             else:
                 return RotoTransMatrix()
         else:
-            rt = (
-                self.segments[segment_name].segment_coordinate_system.scs
-                @ RotoTransMatrix()
-            )
+            rt = self.segments[segment_name].segment_coordinate_system.scs @ RotoTransMatrix()
             while parent_name != parent_offset_name:
                 if parent_name == "base":
-                    raise RuntimeError(
-                        f"The parent offset of segment {segment_name} was not found."
-                    )
+                    raise RuntimeError(f"The parent offset of segment {segment_name} was not found.")
                 rt = self.segments[parent_name].segment_coordinate_system.scs @ rt
                 parent_name = self.segments[parent_name].parent_name
 
@@ -169,9 +153,7 @@ class ModelDynamics:
             markers_model = np.zeros((3, nb_markers, 1))
             for i_marker in range(nb_markers):
                 if model.markerNames()[i_marker].to_string() in marker_names:
-                    markers_model[:, i_marker, 0] = model.marker(
-                        q, i_marker, True
-                    ).to_array()
+                    markers_model[:, i_marker, 0] = model.marker(q, i_marker, True).to_array()
         else:
             markers_model = np.array(model.markers_in_global(q))
 
@@ -224,9 +206,7 @@ class ModelDynamics:
             markers_model = np.zeros((3, nb_markers, 1))
             for i_marker in range(nb_markers):
                 if model.markerNames()[i_marker].to_string() in marker_names:
-                    markers_model[:, i_marker, 0] = model.marker(
-                        q, i_marker, True
-                    ).to_array()
+                    markers_model[:, i_marker, 0] = model.marker(q, i_marker, True).to_array()
         else:
             markers_model = np.array(model.markers_in_global(q))
 
@@ -261,24 +241,15 @@ class ModelDynamics:
             for i_marker in range(nb_markers):
                 if model.markerNames()[i_marker].to_string() in marker_names:
                     jacobian_matrix[:, i_marker, :] = (
-                        model.markersJacobian(q)[i_marker].to_array()
-                        * marker_weights_reordered[i_marker]
+                        model.markersJacobian(q)[i_marker].to_array() * marker_weights_reordered[i_marker]
                     )
         else:
-            jacobian_matrix = (
-                np.array(model.markers_jacobian(q)) * marker_weights_reordered
-            )
+            jacobian_matrix = np.array(model.markers_jacobian(q)) * marker_weights_reordered
 
         for i_marker in range(nb_markers):
-            marker_name = (
-                model.markerNames()[i_marker].to_string()
-                if with_biorbd
-                else model.marker_names[i_marker]
-            )
+            marker_name = model.markerNames()[i_marker].to_string() if with_biorbd else model.marker_names[i_marker]
             if marker_name in marker_names:
-                vec_jacobian[i_marker * 3 : (i_marker + 1) * 3, :] = jacobian_matrix[
-                    :, i_marker, :
-                ]
+                vec_jacobian[i_marker * 3 : (i_marker + 1) * 3, :] = jacobian_matrix[:, i_marker, :]
 
         offset = nb_markers * 3
         if np.sum(q_regularization_weight) > 0:
@@ -338,10 +309,7 @@ class ModelDynamics:
             # biorbd (in c++) is quicker than this custom Python code, which makes a large difference here
             import biorbd  # type: ignore
 
-            current_path = (
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                + "/../temporary_models"
-            )
+            current_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/../temporary_models"
             temporary_model_path = current_path + "/temporary_rt.bioMod"
             mesh_relative_path = "Geometry_cleaned"
             if os.path.exists(current_path + "/" + mesh_relative_path):
@@ -360,9 +328,7 @@ class ModelDynamics:
             _logger.info(
                 f"Using slower Python code for the inverse kinematics as either biorbd is not installed or the model is not compatible with biorbd."
             )
-            raise NotImplementedError(
-                "Your model was not biomodable. This is not handled, yet."
-            )
+            raise NotImplementedError("Your model was not biomodable. This is not handled, yet.")
 
         nb_q = self.nb_q
         nb_markers = len(marker_names)
@@ -374,9 +340,7 @@ class ModelDynamics:
             )
 
         if marker_positions.shape[0] == 4:
-            marker_positions = marker_positions[
-                :3, :, :
-            ]  # Remove the homogeneous coordinate if present
+            marker_positions = marker_positions[:3, :, :]  # Remove the homogeneous coordinate if present
         if marker_positions.shape[0] != 3:
             raise RuntimeError(
                 f"The marker_positions must be of shape (3, nb_markers, nb_frames). Here the shape provided is {marker_positions.shape}"
@@ -401,9 +365,7 @@ class ModelDynamics:
                         f"Marker {marker_name} not found in marker_weights. Please provide a weight to each markers or None of them."
                     )
             for i_marker in range(nb_reordered_markers):
-                marker_weights_reordered[i_marker] = marker_weights[
-                    marker_names_reordered[i_marker]
-                ].weight
+                marker_weights_reordered[i_marker] = marker_weights[marker_names_reordered[i_marker]].weight
 
         init = np.ones((nb_q,)) * 0.0001
         if q_target is not None:
@@ -412,9 +374,7 @@ class ModelDynamics:
             q_target = np.zeros((self.nb_q, 1))
 
         if q_regularization_weight is None:
-            q_regularization_weight = np.zeros(
-                (self.nb_q,)
-            )  # No regularization by default
+            q_regularization_weight = np.zeros((self.nb_q,))  # No regularization by default
         elif isinstance(q_regularization_weight, (int, float)):
             q_regularization_weight = np.ones((self.nb_q,)) * q_regularization_weight
         else:
@@ -424,13 +384,9 @@ class ModelDynamics:
                 )
 
         if qdot_regularization_weight is None:
-            qdot_regularization_weight = np.zeros(
-                (self.nb_q,)
-            )  # No regularization by default
+            qdot_regularization_weight = np.zeros((self.nb_q,))  # No regularization by default
         elif isinstance(qdot_regularization_weight, (int, float)):
-            qdot_regularization_weight = (
-                np.ones((self.nb_q,)) * qdot_regularization_weight
-            )
+            qdot_regularization_weight = np.ones((self.nb_q,)) * qdot_regularization_weight
         else:
             if len(qdot_regularization_weight) != self.nb_q:
                 raise RuntimeError(
@@ -516,17 +472,13 @@ class ModelDynamics:
                 viz_scaled_model.options.show_gravity = True
                 viz_scaled_model.options.show_marker_labels = False
                 viz_scaled_model.options.show_center_of_mass_labels = False
-                viz.add_animated_model(
-                    viz_scaled_model, optimal_q, tracked_markers=pyomarkers
-                )
+                viz.add_animated_model(viz_scaled_model, optimal_q, tracked_markers=pyomarkers)
                 viz.rerun_by_frame("Model output")
 
         return optimal_q, residuals
 
     @requires_initialization
-    def forward_kinematics(
-        self, q: np.ndarray = None
-    ) -> dict[str, RotoTransMatrixTimeSeries]:
+    def forward_kinematics(self, q: np.ndarray = None) -> dict[str, RotoTransMatrixTimeSeries]:
         """
         Applied the generalized coordinates to move find the position and orientation of the model's segments.
         Here, we assume that the parent is always defined before the child in the model.
@@ -560,13 +512,9 @@ class ModelDynamics:
                     full_rt = parent_rt @ segment_rt
                 else:
                     local_q = q[self.dof_indices(segment_name), i_frame]
-                    rt_caused_by_q = self.segments[segment_name].rt_from_local_q(
-                        local_q
-                    )
+                    rt_caused_by_q = self.segments[segment_name].rt_from_local_q(local_q)
                     full_rt = parent_rt @ segment_rt @ rt_caused_by_q
-                segment_rt_in_global[segment_name][i_frame] = (
-                    RotoTransMatrix.from_closest_rt_matrix(full_rt.rt_matrix)
-                )
+                segment_rt_in_global[segment_name][i_frame] = RotoTransMatrix.from_closest_rt_matrix(full_rt.rt_matrix)
 
         return segment_rt_in_global
 
@@ -620,19 +568,15 @@ class ModelDynamics:
                         point_in_local=contact.position,
                         jcs_in_global=jcs_in_global[segment.name][i_frame],
                     )
-                    contact_positions[:, i_contact, i_frame] = (
-                        contact_in_global.reshape(
-                            -1,
-                        )
+                    contact_positions[:, i_contact, i_frame] = contact_in_global.reshape(
+                        -1,
                     )
                     i_contact += 1
 
         return contact_positions
 
     @requires_initialization
-    def segment_com_in_global(
-        self, segment_name: str, q: np.ndarray = None
-    ) -> np.ndarray:
+    def segment_com_in_global(self, segment_name: str, q: np.ndarray = None) -> np.ndarray:
         q = np.zeros((self.nb_q, 1)) if q is None else q
         if len(q.shape) == 1:
             q = q[:, np.newaxis]
@@ -648,9 +592,7 @@ class ModelDynamics:
             jcs_in_global = self.forward_kinematics(q)
             for i_frame in range(nb_frames):
                 segment_com_in_global = point_from_local_to_global(
-                    point_in_local=self.segments[
-                        segment_name
-                    ].inertia_parameters.center_of_mass,
+                    point_in_local=self.segments[segment_name].inertia_parameters.center_of_mass,
                     jcs_in_global=jcs_in_global[segment_name][i_frame],
                 )
                 com_position[:, i_frame] = segment_com_in_global.reshape(
@@ -660,9 +602,7 @@ class ModelDynamics:
         return com_position
 
     @requires_initialization
-    def muscle_origin_in_global(
-        self, muscle_name: str, q: np.ndarray = None
-    ) -> np.ndarray:
+    def muscle_origin_in_global(self, muscle_name: str, q: np.ndarray = None) -> np.ndarray:
         q = np.zeros((self.nb_q, 1)) if q is None else q
         if len(q.shape) == 1:
             q = q[:, np.newaxis]
@@ -679,9 +619,7 @@ class ModelDynamics:
                     for i_frame in range(nb_frames):
                         origin_position[:, i_frame] = point_from_local_to_global(
                             point_in_local=muscle.origin_position.position,
-                            jcs_in_global=jcs_in_global[
-                                muscle_group.origin_parent_name
-                            ][i_frame],
+                            jcs_in_global=jcs_in_global[muscle_group.origin_parent_name][i_frame],
                         ).reshape(
                             -1,
                         )
@@ -689,9 +627,7 @@ class ModelDynamics:
         return origin_position
 
     @requires_initialization
-    def muscle_insertion_in_global(
-        self, muscle_name: str, q: np.ndarray = None
-    ) -> np.ndarray:
+    def muscle_insertion_in_global(self, muscle_name: str, q: np.ndarray = None) -> np.ndarray:
         q = np.zeros((self.nb_q, 1)) if q is None else q
         if len(q.shape) == 1:
             q = q[:, np.newaxis]
@@ -708,9 +644,7 @@ class ModelDynamics:
                     for i_frame in range(nb_frames):
                         insertion_position[:, i_frame] = point_from_local_to_global(
                             point_in_local=muscle.insertion_position.position,
-                            jcs_in_global=jcs_in_global[
-                                muscle_group.insertion_parent_name
-                            ][i_frame],
+                            jcs_in_global=jcs_in_global[muscle_group.insertion_parent_name][i_frame],
                         ).reshape(
                             -1,
                         )
@@ -718,9 +652,7 @@ class ModelDynamics:
         return insertion_position
 
     @requires_initialization
-    def via_points_in_global(
-        self, muscle_name: str, q: np.ndarray = None
-    ) -> np.ndarray:
+    def via_points_in_global(self, muscle_name: str, q: np.ndarray = None) -> np.ndarray:
         q = np.zeros((self.nb_q, 1)) if q is None else q
         if len(q.shape) == 1:
             q = q[:, np.newaxis]
@@ -739,9 +671,7 @@ class ModelDynamics:
                         for i_frame in range(nb_frames):
                             this_via_point[:, i_frame] = point_from_local_to_global(
                                 point_in_local=via_point.position,
-                                jcs_in_global=jcs_in_global[via_point.parent_name][
-                                    i_frame
-                                ],
+                                jcs_in_global=jcs_in_global[via_point.parent_name][i_frame],
                             ).reshape(
                                 -1,
                             )
@@ -766,10 +696,7 @@ class ModelDynamics:
         for segment_name in self.segments.keys():
             this_segment_com = self.segment_com_in_global(segment_name, q=q)
             if this_segment_com is not None:
-                com_position += (
-                    this_segment_com
-                    * self.segments[segment_name].inertia_parameters.mass
-                )
+                com_position += this_segment_com * self.segments[segment_name].inertia_parameters.mass
 
         com_position[:3, :] /= self.mass
         com_position[3, :] = 1.0  # Set the homogeneous coordinate to 1
@@ -810,9 +737,7 @@ class ModelDynamics:
         return jac
 
     @requires_initialization
-    def muscle_tendon_length(
-        self, muscle_name: str, q: np.ndarray = None
-    ) -> np.ndarray:
+    def muscle_tendon_length(self, muscle_name: str, q: np.ndarray = None) -> np.ndarray:
         """
         Computes the length of the muscle + tendon unit.
         Please note that the muscle trajectory is computed based on the order of declaration of the via points in the model.
@@ -851,9 +776,7 @@ class ModelDynamics:
                         muscle_origin = muscle.origin_position.position
                         muscle_origin_parent_name = muscle.origin_position.parent_name
                         muscle_insertion = muscle.insertion_position.position
-                        muscle_insertion_parent_name = (
-                            muscle.insertion_position.parent_name
-                        )
+                        muscle_insertion_parent_name = muscle.insertion_position.parent_name
                         muscle_found = True
                         break
                 if muscle_found:
@@ -865,25 +788,15 @@ class ModelDynamics:
                 or muscle_origin is None
                 or muscle_insertion is None
             ):
-                raise RuntimeError(
-                    f"The muscle {muscle_name} was not found in the model."
-                )
+                raise RuntimeError(f"The muscle {muscle_name} was not found in the model.")
 
-            origin_position = (
-                global_jcs[muscle_origin_parent_name][i_frame] @ muscle_origin
-            )
-            insertion_position = (
-                global_jcs[muscle_insertion_parent_name][i_frame] @ muscle_insertion
-            )
+            origin_position = global_jcs[muscle_origin_parent_name][i_frame] @ muscle_origin
+            insertion_position = global_jcs[muscle_insertion_parent_name][i_frame] @ muscle_insertion
 
-            muscle_trajectory = (
-                [origin_position] + muscle_via_points + [insertion_position]
-            )
+            muscle_trajectory = [origin_position] + muscle_via_points + [insertion_position]
             muscle_norm = 0
             for i_point in range(len(muscle_trajectory) - 1):
-                muscle_norm += np.linalg.norm(
-                    muscle_trajectory[i_point + 1][:3] - muscle_trajectory[i_point][:3]
-                )
+                muscle_norm += np.linalg.norm(muscle_trajectory[i_point + 1][:3] - muscle_trajectory[i_point][:3])
             muscle_tendon_length[i_frame] = muscle_norm
 
         return muscle_tendon_length
@@ -906,24 +819,14 @@ class ModelDynamics:
         global_jcs = self.forward_kinematics(q)
 
         ligament_origin = self.ligaments[ligament_name].origin_position.position
-        ligament_origin_parent_name = self.ligaments[
-            ligament_name
-        ].origin_position.parent_name
+        ligament_origin_parent_name = self.ligaments[ligament_name].origin_position.parent_name
         ligament_insertion = self.ligaments[ligament_name].insertion_position.position
-        ligament_insertion_parent_name = self.ligaments[
-            ligament_name
-        ].insertion_position.parent_name
+        ligament_insertion_parent_name = self.ligaments[ligament_name].insertion_position.parent_name
 
         for i_frame in range(nb_frames):
-            origin_position = (
-                global_jcs[ligament_origin_parent_name][i_frame] @ ligament_origin
-            )
-            insertion_position = (
-                global_jcs[ligament_insertion_parent_name][i_frame] @ ligament_insertion
-            )
-            ligament_length[i_frame] = np.linalg.norm(
-                insertion_position[:3] - origin_position[:3]
-            )
+            origin_position = global_jcs[ligament_origin_parent_name][i_frame] @ ligament_origin
+            insertion_position = global_jcs[ligament_insertion_parent_name][i_frame] @ ligament_insertion
+            ligament_length[i_frame] = np.linalg.norm(insertion_position[:3] - origin_position[:3])
 
         return ligament_length
 
@@ -940,17 +843,11 @@ class ModelDynamics:
 
             origin_parent = ligament.origin_parent_name
             insertion_parent = ligament.insertion_parent_name
-            if (
-                len(self.get_chain_between_segments(insertion_parent, origin_parent))
-                > 0
-            ):
+            if len(self.get_chain_between_segments(insertion_parent, origin_parent)) > 0:
                 # origin -> insertion
                 this_parent_name = origin_parent
                 end_of_the_chain_name = insertion_parent
-            elif (
-                len(self.get_chain_between_segments(origin_parent, insertion_parent))
-                > 0
-            ):
+            elif len(self.get_chain_between_segments(origin_parent, insertion_parent)) > 0:
                 # insertion -> origin
                 this_parent_name = insertion_parent
                 end_of_the_chain_name = origin_parent
@@ -968,10 +865,7 @@ class ModelDynamics:
                     dof_indices = self.dof_indices(this_parent_name)
                     dof_min = self.segments[this_parent_name].q_ranges.min_bound
                     dof_max = self.segments[this_parent_name].q_ranges.max_bound
-                    dof_ranges += [
-                        (dof_index, dof_min[i], dof_max[i])
-                        for i, dof_index in enumerate(dof_indices)
-                    ]
+                    dof_ranges += [(dof_index, dof_min[i], dof_max[i]) for i, dof_index in enumerate(dof_indices)]
                 this_parent_name = self.segments[this_parent_name].parent_name
 
             q_min = np.zeros((self.nb_q, 1))
@@ -983,13 +877,9 @@ class ModelDynamics:
             length_q_min = self.ligament_length(ligament.name, q_min)
             length_q_max = self.ligament_length(ligament.name, q_max)
             if length_q_min < ligament.ligament_slack_length:
-                _logger.warning(
-                    f"The ligament {ligament.name} is slack at the minimum of the DoF range."
-                )
+                _logger.warning(f"The ligament {ligament.name} is slack at the minimum of the DoF range.")
             if length_q_max < ligament.ligament_slack_length:
-                _logger.warning(
-                    f"The ligament {ligament.name} is slack at the maximum of the DoF range."
-                )
+                _logger.warning(f"The ligament {ligament.name} is slack at the maximum of the DoF range.")
             ligament_length_ranges[ligament.name] = (
                 ligament.ligament_slack_length,
                 max(length_q_min, length_q_max),
@@ -1007,9 +897,7 @@ class ModelDynamics:
         if view_as == ViewAs.BIORBD:
             if model_path is None or not model_path.endswith(".bioMod"):
                 current_path_file = Path(__file__).parent
-                model_path = (
-                    f"{current_path_file}/../../temporary_models/temporary.bioMod"
-                )
+                model_path = f"{current_path_file}/../../temporary_models/temporary.bioMod"
                 if self.has_mesh_files:
                     # TODO: match the mesh_file directory to allow seeing the mesh files too
                     self.to_biomod(model_path, with_mesh=False)
@@ -1021,9 +909,7 @@ class ModelDynamics:
                 try:
                     import bioviz  # type: ignore
                 except ImportError:
-                    _logger.error(
-                        "bioviz is not installed. Cannot animate the model with BIOVIZ."
-                    )
+                    _logger.error("bioviz is not installed. Cannot animate the model with BIOVIZ.")
                     return
 
                 viz = bioviz.Viz(model_path)
@@ -1033,22 +919,16 @@ class ModelDynamics:
                 try:
                     import pyorerun  # type: ignore
                 except ImportError:
-                    _logger.error(
-                        "pyorerun is not installed. Cannot animate the model."
-                    )
+                    _logger.error("pyorerun is not installed. Cannot animate the model.")
                     return
 
-                animation = pyorerun.LiveModelAnimation.from_file(
-                    model_path, with_q_charts=True
-                )
+                animation = pyorerun.LiveModelAnimation.from_file(model_path, with_q_charts=True)
                 animation.options.set_all_labels(False)
                 animation.rerun()
                 return
 
             else:
-                raise RuntimeError(
-                    f"The viewer_type {viewer_type} is not recognized for model type {view_as}."
-                )
+                raise RuntimeError(f"The viewer_type {viewer_type} is not recognized for model type {view_as}.")
 
         else:
             raise NotImplementedError(

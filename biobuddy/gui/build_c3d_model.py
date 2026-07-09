@@ -22,17 +22,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     Build the command-line parser for C3D-driven model creation.
     """
     parser = argparse.ArgumentParser(
-        description=(
-            "Build a BioBuddy biomechanical model directly from calibration C3D files."
-        )
+        description=("Build a BioBuddy biomechanical model directly from calibration C3D files.")
     )
     parser.add_argument(
         "c3d_folder",
         nargs="?",
         default=str(DEFAULT_MOTIVE_57_C3D_FOLDER),
         help=(
-            "Folder containing the static/main and functional C3D files. "
-            f"Default: {DEFAULT_MOTIVE_57_C3D_FOLDER}"
+            "Folder containing the static/main and functional C3D files. " f"Default: {DEFAULT_MOTIVE_57_C3D_FOLDER}"
         ),
     )
     parser.add_argument(
@@ -56,10 +53,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "-o",
         type=Path,
         default=None,
-        help=(
-            "Output .bioMod path. Defaults to the generated preset filename inside "
-            "the C3D folder."
-        ),
+        help=("Output .bioMod path. Defaults to the generated preset filename inside " "the C3D folder."),
     )
     parser.add_argument(
         "--no-default-virtual-points",
@@ -103,9 +97,7 @@ def build_model_from_c3d_cli(
         raise NotADirectoryError(f"C3D folder is not a directory: {folder_path}")
 
     static_virtual_points = (
-        default_static_virtual_points_for_c3d_model_preset(preset_value)
-        if add_default_virtual_points
-        else ()
+        default_static_virtual_points_for_c3d_model_preset(preset_value) if add_default_virtual_points else ()
     )
 
     def progress(message: str) -> None:
@@ -119,19 +111,13 @@ def build_model_from_c3d_cli(
         marker_name_prefixes_to_strip=marker_name_prefixes_to_strip,
         progress_callback=progress,
     )
-    output_path = (
-        Path(output).expanduser()
-        if output is not None
-        else folder_path / result.output_filename
-    )
+    output_path = Path(output).expanduser() if output is not None else folder_path / result.output_filename
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result.model.to_biomod(filepath=str(output_path), with_mesh=with_mesh)
 
     if not quiet:
         print(f"Preset: {result.preset.value}", flush=True)
-        print(
-            f"Static/main markers: {len(result.static_data.marker_names)}", flush=True
-        )
+        print(f"Static/main markers: {len(result.static_data.marker_names)}", flush=True)
         print(
             f"Functional trials: {', '.join(sorted(result.functional_data))}",
             flush=True,
@@ -148,9 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     c3d_folder = DEFAULT_P6_MOTIVE_C3D_FOLDER if args.p6_motive else args.c3d_folder
     preset = C3dModelPreset.MOTIVE_57 if args.p6_motive else args.preset
-    marker_name_prefixes_to_strip = (
-        DEFAULT_P6_MOTIVE_MARKER_PREFIXES if args.p6_motive else ()
-    )
+    marker_name_prefixes_to_strip = DEFAULT_P6_MOTIVE_MARKER_PREFIXES if args.p6_motive else ()
     try:
         build_model_from_c3d_cli(
             c3d_folder,

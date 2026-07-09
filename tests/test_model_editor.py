@@ -155,9 +155,7 @@ def test_segment_length_uses_selected_segment_and_child_origins():
         }
     )
 
-    proximal_markers, distal_markers, source = _segment_length_marker_groups(
-        draft, "Thigh"
-    )
+    proximal_markers, distal_markers, source = _segment_length_marker_groups(draft, "Thigh")
     length, length_source = _segment_length_from_draft(draft, c3d_data, "Thigh")
 
     assert proximal_markers == ("Hip",)
@@ -208,24 +206,15 @@ def test_virtual_marker_axis_list_text_can_remove_axis_from_draft():
     updated_draft = remove_axis_from_draft(draft, axis_name)
 
     assert axis_name == "Axis_LKnee_SARA"
-    assert (
-        _virtual_axis_name_from_feature_list_text(
-            "CoR_LThigh_in_Pelvis | LThigh | score"
-        )
-        is None
-    )
+    assert _virtual_axis_name_from_feature_list_text("CoR_LThigh_in_Pelvis | LThigh | score") is None
     assert any(axis.name == "Axis_LKnee_SARA" for axis in draft.axes)
     assert all(axis.name != "Axis_LKnee_SARA" for axis in updated_draft.axes)
 
 
 def test_virtual_marker_list_shows_only_named_sara_virtual_axes():
     draft = c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS)
-    named_sara_axis = next(
-        axis for axis in draft.axes if axis.name == "Axis_LKnee_SARA"
-    )
-    anatomical_sara_axis = next(
-        axis for axis in draft.axes if axis.name == "LShank_second_axis"
-    )
+    named_sara_axis = next(axis for axis in draft.axes if axis.name == "Axis_LKnee_SARA")
+    anatomical_sara_axis = next(axis for axis in draft.axes if axis.name == "LShank_second_axis")
 
     assert _is_virtual_feature_axis(named_sara_axis)
     assert not _is_virtual_feature_axis(anatomical_sara_axis)
@@ -247,14 +236,10 @@ def test_motive_57_virtual_feature_list_shows_knee_aors():
     labels = _virtual_feature_list_labels(draft)
 
     assert any(
-        label.startswith("[axis] Axis_LKnee_SARA")
-        and "| LShank | AoR (sara_direction) |" in label
-        for label in labels
+        label.startswith("[axis] Axis_LKnee_SARA") and "| LShank | AoR (sara_direction) |" in label for label in labels
     )
     assert any(
-        label.startswith("[axis] Axis_RKnee_SARA")
-        and "| RShank | AoR (sara_direction) |" in label
-        for label in labels
+        label.startswith("[axis] Axis_RKnee_SARA") and "| RShank | AoR (sara_direction) |" in label for label in labels
     )
 
 
@@ -262,9 +247,7 @@ def test_motive_57_unassigned_markers_remain_available_to_gui():
     draft = c3d_workflow_draft(C3dModelPreset.MOTIVE_57)
 
     marker_pool = _marker_pool_from_draft(draft)
-    unassigned_markers = _unassigned_marker_names(
-        marker_pool, draft.segment_marker_groups
-    )
+    unassigned_markers = _unassigned_marker_names(marker_pool, draft.segment_marker_groups)
 
     assert {"RCAJ", "LCAJ", "RHGT", "LHGT", "RDP1", "LDP1"} <= set(marker_pool)
     assert {"RCAJ", "LCAJ", "RHGT", "LHGT", "RDP1", "LDP1"} <= set(unassigned_markers)
@@ -272,9 +255,7 @@ def test_motive_57_unassigned_markers_remain_available_to_gui():
 
 def test_preview_projection_keeps_positive_z_visually_up():
     _x, projected_low_y, _depth = _preview_camera_coordinates((0.0, 0.0, 0.0), 0.0, 0.0)
-    _x, projected_high_y, _depth = _preview_camera_coordinates(
-        (0.0, 0.0, 1.0), 0.0, 0.0
-    )
+    _x, projected_high_y, _depth = _preview_camera_coordinates((0.0, 0.0, 1.0), 0.0, 0.0)
     transform = _fit_projection(
         [(0.0, projected_low_y), (0.0, projected_high_y)],
         100,
@@ -301,15 +282,9 @@ def test_preview_projection_ignores_non_finite_points():
 def test_preview_camera_matrix_for_standard_planes():
     point = (1.0, 2.0, 3.0)
 
-    assert _preview_camera_coordinates(
-        point, _preview_camera_matrix_for_plane("XY"), 0.0
-    ) == (1.0, 2.0, 3.0)
-    assert _preview_camera_coordinates(
-        point, _preview_camera_matrix_for_plane("YZ"), 0.0
-    ) == (2.0, 3.0, 1.0)
-    assert _preview_camera_coordinates(
-        point, _preview_camera_matrix_for_plane("ZX"), 0.0
-    ) == (3.0, 1.0, 2.0)
+    assert _preview_camera_coordinates(point, _preview_camera_matrix_for_plane("XY"), 0.0) == (1.0, 2.0, 3.0)
+    assert _preview_camera_coordinates(point, _preview_camera_matrix_for_plane("YZ"), 0.0) == (2.0, 3.0, 1.0)
+    assert _preview_camera_coordinates(point, _preview_camera_matrix_for_plane("ZX"), 0.0) == (3.0, 1.0, 2.0)
 
 
 def test_preview_camera_matrix_for_subject_views_uses_global_vertical_and_pca():
@@ -323,23 +298,17 @@ def test_preview_camera_matrix_for_subject_views_uses_global_vertical_and_pca():
     }
     point = (1.0, 2.0, 3.0)
 
-    assert _preview_camera_coordinates(
-        point, _preview_camera_matrix_for_subject_view("face", markers), 0.0
-    ) == (
+    assert _preview_camera_coordinates(point, _preview_camera_matrix_for_subject_view("face", markers), 0.0) == (
         1.0,
         3.0,
         2.0,
     )
-    assert _preview_camera_coordinates(
-        point, _preview_camera_matrix_for_subject_view("dos", markers), 0.0
-    ) == (
+    assert _preview_camera_coordinates(point, _preview_camera_matrix_for_subject_view("dos", markers), 0.0) == (
         -1.0,
         3.0,
         -2.0,
     )
-    assert _preview_camera_coordinates(
-        point, _preview_camera_matrix_for_subject_view("cote", markers), 0.0
-    ) == (
+    assert _preview_camera_coordinates(point, _preview_camera_matrix_for_subject_view("cote", markers), 0.0) == (
         2.0,
         3.0,
         1.0,
@@ -387,9 +356,7 @@ def test_virtual_marker_whole_body_preview_keeps_all_markers_while_dragging():
 def test_lower_limb_functional_sara_axes_do_not_trigger_missing_xyz_warning():
     draft = c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS)
 
-    coordinate_system_step = next(
-        step for step in c3d_workflow_progress(draft) if step.number == 6
-    )
+    coordinate_system_step = next(step for step in c3d_workflow_progress(draft) if step.number == 6)
 
     assert coordinate_system_step.status == "done"
     assert "functional reference" in coordinate_system_step.detail
@@ -412,11 +379,9 @@ def test_anatomical_axis_preview_builds_rgb_local_frame_from_two_vectors():
 
 def test_axis_projection_payload_parses_point_and_axis_sources():
     point_markers = _axis_projection_point_markers_from_payload("point=LKNE,LKNEM")
-    axis_reference, axis_start, axis_end = _axis_projection_axis_from_payload(
-        "axis=Axis_LKnee_SARA"
-    )
-    marker_axis_reference, marker_axis_start, marker_axis_end = (
-        _axis_projection_axis_from_payload("axis_start=LKNE,LKNEM; axis_end=LANK,LANKM")
+    axis_reference, axis_start, axis_end = _axis_projection_axis_from_payload("axis=Axis_LKnee_SARA")
+    marker_axis_reference, marker_axis_start, marker_axis_end = _axis_projection_axis_from_payload(
+        "axis_start=LKNE,LKNEM; axis_end=LANK,LANKM"
     )
 
     assert point_markers == ("LKNE", "LKNEM")
@@ -437,17 +402,9 @@ def test_anatomical_axis_source_labels_include_all_virtual_markers_and_axes():
     assert "CoR_LFoot_wrt_LShank | virtual marker | LFoot" in labels
     assert "[axis] Axis_LKnee_SARA | AoR virtual axis | LShank" in labels
     assert "[axis] LShank_second_axis | AoR virtual axis | LShank" not in labels
+    assert _axis_source_name_from_list_text("[axis] Axis_LKnee_SARA | AoR virtual axis | LShank") == "Axis_LKnee_SARA"
     assert (
-        _axis_source_name_from_list_text(
-            "[axis] Axis_LKnee_SARA | AoR virtual axis | LShank"
-        )
-        == "Axis_LKnee_SARA"
-    )
-    assert (
-        _axis_source_name_from_list_text(
-            "CoR_LThigh_wrt_Pelvis | virtual marker | LThigh"
-        )
-        == "CoR_LThigh_wrt_Pelvis"
+        _axis_source_name_from_list_text("CoR_LThigh_wrt_Pelvis | virtual marker | LThigh") == "CoR_LThigh_wrt_Pelvis"
     )
 
 
@@ -469,14 +426,8 @@ def test_c3d_file_matching_accepts_template_names_and_functional_patterns(tmp_pa
     (tmp_path / "Test_func_anat.c3d").write_text("")
     (tmp_path / "Test_func_lknee.c3d").write_text("")
 
-    assert (
-        _matching_c3d_file_for_expected_name(str(tmp_path), "Test_func_anat.c3d").name
-        == "Test_func_anat.c3d"
-    )
-    assert (
-        _matching_c3d_file_for_expected_name(str(tmp_path), "*func_lknee.c3d").name
-        == "Test_func_lknee.c3d"
-    )
+    assert _matching_c3d_file_for_expected_name(str(tmp_path), "Test_func_anat.c3d").name == "Test_func_anat.c3d"
+    assert _matching_c3d_file_for_expected_name(str(tmp_path), "*func_lknee.c3d").name == "Test_func_lknee.c3d"
     assert _matching_c3d_file_for_expected_name(str(tmp_path), "missing.c3d") is None
 
 
@@ -485,9 +436,7 @@ def test_virtual_feature_source_keeps_trial_metadata_with_c3d_assignment():
     assigned = _source_with_c3d_assignment(source, "/tmp/Test_func_lknee.c3d")
 
     assert _trial_name_from_virtual_feature_source(assigned) == "left_knee_sara"
-    assert (
-        _c3d_source_name_from_virtual_feature_source(assigned) == "Test_func_lknee.c3d"
-    )
+    assert _c3d_source_name_from_virtual_feature_source(assigned) == "Test_func_lknee.c3d"
     assert "parent markers=LTIBD,LTIB,LTIBF" in assigned
 
 
@@ -495,9 +444,7 @@ def test_marker_name_mapping_matches_normalized_c3d_names():
     """
     Template marker names can be automatically matched to participant-specific C3D naming.
     """
-    mapping = _marker_name_mapping_for_c3d(
-        ("LASI", "RASI", "LTHIB"), ("L_ASI", "rasi", "L-THIB", "extra")
-    )
+    mapping = _marker_name_mapping_for_c3d(("LASI", "RASI", "LTHIB"), ("L_ASI", "rasi", "L-THIB", "extra"))
 
     assert mapping == {"LASI": "L_ASI", "RASI": "rasi", "LTHIB": "L-THIB"}
 
@@ -506,9 +453,7 @@ def test_marker_name_mapping_matches_participant_prefixed_c3d_names():
     """
     C3D participant namespaces should not prevent matching markers to a template.
     """
-    mapping = _marker_name_mapping_for_c3d(
-        ("S3", "T6", "C2"), ("P01_MH:S3", "P01_MH:T6", "P01_MH:C2")
-    )
+    mapping = _marker_name_mapping_for_c3d(("S3", "T6", "C2"), ("P01_MH:S3", "P01_MH:T6", "P01_MH:C2"))
 
     assert mapping == {"S3": "P01_MH:S3", "T6": "P01_MH:T6", "C2": "P01_MH:C2"}
 
@@ -529,9 +474,12 @@ def test_strip_participant_prefix_from_marker_names():
     """
     Users can remove C3D participant prefixes such as P01_MH: from marker names.
     """
-    assert _strip_participant_prefix_from_marker_names(
-        ("P01_MH:S3", "P01_MH:T6", "Skeleton_001_LIAS", "LASI")
-    ) == ("S3", "T6", "LIAS", "LASI")
+    assert _strip_participant_prefix_from_marker_names(("P01_MH:S3", "P01_MH:T6", "Skeleton_001_LIAS", "LASI")) == (
+        "S3",
+        "T6",
+        "LIAS",
+        "LASI",
+    )
 
 
 def test_strip_participant_prefix_from_c3d_data_changes_marker_names_in_place():
@@ -555,11 +503,7 @@ def test_remap_c3d_workflow_draft_markers_updates_segment_groups():
     draft = c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS)
     mapping = {"LASI": "L_ASI", "RASI": "R_ASI"}
     updated = _remap_c3d_workflow_draft_markers(draft, mapping)
-    pelvis = next(
-        group
-        for group in updated.segment_marker_groups
-        if group.segment_name == "Pelvis"
-    )
+    pelvis = next(group for group in updated.segment_marker_groups if group.segment_name == "Pelvis")
 
     assert pelvis.marker_names[:2] == ("LPSI", "RPSI")
     assert "L_ASI" in pelvis.marker_names
@@ -613,9 +557,7 @@ def test_rab2002_geometry_uses_static_markers_and_editable_fraction():
                 values[:3, index, 0] = positions[marker_name]
             return values
 
-    assert _rab2002_markers_from_payload(
-        "point=RCAJ; mid=RHME,RHLE; fraction=0.25"
-    ) == (
+    assert _rab2002_markers_from_payload("point=RCAJ; mid=RHME,RHLE; fraction=0.25") == (
         "RCAJ",
         ("RHME", "RHLE"),
         0.25,
@@ -658,16 +600,12 @@ def test_functional_frame_selection_keeps_diverse_relative_rotations():
                 [0.0, 0.0, 1.0],
             ]
         )
-    child = RotoTransMatrixTimeSeries.from_rotation_matrix_and_translation(
-        rotations, translations
-    )
+    child = RotoTransMatrixTimeSeries.from_rotation_matrix_and_translation(rotations, translations)
 
     report = functional_frame_selection_report(
         parent,
         child,
-        FunctionalFrameSelectionOptions(
-            enabled=True, max_frames=10, min_rotation_degrees=2.0
-        ),
+        FunctionalFrameSelectionOptions(enabled=True, max_frames=10, min_rotation_degrees=2.0),
     )
 
     assert report.total_frames == 4
@@ -680,12 +618,8 @@ def test_functional_frame_selection_keeps_manual_indices_without_diverse_mode():
     rotations = np.repeat(np.eye(3)[:, :, None], 5, axis=2)
     translations = np.zeros((3, 5))
     translations[0, :] = np.arange(5, dtype=float)
-    parent = RotoTransMatrixTimeSeries.from_rotation_matrix_and_translation(
-        rotations, np.zeros((3, 5))
-    )
-    child = RotoTransMatrixTimeSeries.from_rotation_matrix_and_translation(
-        rotations, translations
-    )
+    parent = RotoTransMatrixTimeSeries.from_rotation_matrix_and_translation(rotations, np.zeros((3, 5)))
+    child = RotoTransMatrixTimeSeries.from_rotation_matrix_and_translation(rotations, translations)
 
     parent_subset, child_subset, report = prepare_functional_rt_pair(
         parent,
@@ -746,30 +680,17 @@ def test_static_generic_name_matches_participant_prefixed_static_c3d(tmp_path):
     static_file = tmp_path / "P5_Calib_Static.c3d"
     static_file.write_text("", encoding="utf-8")
 
-    assert (
-        _matching_c3d_file_for_expected_name(str(tmp_path), "*Static.c3d")
-        == static_file
-    )
-    assert (
-        _matching_c3d_file_for_expected_name(str(tmp_path), "Static.c3d") == static_file
-    )
+    assert _matching_c3d_file_for_expected_name(str(tmp_path), "*Static.c3d") == static_file
+    assert _matching_c3d_file_for_expected_name(str(tmp_path), "Static.c3d") == static_file
 
 
 def test_predictive_virtual_marker_method_label_maps_to_internal_key():
     """
     Keep readable predictive labels in the GUI while storing explicit method names in the draft.
     """
-    assert (
-        _predictive_virtual_marker_method_from_label("Hara 2016 hip") == "hara2016_hip"
-    )
-    assert (
-        _predictive_virtual_marker_method_from_label("harrington2007_hip")
-        == "harrington2007_hip"
-    )
-    assert (
-        _predictive_virtual_marker_method_from_label("Rab 2002 shoulder")
-        == "rab2002_shoulder"
-    )
+    assert _predictive_virtual_marker_method_from_label("Hara 2016 hip") == "hara2016_hip"
+    assert _predictive_virtual_marker_method_from_label("harrington2007_hip") == "harrington2007_hip"
+    assert _predictive_virtual_marker_method_from_label("Rab 2002 shoulder") == "rab2002_shoulder"
 
 
 def test_motive_57_gjc_virtual_markers_use_rab2002_predictive_method():
@@ -788,9 +709,7 @@ def test_python_code_from_c3d_draft_serializes_preset_value():
     """
     The generated script must contain editable JSON-like data, not Python enum reprs.
     """
-    code = _python_code_from_c3d_draft(
-        c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS), "/tmp/c3d"
-    )
+    code = _python_code_from_c3d_draft(c3d_workflow_draft(C3dModelPreset.LOWER_LIMBS), "/tmp/c3d")
 
     assert "C3dModelPreset" not in code
     assert '"preset": "lower_limbs"' in code

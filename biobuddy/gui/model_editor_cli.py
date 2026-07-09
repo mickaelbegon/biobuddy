@@ -12,9 +12,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     """
     Build the command-line parser for launching the model editor GUI.
     """
-    parser = argparse.ArgumentParser(
-        description="Launch the BioBuddy model editor GUI."
-    )
+    parser = argparse.ArgumentParser(description="Launch the BioBuddy model editor GUI.")
     parser.add_argument(
         "--new-from-c3d",
         action="store_true",
@@ -23,10 +21,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--preset",
         default=None,
-        help=(
-            "Preset to select in the C3D workflow. Examples: motive_57, "
-            "motive-57, full_body, lower_limbs."
-        ),
+        help=("Preset to select in the C3D workflow. Examples: motive_57, " "motive-57, full_body, lower_limbs."),
     )
     parser.add_argument(
         "--c3d-folder",
@@ -37,18 +32,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--motive-57",
         action="store_true",
-        help=(
-            "Shortcut for --new-from-c3d --preset motive_57 --c3d-folder "
-            f"{DEFAULT_MOTIVE_57_C3D_FOLDER}."
-        ),
+        help=("Shortcut for --new-from-c3d --preset motive_57 --c3d-folder " f"{DEFAULT_MOTIVE_57_C3D_FOLDER}."),
     )
     parser.add_argument(
         "--p6-motive",
         action="store_true",
-        help=(
-            "Shortcut for --new-from-c3d --preset motive_57 --c3d-folder "
-            f"{DEFAULT_P6_MOTIVE_C3D_FOLDER}."
-        ),
+        help=("Shortcut for --new-from-c3d --preset motive_57 --c3d-folder " f"{DEFAULT_P6_MOTIVE_C3D_FOLDER}."),
     )
     return parser
 

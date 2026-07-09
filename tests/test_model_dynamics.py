@@ -84,9 +84,7 @@ def test_biomechanics_model_real_utils_functions():
         decimal=4,
     )
     for i_com in range(nb_segments):
-        com_biobuddy = wholebody_model.segment_com_in_global(
-            wholebody_model.segment_names[i_com], q_random
-        )
+        com_biobuddy = wholebody_model.segment_com_in_global(wholebody_model.segment_names[i_com], q_random)
         com_biorbd = wholebody_model_biorbd.CoMbySegment(q_random, i_com).to_array()
         if com_biobuddy is not None:
             npt.assert_array_almost_equal(
@@ -125,14 +123,10 @@ def test_biomechanics_model_real_utils_functions():
     for i_muscle, muscle_name in enumerate(muscle_names):
 
         # Via point positions
-        muscle_points_in_global_biobuddy = wholebody_model.via_points_in_global(
-            muscle_name, q_zeros
-        )
+        muscle_points_in_global_biobuddy = wholebody_model.via_points_in_global(muscle_name, q_zeros)
         muscle_points_in_global_biorbd = [
             m.to_array()
-            for m in wholebody_model_biorbd.muscle(i_muscle).musclesPointsInGlobal(
-                wholebody_model_biorbd, q_zeros
-            )
+            for m in wholebody_model_biorbd.muscle(i_muscle).musclesPointsInGlobal(wholebody_model_biorbd, q_zeros)
         ]
         for i_via_point in range(len(muscle_points_in_global_biorbd) - 2):
             npt.assert_array_almost_equal(
@@ -142,12 +136,10 @@ def test_biomechanics_model_real_utils_functions():
             )
 
         # Muscle tendon length
-        muscle_tendon_biobuddy = wholebody_model.muscle_tendon_length(
-            muscle_name, q_zeros
+        muscle_tendon_biobuddy = wholebody_model.muscle_tendon_length(muscle_name, q_zeros)
+        muscle_tendon_biorbd = wholebody_model_biorbd.muscle(i_muscle).musculoTendonLength(
+            wholebody_model_biorbd, q_zeros
         )
-        muscle_tendon_biorbd = wholebody_model_biorbd.muscle(
-            i_muscle
-        ).musculoTendonLength(wholebody_model_biorbd, q_zeros)
         npt.assert_array_almost_equal(
             muscle_tendon_biobuddy,
             muscle_tendon_biorbd,
@@ -179,9 +171,7 @@ def test_biomechanics_model_real_utils_functions():
     jcs_biobuddy = leg_model.forward_kinematics(q_random)
     for i_frame in range(nb_frames):
         for i_segment in range(nb_segments):
-            jcs_biorbd = leg_model_biorbd.globalJCS(
-                q_random[:, i_frame], i_segment
-            ).to_array()
+            jcs_biorbd = leg_model_biorbd.globalJCS(q_random[:, i_frame], i_segment).to_array()
             npt.assert_array_almost_equal(
                 jcs_biobuddy[leg_model.segments[i_segment].name][i_frame].rt_matrix,
                 jcs_biorbd,
@@ -192,9 +182,7 @@ def test_biomechanics_model_real_utils_functions():
     markers_biobuddy = leg_model.markers_in_global(q_random)
     for i_frame in range(nb_frames):
         for i_marker in range(nb_markers):
-            markers_biorbd = leg_model_biorbd.markers(q_random[:, i_frame])[
-                i_marker
-            ].to_array()
+            markers_biorbd = leg_model_biorbd.markers(q_random[:, i_frame])[i_marker].to_array()
             npt.assert_array_almost_equal(
                 markers_biobuddy[:3, i_marker, i_frame].reshape(
                     3,
@@ -206,13 +194,9 @@ def test_biomechanics_model_real_utils_functions():
     # CoM position in global
     for i_frame in range(nb_frames):
         for i_com, segment_name in enumerate(leg_model.segment_names):
-            com_biobuddy = leg_model.segment_com_in_global(
-                segment_name, q_random[:, i_frame]
-            )
+            com_biobuddy = leg_model.segment_com_in_global(segment_name, q_random[:, i_frame])
             if com_biobuddy is not None:
-                com_biorbd = leg_model_biorbd.CoMbySegment(q_random[:, i_frame])[
-                    i_com
-                ].to_array()
+                com_biorbd = leg_model_biorbd.CoMbySegment(q_random[:, i_frame])[i_com].to_array()
                 npt.assert_array_almost_equal(
                     com_biobuddy[:3].reshape(
                         3,
@@ -242,9 +226,7 @@ def test_biomechanics_model_real_utils_functions():
     contact_biobuddy = complex_model.contacts_in_global(q_random)
     for i_frame in range(nb_frames):
         for i_contact in range(nb_contacts):
-            contact_biorbd = complex_model_biorbd.rigidContact(
-                q_random[:, i_frame], i_contact, True
-            ).to_array()
+            contact_biorbd = complex_model_biorbd.rigidContact(q_random[:, i_frame], i_contact, True).to_array()
             npt.assert_array_almost_equal(
                 contact_biobuddy[:3, i_contact, i_frame].reshape(
                     3,
@@ -272,14 +254,10 @@ def test_requires_initialization_decorator():
     model_dynamics = ModelDynamics()
 
     # Test that calling methods before initialization raises RuntimeError
-    with pytest.raises(
-        RuntimeError, match="segment_coordinate_system_in_local cannot be called"
-    ):
+    with pytest.raises(RuntimeError, match="segment_coordinate_system_in_local cannot be called"):
         model_dynamics.segment_coordinate_system_in_local("base")
 
-    with pytest.raises(
-        RuntimeError, match="segment_coordinate_system_in_global cannot be called"
-    ):
+    with pytest.raises(RuntimeError, match="segment_coordinate_system_in_global cannot be called"):
         model_dynamics.segment_coordinate_system_in_global("base")
 
     with pytest.raises(RuntimeError, match="forward_kinematics cannot be called"):
@@ -343,9 +321,7 @@ def test_marker_residual_static_method():
 
     # Get model markers to create "experimental" markers
     model_markers = leg_model.markers_in_global(q)
-    experimental_markers = (
-        model_markers[:3, :, 0] + np.random.rand(3, leg_model.nb_markers) * 0.01
-    )  # Add small noise
+    experimental_markers = model_markers[:3, :, 0] + np.random.rand(3, leg_model.nb_markers) * 0.01  # Add small noise
 
     marker_names = leg_model.marker_names
     marker_weights = np.ones(leg_model.nb_markers)
@@ -524,9 +500,7 @@ def test_inverse_kinematics_basic():
     )
     assert residuals is None
 
-    q_biorbd = biorbd.InverseKinematics(
-        biorbd_leg_model, marker_positions_true[:3, :, :]
-    ).solve()
+    q_biorbd = biorbd.InverseKinematics(biorbd_leg_model, marker_positions_true[:3, :, :]).solve()
 
     # Check that the solution is the same as biorbd
     npt.assert_array_almost_equal(q_reconstructed, q_biorbd, decimal=3)
@@ -577,9 +551,7 @@ def test_inverse_kinematics_basic():
 
     # Test that it also works when there are NaNs in the exp data
     marker_positions_with_nan = marker_positions_true.copy()
-    marker_positions_with_nan[0, 0, 0] = (
-        np.nan
-    )  # Introduce NaN in the first marker position
+    marker_positions_with_nan[0, 0, 0] = np.nan  # Introduce NaN in the first marker position
     q_reconstructed_nan, _ = leg_model.inverse_kinematics(
         marker_positions=marker_positions_with_nan[:3, :, :],
         marker_names=marker_names,
@@ -625,9 +597,7 @@ def test_inverse_kinematics_ignores_extra_weighted_markers():
     leg_model = BiomechanicalModelReal().from_biomod(filepath=leg_filepath)
     q_true = np.random.rand(leg_model.nb_q, 1) * 0.1
     marker_positions = leg_model.markers_in_global(q_true)[:3, :, :]
-    marker_positions = np.concatenate(
-        (marker_positions, np.zeros((3, 1, marker_positions.shape[2]))), axis=1
-    )
+    marker_positions = np.concatenate((marker_positions, np.zeros((3, 1, marker_positions.shape[2]))), axis=1)
     marker_names = list(leg_model.marker_names) + ["EXTRA_C3D_ONLY"]
     marker_weights = NamedList[MarkerWeight]()
     for marker_name in leg_model.marker_names:
@@ -654,9 +624,7 @@ def test_inverse_kinematics_error_handling():
     leg_model = BiomechanicalModelReal().from_biomod(filepath=leg_filepath)
 
     # Test with wrong marker_positions shape
-    wrong_shape_markers = np.random.rand(
-        2, leg_model.nb_markers
-    )  # Only 2 rows instead of 3
+    wrong_shape_markers = np.random.rand(2, leg_model.nb_markers)  # Only 2 rows instead of 3
     marker_names = leg_model.marker_names
     with pytest.raises(RuntimeError, match="marker_positions must be of shape"):
         leg_model.inverse_kinematics(
@@ -679,14 +647,10 @@ def test_has_ghost_parent():
 
     # Try models that might have ghost segments
     model_with_filepath = parent_path + "/examples/models/leg_with_ghost_parents.bioMod"
-    model_without_filepath = (
-        parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
-    )
+    model_without_filepath = parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
 
     model_with = BiomechanicalModelReal().from_biomod(filepath=model_with_filepath)
-    model_without = BiomechanicalModelReal().from_biomod(
-        filepath=model_without_filepath
-    )
+    model_without = BiomechanicalModelReal().from_biomod(filepath=model_without_filepath)
 
     assert model_with.segment_has_ghost_parents("femur_r") == True
     assert model_without.segment_has_ghost_parents("femur_r") == False
@@ -698,14 +662,10 @@ def test_rt_from_parent_offset_to_real_segment_basic():
 
     # Try models that might have ghost segments
     model_with_filepath = parent_path + "/examples/models/leg_with_ghost_parents.bioMod"
-    model_without_filepath = (
-        parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
-    )
+    model_without_filepath = parent_path + "/examples/models/leg_without_ghost_parents.bioMod"
 
     model_with = BiomechanicalModelReal().from_biomod(filepath=model_with_filepath)
-    model_without = BiomechanicalModelReal().from_biomod(
-        filepath=model_without_filepath
-    )
+    model_without = BiomechanicalModelReal().from_biomod(filepath=model_without_filepath)
 
     rt_result = model_with.rt_from_parent_offset_to_real_segment("femur_r").rt_matrix
     npt.assert_almost_equal(

@@ -41,9 +41,7 @@ def prepare_functional_rt_pair(
     rt_parent: RotoTransMatrixTimeSeries,
     rt_child: RotoTransMatrixTimeSeries,
     options: FunctionalFrameSelectionOptions | None = None,
-) -> tuple[
-    RotoTransMatrixTimeSeries, RotoTransMatrixTimeSeries, FunctionalFrameSelectionReport
-]:
+) -> tuple[RotoTransMatrixTimeSeries, RotoTransMatrixTimeSeries, FunctionalFrameSelectionReport]:
     """
     Optionally keep selected valid frames from a parent/child functional rototranslation pair.
     """
@@ -53,9 +51,7 @@ def prepare_functional_rt_pair(
         return rt_parent, rt_child, report
     if len(report.selected_indices) == 0:
         return rt_parent, rt_child, report
-    parent_subset, child_subset = subset_rt_pair(
-        rt_parent, rt_child, report.selected_indices
-    )
+    parent_subset, child_subset = subset_rt_pair(rt_parent, rt_child, report.selected_indices)
     return parent_subset, child_subset, report
 
 
@@ -70,18 +66,12 @@ def functional_frame_selection_report(
     options = FunctionalFrameSelectionOptions() if options is None else options
     total_frames = min(len(rt_parent), len(rt_child))
     valid_indices = _valid_rt_indices(rt_parent, rt_child)
-    rotation_range, translation_range = _relative_motion_ranges(
-        rt_parent, rt_child, valid_indices
-    )
+    rotation_range, translation_range = _relative_motion_ranges(rt_parent, rt_child, valid_indices)
     if len(options.manual_frame_indices) != 0:
         manual_indices = {int(index) for index in options.manual_frame_indices}
-        selected_indices = tuple(
-            index for index in valid_indices if index in manual_indices
-        )
+        selected_indices = tuple(index for index in valid_indices if index in manual_indices)
     elif options.enabled:
-        selected_indices = _select_diverse_indices(
-            rt_parent, rt_child, valid_indices, options
-        )
+        selected_indices = _select_diverse_indices(rt_parent, rt_child, valid_indices, options)
     else:
         selected_indices = tuple(int(index) for index in valid_indices)
     return FunctionalFrameSelectionReport(
@@ -112,9 +102,7 @@ def subset_rt_pair(
     )
 
 
-def subset_points_by_frame(
-    points: np.ndarray, indices: tuple[int, ...] | list[int] | np.ndarray
-) -> np.ndarray:
+def subset_points_by_frame(points: np.ndarray, indices: tuple[int, ...] | list[int] | np.ndarray) -> np.ndarray:
     """
     Return 3D/4D point trajectories restricted to selected original frame indices.
     """
@@ -128,9 +116,7 @@ def subset_points_by_frame(
     return points[:, tuple(int(index) for index in indices)]
 
 
-def format_functional_frame_report(
-    report: FunctionalFrameSelectionReport, unit_scale: float = 1000.0
-) -> str:
+def format_functional_frame_report(report: FunctionalFrameSelectionReport, unit_scale: float = 1000.0) -> str:
     """
     Return a compact readable summary for logs and UI labels.
     """
@@ -148,15 +134,13 @@ def format_functional_frame_report(
     )
 
 
-def _valid_rt_indices(
-    rt_parent: RotoTransMatrixTimeSeries, rt_child: RotoTransMatrixTimeSeries
-) -> tuple[int, ...]:
+def _valid_rt_indices(rt_parent: RotoTransMatrixTimeSeries, rt_child: RotoTransMatrixTimeSeries) -> tuple[int, ...]:
     parent = rt_parent.to_numpy()
     child = rt_child.to_numpy()
     frame_count = min(parent.shape[2], child.shape[2])
-    valid = np.isfinite(parent[:, :, :frame_count]).all(axis=(0, 1)) & np.isfinite(
-        child[:, :, :frame_count]
-    ).all(axis=(0, 1))
+    valid = np.isfinite(parent[:, :, :frame_count]).all(axis=(0, 1)) & np.isfinite(child[:, :, :frame_count]).all(
+        axis=(0, 1)
+    )
     return tuple(int(index) for index in np.flatnonzero(valid))
 
 
@@ -185,17 +169,12 @@ def _select_diverse_indices(
         nearest_translation = np.full((len(candidate_positions),), np.inf)
         for selected_position in selected_positions:
             selected_transform = relative_transforms[selected_position]
-            rotations = _rotation_distance_to_matrix(
-                candidate_transforms[:, :3, :3], selected_transform[:3, :3]
-            )
-            translations = np.linalg.norm(
-                candidate_transforms[:, :3, 3] - selected_transform[:3, 3], axis=1
-            )
+            rotations = _rotation_distance_to_matrix(candidate_transforms[:, :3, :3], selected_transform[:3, :3])
+            translations = np.linalg.norm(candidate_transforms[:, :3, 3] - selected_transform[:3, 3], axis=1)
             nearest_rotation = np.minimum(nearest_rotation, rotations)
             nearest_translation = np.minimum(nearest_translation, translations)
-        scores = (
-            options.rotation_weight * nearest_rotation
-            + options.translation_weight * (nearest_translation / translation_scale)
+        scores = options.rotation_weight * nearest_rotation + options.translation_weight * (
+            nearest_translation / translation_scale
         )
         best_local_index = int(np.nanargmax(scores))
         best_position = int(candidate_positions[best_local_index])
@@ -208,9 +187,7 @@ def _select_diverse_indices(
         selected_positions.append(best_position)
         is_selected[best_position] = True
 
-    return tuple(
-        sorted(int(index) for index in valid_indices_array[selected_positions])
-    )
+    return tuple(sorted(int(index) for index in valid_indices_array[selected_positions]))
 
 
 def _relative_motion_ranges(
@@ -232,10 +209,7 @@ def _translation_scale(
     rt_child: RotoTransMatrixTimeSeries,
     indices: tuple[int, ...],
 ) -> float:
-    translations = [
-        np.linalg.norm(_relative_transform(rt_parent, rt_child, index)[:3, 3])
-        for index in indices
-    ]
+    translations = [np.linalg.norm(_relative_transform(rt_parent, rt_child, index)[:3, 3]) for index in indices]
     scale = float(np.nanmedian(translations))
     return scale if np.isfinite(scale) and scale > 1e-9 else 1.0
 
@@ -264,9 +238,7 @@ def _rotation_distance(first: np.ndarray, second: np.ndarray) -> float:
     return float(np.arccos(np.clip(value, -1.0, 1.0)))
 
 
-def _rotation_distance_to_matrix(
-    rotations: np.ndarray, reference: np.ndarray
-) -> np.ndarray:
+def _rotation_distance_to_matrix(rotations: np.ndarray, reference: np.ndarray) -> np.ndarray:
     relative = np.swapaxes(reference, 0, 1) @ rotations
     traces = np.trace(relative, axis1=1, axis2=2)
     values = (traces - 1.0) / 2.0

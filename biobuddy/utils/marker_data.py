@@ -19,14 +19,10 @@ def c3d_point_unit_meter_divisor(unit: str) -> float:
         return 100.0
     if normalized_unit == "m":
         return 1.0
-    raise RuntimeError(
-        f"The unit {unit} is not recognized (current options are mm, cm or m)."
-    )
+    raise RuntimeError(f"The unit {unit} is not recognized (current options are mm, cm or m).")
 
 
-def marker_data_with_stripped_prefixes(
-    marker_data: "MarkerData", prefixes: tuple[str, ...]
-) -> "MarkerData":
+def marker_data_with_stripped_prefixes(marker_data: "MarkerData", prefixes: tuple[str, ...]) -> "MarkerData":
     """
     Return marker data with selected leading marker-name prefixes removed.
     """
@@ -41,12 +37,8 @@ def marker_data_with_stripped_prefixes(
                 remapped_name = marker_name.removeprefix(prefix)
                 break
         if remapped_name in marker_dict:
-            raise ValueError(
-                f"Cannot strip marker prefixes because '{remapped_name}' would be duplicated."
-            )
-        marker_dict[remapped_name] = marker_data.get_position((marker_name,)).squeeze(
-            axis=1
-        )
+            raise ValueError(f"Cannot strip marker prefixes because '{remapped_name}' would be duplicated.")
+        marker_dict[remapped_name] = marker_data.get_position((marker_name,)).squeeze(axis=1)
     remapped_data = DictData(marker_dict)
     if hasattr(marker_data, "frame_rate"):
         remapped_data.frame_rate = marker_data.frame_rate
@@ -162,9 +154,7 @@ class MarkerData(ABC):
         """
         return self.marker_names.index(from_markers)
 
-    def marker_indices(
-        self, from_markers: tuple[str, ...] | list[str]
-    ) -> tuple[int, ...]:
+    def marker_indices(self, from_markers: tuple[str, ...] | list[str]) -> tuple[int, ...]:
         """
         Get the indices of markers given their names.
         """
@@ -182,9 +172,7 @@ class MarkerData(ABC):
         """
         return self.get_position(marker_names=self.marker_names)
 
-    def markers_center_position(
-        self, marker_names: tuple[str, ...] | list[str]
-    ) -> np.ndarray:
+    def markers_center_position(self, marker_names: tuple[str, ...] | list[str]) -> np.ndarray:
         """
         Get the geometrical center position between the given markers
 
@@ -217,9 +205,7 @@ class MarkerData(ABC):
         """
         marker_position = self.get_position((marker_name,))
         if marker_position.size == 0:
-            raise RuntimeError(
-                f"The marker position is empty (shape: {marker_position.shape}), cannot compute mean."
-            )
+            raise RuntimeError(f"The marker position is empty (shape: {marker_position.shape}), cannot compute mean.")
         return np.nanmean(marker_position, axis=2)
 
     def std_marker_position(self, marker_name: str) -> np.ndarray:
@@ -233,9 +219,7 @@ class MarkerData(ABC):
         """
         marker_position = self.get_position((marker_name,))
         if marker_position.size == 0:
-            raise RuntimeError(
-                f"The marker position is empty (shape: {marker_position.shape}), cannot compute std."
-            )
+            raise RuntimeError(f"The marker position is empty (shape: {marker_position.shape}), cannot compute std.")
         return np.nanstd(marker_position, axis=2)
 
     def get_partial_dict_data(self, marker_names: tuple[str] | list[str]) -> "DictData":
@@ -243,9 +227,7 @@ class MarkerData(ABC):
         Get a new instance of DictData with only the data from the specified markers.
         """
         return DictData(
-            marker_dict={
-                name: self.get_position((name,)).squeeze() for name in marker_names
-            },
+            marker_dict={name: self.get_position((name,)).squeeze() for name in marker_names},
             first_frame=0,
             last_frame=self.nb_frames - 1,
         )
@@ -299,12 +281,8 @@ class C3dData(MarkerData):
     @all_marker_positions.setter
     def all_marker_positions(self, value: np.ndarray):
         if value.shape != (4, self.nb_markers, self.nb_frames):
-            raise ValueError(
-                f"Expected shape (4, {self.nb_markers}, {self.nb_frames}), got {value.shape}."
-            )
-        self.ezc3d_data["data"]["points"][
-            :, :, self.first_frame : self.last_frame + 1
-        ] = value
+            raise ValueError(f"Expected shape (4, {self.nb_markers}, {self.nb_frames}), got {value.shape}.")
+        self.ezc3d_data["data"]["points"][:, :, self.first_frame : self.last_frame + 1] = value
 
     def get_position(self, marker_names: tuple[str, ...] | list[str]):
         return self._to_meter(
@@ -323,9 +301,7 @@ class C3dData(MarkerData):
         data[3] = 1
         return data
 
-    def change_ref_frame(
-        self, ref_from: ReferenceFrame, ref_to: ReferenceFrame
-    ) -> None:
+    def change_ref_frame(self, ref_from: ReferenceFrame, ref_to: ReferenceFrame) -> None:
         """
         Change the reference frame of the data.
         """
@@ -334,37 +310,25 @@ class C3dData(MarkerData):
 
         if ref_from == ReferenceFrame.Z_UP and ref_to == ReferenceFrame.Y_UP:
             temporary_data = self.ezc3d_data["data"]["points"].copy()
-            self.ezc3d_data["data"]["points"][
-                0, self.first_frame : self.last_frame + 1, :
-            ] = temporary_data[
+            self.ezc3d_data["data"]["points"][0, self.first_frame : self.last_frame + 1, :] = temporary_data[
                 0, self.first_frame : self.last_frame + 1, :
             ]  # X = X
-            self.ezc3d_data["data"]["points"][
-                1, self.first_frame : self.last_frame + 1, :
-            ] = temporary_data[
+            self.ezc3d_data["data"]["points"][1, self.first_frame : self.last_frame + 1, :] = temporary_data[
                 2, self.first_frame : self.last_frame + 1, :
             ]  # Y = Z
-            self.ezc3d_data["data"]["points"][
-                2, self.first_frame : self.last_frame + 1, :
-            ] = -temporary_data[
+            self.ezc3d_data["data"]["points"][2, self.first_frame : self.last_frame + 1, :] = -temporary_data[
                 1, self.first_frame : self.last_frame + 1, :
             ]  # Z = -Y
 
         elif ref_from == ReferenceFrame.Y_UP and ref_to == ReferenceFrame.Z_UP:
             temporary_data = self.ezc3d_data["data"]["points"].copy()
-            self.ezc3d_data["data"]["points"][
-                0, self.first_frame : self.last_frame + 1, :
-            ] = temporary_data[
+            self.ezc3d_data["data"]["points"][0, self.first_frame : self.last_frame + 1, :] = temporary_data[
                 0, self.first_frame : self.last_frame + 1, :
             ]  # X = X
-            self.ezc3d_data["data"]["points"][
-                1, self.first_frame : self.last_frame + 1, :
-            ] = -temporary_data[
+            self.ezc3d_data["data"]["points"][1, self.first_frame : self.last_frame + 1, :] = -temporary_data[
                 2, self.first_frame : self.last_frame + 1, :
             ]  # Y = -Z
-            self.ezc3d_data["data"]["points"][
-                2, self.first_frame : self.last_frame + 1, :
-            ] = temporary_data[
+            self.ezc3d_data["data"]["points"][2, self.first_frame : self.last_frame + 1, :] = temporary_data[
                 1, self.first_frame : self.last_frame + 1, :
             ]  # Z = Y
 
@@ -414,9 +378,7 @@ class CsvData(MarkerData):
                 f"You have {self.csv_array.shape[1]} rows, which is not divisible by 3."
             )
 
-        csv_data = np.ones(
-            (4, self.nb_markers, self.nb_frames)
-        )  # This shape mocks a c3d point field
+        csv_data = np.ones((4, self.nb_markers, self.nb_frames))  # This shape mocks a c3d point field
         axes = ["X", "Y", "Z"]
         i_ax = 0
         i_marker = 0
@@ -435,9 +397,7 @@ class CsvData(MarkerData):
                     "Here, it should be 'X'."
                     "Please see the readme to build a proper .csv file."
                 )
-            csv_data[i_ax, i_marker, :] = self.csv_array[
-                self.first_frame : self.last_frame + 1, i_marker * 3 + i_ax
-            ]
+            csv_data[i_ax, i_marker, :] = self.csv_array[self.first_frame : self.last_frame + 1, i_marker * 3 + i_ax]
             i_ax += 1
             if i_ax == 3:
                 i_ax = 0
@@ -458,15 +418,11 @@ class CsvData(MarkerData):
     @all_marker_positions.setter
     def all_marker_positions(self, value: np.ndarray):
         if value.shape != (4, self.nb_markers, self.nb_frames):
-            raise ValueError(
-                f"Expected shape (4, {self.nb_markers}, {self.nb_frames}), got {value.shape}."
-            )
+            raise ValueError(f"Expected shape (4, {self.nb_markers}, {self.nb_frames}), got {value.shape}.")
 
         for i_marker in range(self.nb_markers):
             for i_ax in range(3):
-                self.csv_array[
-                    self.first_frame : self.last_frame + 1, i_marker * 3 + i_ax
-                ] = value[i_ax, i_marker, :]
+                self.csv_array[self.first_frame : self.last_frame + 1, i_marker * 3 + i_ax] = value[i_ax, i_marker, :]
                 i_ax += 1
 
     def get_position(self, marker_names: tuple[str, ...] | list[str]):
@@ -487,15 +443,11 @@ class CsvData(MarkerData):
         The data is expected to be expressed in cm in the csv files.
         """
         if data.shape[0] != 3:
-            raise RuntimeError(
-                f"The data array should be shape (3, nb_frames), you have {data.shape}"
-            )
+            raise RuntimeError(f"The data array should be shape (3, nb_frames), you have {data.shape}")
         factor = 100  # cm
         return data / factor
 
-    def change_ref_frame(
-        self, ref_from: ReferenceFrame, ref_to: ReferenceFrame
-    ) -> None:
+    def change_ref_frame(self, ref_from: ReferenceFrame, ref_to: ReferenceFrame) -> None:
         """
         Change the reference frame of the data.
         """
@@ -503,38 +455,34 @@ class CsvData(MarkerData):
             return
 
         if ref_from == ReferenceFrame.Z_UP and ref_to == ReferenceFrame.Y_UP:
-            temporary_data = deepcopy(
-                self.csv_array[self.first_frame : self.last_frame + 1, :]
-            )
+            temporary_data = deepcopy(self.csv_array[self.first_frame : self.last_frame + 1, :])
             # X = X
-            self.csv_array[self.first_frame : self.last_frame + 1, 0::3] = (
-                temporary_data[self.first_frame : self.last_frame + 1, 0::3]
-            )
+            self.csv_array[self.first_frame : self.last_frame + 1, 0::3] = temporary_data[
+                self.first_frame : self.last_frame + 1, 0::3
+            ]
             # Y = Z
-            self.csv_array[self.first_frame : self.last_frame + 1, 1::3] = (
-                temporary_data[self.first_frame : self.last_frame + 1, 2::3]
-            )
+            self.csv_array[self.first_frame : self.last_frame + 1, 1::3] = temporary_data[
+                self.first_frame : self.last_frame + 1, 2::3
+            ]
             # Z = -Y
-            self.csv_array[self.first_frame : self.last_frame + 1, 2::3] = (
-                -temporary_data[self.first_frame : self.last_frame + 1, 1::3]
-            )
+            self.csv_array[self.first_frame : self.last_frame + 1, 2::3] = -temporary_data[
+                self.first_frame : self.last_frame + 1, 1::3
+            ]
 
         elif ref_from == ReferenceFrame.Y_UP and ref_to == ReferenceFrame.Z_UP:
-            temporary_data = deepcopy(
-                self.csv_array[self.first_frame : self.last_frame + 1, :]
-            )
+            temporary_data = deepcopy(self.csv_array[self.first_frame : self.last_frame + 1, :])
             # X = X
-            self.csv_array[self.first_frame : self.last_frame + 1, 0::3] = (
-                temporary_data[self.first_frame : self.last_frame + 1, 0::3]
-            )
+            self.csv_array[self.first_frame : self.last_frame + 1, 0::3] = temporary_data[
+                self.first_frame : self.last_frame + 1, 0::3
+            ]
             # Y = -Z
-            self.csv_array[self.first_frame : self.last_frame + 1, 1::3] = (
-                -temporary_data[self.first_frame : self.last_frame + 1, 2::3]
-            )
+            self.csv_array[self.first_frame : self.last_frame + 1, 1::3] = -temporary_data[
+                self.first_frame : self.last_frame + 1, 2::3
+            ]
             # Z = Y
-            self.csv_array[self.first_frame : self.last_frame + 1, 2::3] = (
-                temporary_data[self.first_frame : self.last_frame + 1, 1::3]
-            )
+            self.csv_array[self.first_frame : self.last_frame + 1, 2::3] = temporary_data[
+                self.first_frame : self.last_frame + 1, 1::3
+            ]
         else:
             raise ValueError(f"Cannot change from {ref_from} to {ref_to}.")
 
@@ -612,15 +560,11 @@ class DictData(MarkerData):
         # Chack that the marker_names are in the dictionary
         for name in marker_names:
             if name not in self.marker_names:
-                raise ValueError(
-                    f"Marker name '{name}' not found in the marker dictionary."
-                )
+                raise ValueError(f"Marker name '{name}' not found in the marker dictionary.")
 
         values = np.zeros((4, len(marker_names), self.nb_frames))
         for i_marker, name in enumerate(marker_names):
-            values[:, i_marker, :] = self.marker_dict[name][
-                :, self.first_frame : self.last_frame + 1
-            ]
+            values[:, i_marker, :] = self.marker_dict[name][:, self.first_frame : self.last_frame + 1]
         return values
 
     def save(self, new_path: str):

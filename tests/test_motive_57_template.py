@@ -85,17 +85,11 @@ def test_motive_57_template_contains_expected_chain_and_markers():
             )
         )
         hand = model.segments[f"{side}Hand"]
-        assert all(
-            hand.markers[marker_name].is_technical
-            for marker_name in (f"{side}HM2", f"{side}USP", f"{side}RSP")
-        )
+        assert all(hand.markers[marker_name].is_technical for marker_name in (f"{side}HM2", f"{side}USP", f"{side}RSP"))
 
 
 def test_motive_57_template_uses_correct_anatomical_frames():
-    segments = {
-        segment.name: segment
-        for segment in motive_57_template(use_functional=True).segments
-    }
+    segments = {segment.name: segment for segment in motive_57_template(use_functional=True).segments}
 
     pelvis = segments["Pelvis"].frame
     assert pelvis.first_axis.name == Axis.Name.Z
@@ -188,9 +182,7 @@ def test_motive_57_template_declares_functional_trials_and_virtual_requirements(
 
     assert set(MOTIVE_57_MARKER_NAMES) <= required_markers
     assert {"LGJC", "RGJC"} <= required_markers
-    assert {trial.name for trial in template.functional_trials} == set(
-        MOTIVE_57_FUNCTIONAL_C3D_FILENAMES
-    )
+    assert {trial.name for trial in template.functional_trials} == set(MOTIVE_57_FUNCTIONAL_C3D_FILENAMES)
     assert trials["right_hip_score"].file_pattern == "*Func_RHip.c3d"
     assert trials["right_hip_score"].alternate_file_patterns == ("*RHip.c3d",)
     assert isinstance(trials["right_hip_score"], FunctionalTrialSpec)
@@ -211,17 +203,11 @@ def test_motive_57_template_declares_functional_trials_and_virtual_requirements(
     )
     assert isinstance(segments["RThigh"].frame.origin, FunctionalCenterSpec)
     assert segments["RThigh"].frame.origin.trial_name == "right_hip_score"
-    assert isinstance(
-        segments["RShank"].frame.origin, FunctionalAxisProjectionPointSpec
-    )
+    assert isinstance(segments["RShank"].frame.origin, FunctionalAxisProjectionPointSpec)
     assert segments["RShank"].frame.origin.trial_name == "right_knee_sara"
     assert segments["RShank"].frame.origin.method.value == "sara_direction"
     assert isinstance(segments["RShank"].frame.second_axis, FunctionalAxisSpec)
     assert segments["RShank"].frame.second_axis.trial_name == "right_knee_sara"
     assert segments["RShank"].frame.second_axis.method.value == "sara_direction"
-    assert segments["RShank"].frame.second_axis.expected_axis.start.marker_names == (
-        "RFME",
-    )
-    assert segments["RShank"].frame.second_axis.expected_axis.end.marker_names == (
-        "RFLE",
-    )
+    assert segments["RShank"].frame.second_axis.expected_axis.start.marker_names == ("RFME",)
+    assert segments["RShank"].frame.second_axis.expected_axis.end.marker_names == ("RFLE",)

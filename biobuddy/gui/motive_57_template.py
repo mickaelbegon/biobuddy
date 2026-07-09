@@ -124,9 +124,7 @@ def motive_57_template(use_functional: bool = True) -> ModelTemplate:
             _hand_segment("L"),
         ),
         marker_attachments=markers,
-        required_static_markers=tuple(
-            sorted(set(MOTIVE_57_MARKER_NAMES) | {"LGJC", "RGJC"})
-        ),
+        required_static_markers=tuple(sorted(set(MOTIVE_57_MARKER_NAMES) | {"LGJC", "RGJC"})),
         functional_trials=motive_57_functional_trials() if use_functional else (),
         root_segment_name="Pelvis",
     )
@@ -142,12 +140,8 @@ def motive_57_functional_trials() -> tuple[FunctionalTrialSpec, ...]:
             (
                 FunctionalTrialSpec(
                     name=f"{label}_hip_score",
-                    file_pattern=MOTIVE_57_FUNCTIONAL_C3D_FILENAMES[
-                        f"{label}_hip_score"
-                    ],
-                    alternate_file_patterns=(
-                        MOTIVE_57_P6_FUNCTIONAL_C3D_FILENAMES[f"{label}_hip_score"],
-                    ),
+                    file_pattern=MOTIVE_57_FUNCTIONAL_C3D_FILENAMES[f"{label}_hip_score"],
+                    alternate_file_patterns=(MOTIVE_57_P6_FUNCTIONAL_C3D_FILENAMES[f"{label}_hip_score"],),
                     required_markers=(
                         "LIAS",
                         "RIAS",
@@ -162,12 +156,8 @@ def motive_57_functional_trials() -> tuple[FunctionalTrialSpec, ...]:
                 ),
                 FunctionalTrialSpec(
                     name=f"{label}_knee_sara",
-                    file_pattern=MOTIVE_57_FUNCTIONAL_C3D_FILENAMES[
-                        f"{label}_knee_sara"
-                    ],
-                    alternate_file_patterns=(
-                        MOTIVE_57_P6_FUNCTIONAL_C3D_FILENAMES[f"{label}_knee_sara"],
-                    ),
+                    file_pattern=MOTIVE_57_FUNCTIONAL_C3D_FILENAMES[f"{label}_knee_sara"],
+                    alternate_file_patterns=(MOTIVE_57_P6_FUNCTIONAL_C3D_FILENAMES[f"{label}_knee_sara"],),
                     required_markers=(
                         f"{side}FTC",
                         f"{side}TH",
@@ -183,12 +173,8 @@ def motive_57_functional_trials() -> tuple[FunctionalTrialSpec, ...]:
                 ),
                 FunctionalTrialSpec(
                     name=f"{label}_ankle_score",
-                    file_pattern=MOTIVE_57_FUNCTIONAL_C3D_FILENAMES[
-                        f"{label}_ankle_score"
-                    ],
-                    alternate_file_patterns=(
-                        MOTIVE_57_P6_FUNCTIONAL_C3D_FILENAMES[f"{label}_ankle_score"],
-                    ),
+                    file_pattern=MOTIVE_57_FUNCTIONAL_C3D_FILENAMES[f"{label}_ankle_score"],
+                    alternate_file_patterns=(MOTIVE_57_P6_FUNCTIONAL_C3D_FILENAMES[f"{label}_ankle_score"],),
                     required_markers=(
                         f"{side}FAX",
                         f"{side}SK",
@@ -251,18 +237,10 @@ def motive_57_marker_attachments() -> tuple[MarkerAttachmentSpec, ...]:
                 _marker(f"{side}FM2", f"{side}Foot", anatomical=True),
                 _marker(f"{side}FM1", f"{side}Foot", anatomical=True),
                 _marker(f"{side}UA", f"{side}UpperArm"),
-                _marker(
-                    f"{side}HLE", f"{side}UpperArm", technical=False, anatomical=True
-                ),
-                _marker(
-                    f"{side}HME", f"{side}UpperArm", technical=False, anatomical=True
-                ),
-                _marker(
-                    f"{side}USP", f"{side}Forearm", technical=False, anatomical=True
-                ),
-                _marker(
-                    f"{side}RSP", f"{side}Forearm", technical=False, anatomical=True
-                ),
+                _marker(f"{side}HLE", f"{side}UpperArm", technical=False, anatomical=True),
+                _marker(f"{side}HME", f"{side}UpperArm", technical=False, anatomical=True),
+                _marker(f"{side}USP", f"{side}Forearm", technical=False, anatomical=True),
+                _marker(f"{side}RSP", f"{side}Forearm", technical=False, anatomical=True),
                 _marker(f"{side}HM2", f"{side}Hand", anatomical=True),
                 _marker(f"{side}USP", f"{side}Hand"),
                 _marker(f"{side}RSP", f"{side}Hand"),
@@ -279,12 +257,8 @@ def _pelvis_segment() -> SegmentSpec:
         rotations=Rotations.ZXY,
         frame=LocalFrameSpec(
             origin=_p("LIAS", "RIAS", "LIPS", "RIPS"),
-            first_axis=AxisSpec.from_markers(
-                Axis.Name.Z, ("LIAS", "LIPS"), ("RIAS", "RIPS")
-            ),
-            second_axis=AxisSpec.from_markers(
-                Axis.Name.X, ("LIPS", "RIPS"), ("LIAS", "RIAS")
-            ),
+            first_axis=AxisSpec.from_markers(Axis.Name.Z, ("LIAS", "LIPS"), ("RIAS", "RIPS")),
+            second_axis=AxisSpec.from_markers(Axis.Name.X, ("LIPS", "RIPS"), ("LIAS", "RIAS")),
             axis_to_keep=Axis.Name.Z,
         ),
         mesh_points=(_p("LIPS"), _p("RIPS"), _p("RIAS"), _p("LIAS"), _p("LIPS")),
@@ -298,12 +272,8 @@ def _thorax_segment() -> SegmentSpec:
         rotations=Rotations.ZXY,
         frame=LocalFrameSpec(
             origin=_p("SJN", "SXS", "TV2", "TV7"),
-            first_axis=AxisSpec.from_markers(
-                Axis.Name.Y, ("SXS", "TV7"), ("SJN", "TV2")
-            ),
-            second_axis=AxisSpec.from_markers(
-                Axis.Name.X, ("TV7", "TV2"), ("SXS", "SJN")
-            ),
+            first_axis=AxisSpec.from_markers(Axis.Name.Y, ("SXS", "TV7"), ("SJN", "TV2")),
+            second_axis=AxisSpec.from_markers(Axis.Name.X, ("TV7", "TV2"), ("SXS", "SJN")),
             axis_to_keep=Axis.Name.Y,
         ),
         mesh_points=(_p("SXS"), _p("SJN"), _p("TV2"), _p("TV7"), _p("SXS")),
@@ -317,12 +287,8 @@ def _head_segment() -> SegmentSpec:
         rotations=Rotations.ZXY,
         frame=LocalFrameSpec(
             origin=_p("LAH", "RAH", "LPH", "RPH"),
-            first_axis=AxisSpec.from_markers(
-                Axis.Name.Z, ("LAH", "LPH"), ("RAH", "RPH")
-            ),
-            second_axis=AxisSpec.from_markers(
-                Axis.Name.X, ("LPH", "RPH"), ("LAH", "RAH")
-            ),
+            first_axis=AxisSpec.from_markers(Axis.Name.Z, ("LAH", "LPH"), ("RAH", "RPH")),
+            second_axis=AxisSpec.from_markers(Axis.Name.X, ("LPH", "RPH"), ("LAH", "RAH")),
             axis_to_keep=Axis.Name.Z,
         ),
         mesh_points=(_p("LPH"), _p("RPH"), _p("RAH"), _p("LAH"), _p("LPH")),
@@ -332,9 +298,7 @@ def _head_segment() -> SegmentSpec:
 def _thigh_segment(side: str, use_functional: bool) -> SegmentSpec:
     hjc = _hip_center_spec(side, use_functional)
     kjc = _knee_projection_spec(side, use_functional)
-    kjc_fallback = (
-        kjc.fallback if isinstance(kjc, FunctionalAxisProjectionPointSpec) else kjc
-    )
+    kjc_fallback = kjc.fallback if isinstance(kjc, FunctionalAxisProjectionPointSpec) else kjc
     return SegmentSpec(
         name=f"{side}Thigh",
         parent_name="Pelvis",
@@ -395,9 +359,7 @@ def _foot_segment(side: str, use_functional: bool) -> SegmentSpec:
                 (f"{side}FCC", f"{side}FCC"),
                 (f"{side}FM5", f"{side}FM1"),
             ),
-            second_axis=AxisSpec.from_markers(
-                Axis.Name.Z, z_start_marker, z_end_marker
-            ),
+            second_axis=AxisSpec.from_markers(Axis.Name.Z, z_start_marker, z_end_marker),
             axis_to_keep=Axis.Name.X,
         ),
         mesh_points=(
@@ -459,9 +421,7 @@ def _hand_segment(side: str) -> SegmentSpec:
         rotations=Rotations.ZX,
         frame=LocalFrameSpec(
             origin=wjc,
-            first_axis=AxisSpec.from_markers(
-                Axis.Name.Y, f"{side}HM2", (f"{side}USP", f"{side}RSP")
-            ),
+            first_axis=AxisSpec.from_markers(Axis.Name.Y, f"{side}HM2", (f"{side}USP", f"{side}RSP")),
             second_axis=_hand_axis(side),
             axis_to_keep=Axis.Name.Y,
         ),
@@ -545,16 +505,10 @@ def _humerus_axis(side: str) -> AxisSpec:
     return _humerus_or_knee_axis(side, "HME", "HLE")
 
 
-def _humerus_or_knee_axis(
-    side: str, medial_suffix: str, lateral_suffix: str
-) -> AxisSpec:
+def _humerus_or_knee_axis(side: str, medial_suffix: str, lateral_suffix: str) -> AxisSpec:
     if side == "R":
-        return AxisSpec.from_markers(
-            Axis.Name.Z, f"{side}{medial_suffix}", f"{side}{lateral_suffix}"
-        )
-    return AxisSpec.from_markers(
-        Axis.Name.Z, f"{side}{lateral_suffix}", f"{side}{medial_suffix}"
-    )
+        return AxisSpec.from_markers(Axis.Name.Z, f"{side}{medial_suffix}", f"{side}{lateral_suffix}")
+    return AxisSpec.from_markers(Axis.Name.Z, f"{side}{lateral_suffix}", f"{side}{medial_suffix}")
 
 
 def _forearm_axis(side: str) -> AxisSpec:
@@ -569,9 +523,7 @@ def _hand_axis(side: str) -> AxisSpec:
     return AxisSpec.from_markers(Axis.Name.Z, "LRSP", "LUSP")
 
 
-def _marker(
-    name: str, *segment_names: str, technical: bool = True, anatomical: bool = False
-) -> MarkerAttachmentSpec:
+def _marker(name: str, *segment_names: str, technical: bool = True, anatomical: bool = False) -> MarkerAttachmentSpec:
     return MarkerAttachmentSpec(
         name=name,
         segment_names=tuple(segment_names),

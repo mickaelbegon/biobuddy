@@ -37,9 +37,7 @@ def test_c3d_model_preset_from_cli_value_accepts_aliases(value, preset):
 
 
 def test_default_static_virtual_points_for_motive_57_adds_rab_gjc_points():
-    definitions = default_static_virtual_points_for_c3d_model_preset(
-        C3dModelPreset.MOTIVE_57
-    )
+    definitions = default_static_virtual_points_for_c3d_model_preset(C3dModelPreset.MOTIVE_57)
 
     assert tuple(definition.name for definition in definitions) == ("LGJC", "RGJC")
     assert definitions[0].required_markers == ("LCAJ", "LHME", "LHLE")
@@ -136,9 +134,7 @@ def test_model_editor_cli_motive_57_shortcut_launches_c3d_workflow(monkeypatch):
     def fake_launch_model_editor(**kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr(
-        model_editor_cli, "launch_model_editor", fake_launch_model_editor
-    )
+    monkeypatch.setattr(model_editor_cli, "launch_model_editor", fake_launch_model_editor)
 
     assert model_editor_cli.main(["--motive-57"]) == 0
 
@@ -177,14 +173,9 @@ def test_model_editor_cli_explicit_context_opens_c3d_workflow(monkeypatch, tmp_p
     def fake_launch_model_editor(**kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr(
-        model_editor_cli, "launch_model_editor", fake_launch_model_editor
-    )
+    monkeypatch.setattr(model_editor_cli, "launch_model_editor", fake_launch_model_editor)
 
-    assert (
-        model_editor_cli.main(["--preset", "motive_57", "--c3d-folder", str(tmp_path)])
-        == 0
-    )
+    assert model_editor_cli.main(["--preset", "motive_57", "--c3d-folder", str(tmp_path)]) == 0
 
     assert calls == [
         {
