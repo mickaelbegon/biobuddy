@@ -1,17 +1,24 @@
+from pathlib import Path
+from types import SimpleNamespace
+
 import numpy as np
+import pytest
 
 from biobuddy import (
     BiomechanicalModelReal,
     DictData,
 )
 from biobuddy.components.generic.rigidbody.axis import Axis
+from biobuddy.components.real.rigidbody.segment_coordinate_system_real import SegmentCoordinateSystemReal
 from biobuddy.gui.c3d_creation_workflow import (
+    C3dSegmentSettingsDraft,
     add_axis_to_draft,
     add_segment_to_draft,
     assign_c3d_file_role_to_draft,
     c3d_workflow_draft,
     c3d_workflow_progress,
     remove_axis_from_draft,
+    update_segment_settings_in_draft,
 )
 from biobuddy.gui.c3d_model_creation import C3dModelPreset
 from biobuddy.gui.model_editor import (
@@ -27,6 +34,7 @@ from biobuddy.gui.model_editor import (
     _marker_name_mapping_for_c3d,
     _is_virtual_feature_axis,
     _anatomical_axis_source_labels,
+    _apply_initial_rotation_setting_to_segment,
     _axis_source_name_from_list_text,
     _orthonormal_axes_from_vector_segments,
     _predictive_virtual_marker_method_from_label,
@@ -55,6 +63,11 @@ from biobuddy.gui.model_editor import (
     _virtual_marker_preview_marker_names_to_draw,
     _workflow_playback_timer_interval_ms,
     _marker_pool_from_draft,
+    _model_export_extension_from_label,
+    _model_export_filepath_with_extension,
+    _model_export_filter_for_extension,
+    _parse_rotation_matrix_text,
+    _q0_initial_rotation_by_segment,
     _unassigned_marker_names,
 )
 from biobuddy.gui.lower_limb_template import lower_limb_template
@@ -64,7 +77,99 @@ from biobuddy.model_modifiers.functional_frame_selection import (
     prepare_functional_rt_pair,
 )
 from biobuddy.gui.segment_editor import load_model
-from biobuddy.utils.linear_algebra import RotoTransMatrixTimeSeries
+from biobuddy.utils.linear_algebra import RotoTransMatrix, RotoTransMatrixTimeSeries
+
+
+def test_parse_rotation_matrix_text_accepts_common_3x3_formats():
+    expected = ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
+
+    assert _parse_rotation_matrix_text("[[1, 0, 0], [0, 0, -1], [0, 1, 0]]") == expected
+    assert _parse_rotation_matrix_text("1,0,0; 0,0,-1; 0,1,0") == expected
+    assert _parse_rotation_matrix_text("1 0 0 0 0 -1 0 1 0") == expected
+
+
+def test_parse_rotation_matrix_text_rejects_invalid_shapes_and_values():
+    for text in ("", "[[1, 0], [0, 1]]", "1 2 3 4", "[[1, 0, 'x'], [0, 1, 0], [0, 0, 1]]"):
+        with pytest.raises(ValueError):
+            _parse_rotation_matrix_text(text)
+
+
+def test_chain_export_format_helpers_return_selected_extension_and_filter():
+    assert _model_export_extension_from_label("BioMod (.bioMod)") == ".bioMod"
+    assert _model_export_extension_from_label("BVH (.bvh)") == ".bvh"
+    assert _model_export_extension_from_label("OpenSim (.osim)") == ".osim"
+    assert _model_export_extension_from_label("URDF (.urdf)") == ".urdf"
+    assert _model_export_filter_for_extension(".bvh").startswith("BVH files")
+
+
+def test_chain_export_filepath_accepts_file_or_folder(tmp_path):
+    assert _model_export_filepath_with_extension(str(tmp_path / "custom_name"), ".bioMod", "motive_57") == str(
+        tmp_path / "custom_name.bioMod"
+    )
+    assert _model_export_filepath_with_extension(str(tmp_path), ".bioMod", "motive_57") == str(
+        tmp_path / "motive_57.bioMod"
+    )
+
+
+def test_q0_initial_rotation_uses_identity_unless_a_matrix_is_requested():
+    draft = c3d_workflow_draft(C3dModelPreset.MOTIVE_57)
+    requested_rotation = ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+    draft = update_segment_settings_in_draft(
+        draft,
+        "Thorax",
+        translations="",
+        rotations="xyz",
+        initial_rotation_method="identity",
+    )
+    draft = update_segment_settings_in_draft(
+        draft,
+        "LShank",
+        translations="",
+        rotations="z",
+        initial_rotation_method="matrix",
+        initial_rotation_source="[[0,-1,0], [1,0,0], [0,0,1]]",
+        initial_rotation_matrix=requested_rotation,
+    )
+
+    rotations = _q0_initial_rotation_by_segment(draft)
+
+    np.testing.assert_allclose(rotations["Thorax"], np.eye(3))
+    np.testing.assert_allclose(rotations["LShank"], np.asarray(requested_rotation))
+
+
+def test_identity_initial_rotation_replaces_exported_segment_rt_rotation_but_keeps_translation():
+    original_rotation = np.array(((0.0, -1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)))
+    translation = np.array([1.0, 2.0, 3.0])
+    segment = SimpleNamespace(
+        segment_coordinate_system=SegmentCoordinateSystemReal(
+            scs=RotoTransMatrix.from_rotation_matrix_and_translation(original_rotation, translation),
+            is_scs_local=True,
+        )
+    )
+    setting = C3dSegmentSettingsDraft(segment_name="Thorax", initial_rotation_method="identity")
+
+    _apply_initial_rotation_setting_to_segment(segment, setting)
+
+    np.testing.assert_allclose(segment.segment_coordinate_system.scs.rotation_matrix.rotation_matrix, np.eye(3))
+    np.testing.assert_allclose(segment.segment_coordinate_system.scs.translation, translation)
+
+
+def test_identity_initial_rotation_preserves_exported_segment_rt_rotation_for_aor_segments():
+    original_rotation = np.array(((0.0, -1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)))
+    translation = np.array([1.0, 2.0, 3.0])
+    segment = SimpleNamespace(
+        segment_coordinate_system=SegmentCoordinateSystemReal(
+            scs=RotoTransMatrix.from_rotation_matrix_and_translation(original_rotation, translation),
+            is_scs_local=True,
+        )
+    )
+    setting = C3dSegmentSettingsDraft(segment_name="LShank", initial_rotation_method="identity")
+    draft = c3d_workflow_draft(C3dModelPreset.MOTIVE_57)
+
+    _apply_initial_rotation_setting_to_segment(segment, setting, draft)
+
+    np.testing.assert_allclose(segment.segment_coordinate_system.scs.rotation_matrix.rotation_matrix, original_rotation)
+    np.testing.assert_allclose(segment.segment_coordinate_system.scs.translation, translation)
 
 
 def test_load_model_supports_bvh(tmp_path):
@@ -725,18 +830,31 @@ def test_export_model_to_path_dispatches_by_extension(tmp_path):
     class FakeModel:
         def to_biomod(self, filepath):
             calls.append(("biomod", filepath))
+            Path(filepath).write_text("biomod")
 
         def to_osim(self, filepath):
             calls.append(("osim", filepath))
+            Path(filepath).write_text("osim")
 
         def to_urdf(self, filepath):
             calls.append(("urdf", filepath))
+            Path(filepath).write_text("urdf")
 
         def to_bvh(self, filepath):
             calls.append(("bvh", filepath))
+            Path(filepath).write_text("bvh")
 
     model = FakeModel()
     for extension in (".bioMod", ".osim", ".urdf", ".bvh"):
         _export_model_to_path(model, str(tmp_path / f"model{extension}"))
 
     assert [call[0] for call in calls] == ["biomod", "osim", "urdf", "bvh"]
+
+
+def test_export_model_to_path_reports_missing_writer_output(tmp_path):
+    class SilentModel:
+        def to_biomod(self, filepath):
+            return None
+
+    with pytest.raises(RuntimeError, match="did not create"):
+        _export_model_to_path(SilentModel(), str(tmp_path / "missing.bioMod"))

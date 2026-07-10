@@ -1,6 +1,7 @@
 import json
 import math
 import re
+import ast
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -4050,11 +4051,26 @@ def launch_model_editor(
             self.settings_child_translation_checkbox.stateChanged.connect(self._update_segment_settings_preview)
             self.settings_initial_rotation_method_combo = QComboBox()
             self.settings_initial_rotation_method_combo.addItems(["identity", "matrix", "anatomical_c3d"])
+            self.settings_initial_rotation_method_combo.setToolTip(
+                "identity: use an identity initial RT rotation.\n"
+                "matrix: apply the 3x3 rotation matrix entered in Matrix.\n"
+                "anatomical_c3d: compute the initial rotation from an anatomical/static C3D.\n"
+                "Use non-identity modes only when the next segment must be pre-oriented, typically for an AoR."
+            )
             self.settings_initial_rotation_method_combo.currentTextChanged.connect(
                 self._sync_initial_rotation_source_fields
             )
             self.settings_initial_rotation_source_edit = QLineEdit()
             self.settings_initial_rotation_source_edit.setMaximumWidth(200)
+            self.settings_initial_rotation_source_edit.setPlaceholderText("[[1,0,0], [0,1,0], [0,0,1]]")
+            self.settings_initial_rotation_source_edit.setToolTip(
+                "Accepted matrix formats:\n"
+                "[[a,b,c], [d,e,f], [g,h,i]]\n"
+                "a,b,c; d,e,f; g,h,i\n"
+                "a b c d e f g h i\n"
+                "The values must define exactly 9 finite numbers."
+            )
+            self.settings_initial_rotation_source_edit.textChanged.connect(self._sync_segment_settings_validation_style)
             self.settings_initial_rotation_c3d_combo = QComboBox()
             self.settings_initial_rotation_c3d_combo.setMaximumWidth(220)
             self.settings_initial_rotation_c3d_combo.currentTextChanged.connect(
@@ -4101,6 +4117,13 @@ def launch_model_editor(
             self.remove_virtual_marker_button.clicked.connect(self._remove_workflow_virtual_marker)
             self.edit_segment_settings_button = QPushButton("Apply segment settings")
             self.edit_segment_settings_button.clicked.connect(self._apply_workflow_segment_settings_from_form)
+            self.chain_export_format_combo = QComboBox()
+            self.chain_export_format_combo.addItems(
+                ["BioMod (.bioMod)", "BVH (.bvh)", "OpenSim (.osim)", "URDF (.urdf)"]
+            )
+            self.chain_export_format_combo.setMaximumWidth(180)
+            self.export_chain_model_button = QPushButton("Export model")
+            self.export_chain_model_button.clicked.connect(self._export_workflow_chain_model)
             self.assign_c3d_role_button = QPushButton("Assign C3D file")
             self.assign_c3d_role_button.clicked.connect(self._assign_workflow_c3d_role)
             self.clear_c3d_role_button = QPushButton("Clear C3D file")
@@ -4124,6 +4147,7 @@ def launch_model_editor(
                 self.save_segment_axis_button,
                 self.save_virtual_marker_button,
                 self.edit_segment_settings_button,
+                self.export_chain_model_button,
             ):
                 primary_button.setObjectName("PrimaryActionButton")
             for secondary_button in (
@@ -4183,7 +4207,6 @@ def launch_model_editor(
                 self._functional_reconstruction_workflow_tab(),
                 "Functional reconstruction",
             )
-            self.workflow_tabs.addTab(self._file_role_workflow_tab(), "C3D names")
             self.workflow_tabs.addTab(self.issue_list, "Checks")
             left_layout.addWidget(self.workflow_tabs, 1)
 
@@ -4895,7 +4918,7 @@ def launch_model_editor(
             rotation_form.setVerticalSpacing(8)
             rotation_form.addWidget(QLabel("Initial rotation"), 0, 0)
             rotation_form.addWidget(self.settings_initial_rotation_method_combo, 0, 1)
-            rotation_form.addWidget(QLabel("Matrix source"), 0, 2)
+            rotation_form.addWidget(QLabel("Matrix"), 0, 2)
             rotation_form.addWidget(self.settings_initial_rotation_source_edit, 0, 3)
             anatomical_c3d_row = QHBoxLayout()
             _configure_panel_layout(anatomical_c3d_row, margin=0, spacing=8)
@@ -4930,6 +4953,14 @@ def launch_model_editor(
             action_row.addWidget(self.edit_segment_settings_button)
             action_row.addStretch()
             form_column.addLayout(action_row)
+
+            export_row = QHBoxLayout()
+            _configure_panel_layout(export_row, margin=0, spacing=10)
+            export_row.addWidget(QLabel("Export format"))
+            export_row.addWidget(self.chain_export_format_combo)
+            export_row.addWidget(self.export_chain_model_button)
+            export_row.addStretch()
+            form_column.addWidget(_layout_group("Export kinematic chain", export_row))
             form_column.addStretch()
             layout.addLayout(form_column, 2)
             return widget
@@ -5168,7 +5199,7 @@ def launch_model_editor(
             if not filepath:
                 return
             self._set_c3d_combo_to_filepath(self.settings_initial_rotation_c3d_combo, filepath, "Choose a C3D first")
-            self.settings_initial_rotation_source_edit.setText(self._selected_initial_rotation_c3d_file())
+            self._sync_initial_rotation_source_fields()
 
         def _generate_template(self) -> None:
             default_name = f"{self.selected_preset().value}_template.json"
@@ -5194,6 +5225,46 @@ def launch_model_editor(
                 Path(filepath).write_text(json.dumps(payload, indent=2))
             except Exception as error:
                 QMessageBox.critical(self, "Unable to generate template", str(error))
+
+        def _export_workflow_chain_model(self) -> None:
+            if self.c3d_data is None:
+                QMessageBox.critical(self, "Unable to export model", "Load a static/main C3D before exporting.")
+                return
+            if not self._sync_segment_settings_validation_style():
+                QMessageBox.critical(
+                    self,
+                    "Unable to export model",
+                    "Fix the invalid Chain definition fields before exporting.",
+                )
+                return
+            self._apply_workflow_segment_settings_from_form()
+            extension = _model_export_extension_from_label(self.chain_export_format_combo.currentText())
+            default_folder = self.c3d_folder_path or str(Path.home())
+            default_name = str(Path(default_folder) / f"{self.workflow_draft.preset.value}{extension}")
+            filepath, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export kinematic chain",
+                default_name,
+                _model_export_filter_for_extension(extension),
+            )
+            if not filepath:
+                return
+            filepath = _model_export_filepath_with_extension(
+                filepath,
+                extension,
+                self.workflow_draft.preset.value,
+            )
+            progress_dialog, progress_callback = self._c3d_folder_generation_progress_reporter()
+            try:
+                progress_callback("Building kinematic chain from current C3D draft...")
+                model = self._model_from_current_chain_settings(progress_callback)
+                progress_callback(f"Writing {Path(filepath).name}...")
+                _export_model_to_path(model, filepath)
+                progress_dialog.close()
+                QMessageBox.information(self, "Model exported", f"Wrote:\n{filepath}")
+            except Exception as error:
+                progress_dialog.close()
+                QMessageBox.critical(self, "Unable to export model", str(error))
 
         def _add_workflow_segment(self) -> None:
             segment_name, accepted = QInputDialog.getText(self, "Add segment", "Segment name")
@@ -5392,7 +5463,10 @@ def launch_model_editor(
                 self.settings_q_max_edit.setText(_format_float_list(list(setting.q_max)))
                 self.settings_child_translation_checkbox.setChecked(setting.child_translation)
                 self.settings_initial_rotation_method_combo.setCurrentText(setting.initial_rotation_method)
-                self.settings_initial_rotation_source_edit.setText(setting.initial_rotation_source)
+                initial_rotation_source = setting.initial_rotation_source
+                if setting.initial_rotation_method == "matrix" and initial_rotation_source == "":
+                    initial_rotation_source = _format_rotation_matrix(setting.initial_rotation_matrix)
+                self.settings_initial_rotation_source_edit.setText(initial_rotation_source)
                 self.settings_anthropometry_model_combo.setCurrentText(setting.anthropometry_model or "none")
                 self.settings_anthropometry_sex_combo.setCurrentText(setting.anthropometry_sex or "male")
                 self.settings_anthropometry_mass_edit.setText(
@@ -5431,10 +5505,18 @@ def launch_model_editor(
             q_max_count = _safe_float_count(self.settings_q_max_edit.text())
             q_min_valid = q_min_count in {0, dof_count}
             q_max_valid = q_max_count in {0, dof_count}
+            initial_rotation_method = self.settings_initial_rotation_method_combo.currentText()
+            matrix_valid = True
+            if initial_rotation_method == "matrix":
+                try:
+                    _parse_rotation_matrix_text(self.settings_initial_rotation_source_edit.text())
+                except ValueError:
+                    matrix_valid = False
             problem_style = "background: #fff1f2; border: 2px solid #dc2626; color: #7f1d1d;"
             self.settings_q_min_edit.setStyleSheet("" if q_min_valid else problem_style)
             self.settings_q_max_edit.setStyleSheet("" if q_max_valid else problem_style)
-            return q_min_valid and q_max_valid
+            self.settings_initial_rotation_source_edit.setStyleSheet("" if matrix_valid else problem_style)
+            return q_min_valid and q_max_valid and matrix_valid
 
         def _apply_workflow_segment_settings_from_form(self) -> None:
             setting = self._selected_segment_setting()
@@ -5443,13 +5525,29 @@ def launch_model_editor(
             if not self._sync_segment_settings_validation_style():
                 QMessageBox.critical(
                     self,
-                    "Invalid q bounds",
-                    "q min and q max must be empty or contain exactly one value per DoF. "
-                    "Edit Chain definition: DoF axes and bounds.",
+                    "Invalid chain settings",
+                    "q min/q max must be empty or contain exactly one value per DoF, "
+                    "and Matrix must be a valid 3x3 numeric matrix when initial rotation is set to matrix.",
                 )
                 return
             initial_rotation_method = self.settings_initial_rotation_method_combo.currentText()
-            initial_rotation_source = self.settings_initial_rotation_source_edit.text()
+            initial_rotation_source = ""
+            initial_rotation_matrix = None
+            if initial_rotation_method == "matrix":
+                try:
+                    initial_rotation_matrix = _parse_rotation_matrix_text(
+                        self.settings_initial_rotation_source_edit.text()
+                    )
+                except ValueError as error:
+                    QMessageBox.critical(
+                        self,
+                        "Invalid initial rotation matrix",
+                        f"{error}\n\n"
+                        "Use a 3x3 matrix such as [[1,0,0], [0,1,0], [0,0,1]], "
+                        "or rows separated by ';' / new lines.",
+                    )
+                    return
+                initial_rotation_source = _format_rotation_matrix(initial_rotation_matrix)
             if initial_rotation_method == "anatomical_c3d":
                 initial_rotation_source = self._selected_initial_rotation_c3d_file()
             try:
@@ -5463,6 +5561,7 @@ def launch_model_editor(
                     child_translation=self.settings_child_translation_checkbox.isChecked(),
                     initial_rotation_method=initial_rotation_method,
                     initial_rotation_source=initial_rotation_source,
+                    initial_rotation_matrix=initial_rotation_matrix,
                     anthropometry_model=_settings_anthropometry_model(self.settings_anthropometry_model_combo),
                     anthropometry_sex=self.settings_anthropometry_sex_combo.currentText(),
                     anthropometry_mass=_parse_optional_float(self.settings_anthropometry_mass_edit.text()),
@@ -5903,12 +6002,32 @@ def launch_model_editor(
             selected_setting = self._selected_segment_setting()
             overrides = {}
             if selected_setting is not None:
-                overrides[selected_setting.segment_name] = replace(
+                initial_rotation_method = self.settings_initial_rotation_method_combo.currentText()
+                initial_rotation_source = ""
+                initial_rotation_matrix = selected_setting.initial_rotation_matrix
+                if initial_rotation_method == "matrix":
+                    try:
+                        initial_rotation_matrix = _parse_rotation_matrix_text(
+                            self.settings_initial_rotation_source_edit.text()
+                        )
+                        initial_rotation_source = _format_rotation_matrix(initial_rotation_matrix)
+                    except ValueError:
+                        pass
+                elif initial_rotation_method == "anatomical_c3d":
+                    initial_rotation_source = self._selected_initial_rotation_c3d_file()
+                edited_setting = replace(
                     selected_setting,
                     translations=self.settings_translations_edit.text(),
                     rotations=self.settings_rotations_edit.text(),
                     child_translation=self.settings_child_translation_checkbox.isChecked(),
+                    initial_rotation_method=initial_rotation_method,
+                    initial_rotation_source=initial_rotation_source,
+                    initial_rotation_matrix=initial_rotation_matrix,
                 )
+                if _chain_setting_preview_signature(edited_setting) != _chain_setting_preview_signature(
+                    selected_setting
+                ):
+                    overrides[selected_setting.segment_name] = edited_setting
             q0_scene = self._segment_settings_q0_scene(overrides) if is_q0_mode else None
             self.segment_settings_preview.set_context(
                 self.c3d_data,
@@ -5982,13 +6101,12 @@ def launch_model_editor(
                 if origin is None:
                     continue
                 rotation = rt.rotation_matrix.rotation_matrix
-                axes = {
+                segment_origins[group.segment_name] = origin
+                segment_frames[group.segment_name] = {
                     "x": rotation[:, 0],
                     "y": rotation[:, 1],
                     "z": rotation[:, 2],
                 }
-                segment_origins[group.segment_name] = origin
-                segment_frames[group.segment_name] = axes
                 points.append(origin)
             links = []
             for group in self.workflow_draft.segment_marker_groups:
@@ -6631,20 +6749,39 @@ def launch_model_editor(
             self._sync_functional_frame_range_bar_enabled()
 
         def _mirror_initial_rotation_c3d_source(self, *_args) -> None:
-            if self.settings_initial_rotation_method_combo.currentText() == "anatomical_c3d":
-                self.settings_initial_rotation_source_edit.setText(self._selected_initial_rotation_c3d_file())
+            self._sync_initial_rotation_source_fields()
 
-        def _sync_initial_rotation_source_fields(self, *_args) -> None:
+        def _sync_initial_rotation_source_fields(self, *args) -> None:
             method = self.settings_initial_rotation_method_combo.currentText()
             is_anatomical_c3d = method == "anatomical_c3d"
             is_matrix = method == "matrix"
-            self.settings_initial_rotation_source_edit.setEnabled(is_matrix or is_anatomical_c3d)
+            self.settings_initial_rotation_source_edit.setEnabled(is_matrix)
             self.settings_initial_rotation_c3d_combo.setEnabled(
-                is_anatomical_c3d and self._selected_initial_rotation_c3d_file() != ""
+                is_anatomical_c3d and self._has_initial_rotation_c3d_files()
             )
             self.browse_initial_rotation_c3d_button.setEnabled(is_anatomical_c3d)
             if is_anatomical_c3d:
-                self.settings_initial_rotation_source_edit.setText(self._selected_initial_rotation_c3d_file())
+                if args:
+                    self._select_static_initial_rotation_c3d()
+                elif not self._selected_initial_rotation_c3d_file():
+                    self._select_static_initial_rotation_c3d()
+                self.settings_initial_rotation_source_edit.setText("")
+            elif method == "identity":
+                self.settings_initial_rotation_source_edit.setText("")
+            self._sync_segment_settings_validation_style()
+
+        def _has_initial_rotation_c3d_files(self) -> bool:
+            return self.settings_initial_rotation_c3d_combo.currentText().strip() not in {"", "Choose a C3D first"}
+
+        def _select_static_initial_rotation_c3d(self) -> None:
+            if not self.c3d_path.text().strip():
+                return
+            static_name = Path(self.c3d_path.text().strip()).name
+            if self.settings_initial_rotation_c3d_combo.findText(static_name) < 0:
+                return
+            self.settings_initial_rotation_c3d_combo.blockSignals(True)
+            self.settings_initial_rotation_c3d_combo.setCurrentText(static_name)
+            self.settings_initial_rotation_c3d_combo.blockSignals(False)
 
         def _technical_marker_source_from_selected_segments(self) -> str:
             marker_names = []
@@ -7854,6 +7991,16 @@ def launch_model_editor(
             )
             return model
 
+        def _model_from_current_chain_settings(self, progress_callback):
+            """
+            Build a model from the current C3D draft and editable chain settings.
+            """
+            return self._diagnostic_model_from_current_preset(
+                "",
+                progress_callback,
+                use_marker_fallback=False,
+            )
+
         def _apply_chain_settings_to_diagnostic_model(
             self,
             model,
@@ -7875,6 +8022,7 @@ def launch_model_editor(
                         segment.translations = Translations(setting.translations)
                     if setting.rotations:
                         segment.rotations = Rotations(setting.rotations)
+                    _apply_initial_rotation_setting_to_segment(segment, setting, self.workflow_draft)
                     segment.q_ranges = None
                     segment.qdot_ranges = None
                     segment.update_dof_names()
@@ -9449,6 +9597,122 @@ def _parse_float_list(text: str) -> list[float]:
     return [float(value) for value in stripped_text.replace(",", " ").split()]
 
 
+def _parse_rotation_matrix_text(text: str) -> tuple[tuple[float, float, float], ...]:
+    """
+    Parse a 3x3 rotation matrix from a compact line edit.
+    """
+    stripped_text = text.strip()
+    if stripped_text == "":
+        raise ValueError("The matrix field is empty.")
+    try:
+        parsed = ast.literal_eval(stripped_text)
+    except (SyntaxError, ValueError):
+        parsed = _parse_rotation_matrix_rows(stripped_text)
+    matrix = _coerce_rotation_matrix(parsed)
+    for row in matrix:
+        for value in row:
+            if not math.isfinite(value):
+                raise ValueError("The rotation matrix must contain only finite numbers.")
+    return matrix
+
+
+def _parse_rotation_matrix_rows(text: str) -> list[list[float]]:
+    row_texts = [row.strip() for row in re.split(r"[;\n]+", text) if row.strip()]
+    if len(row_texts) == 1:
+        values = _parse_float_list(row_texts[0])
+        if len(values) == 9:
+            return [values[0:3], values[3:6], values[6:9]]
+        raise ValueError(
+            "The rotation matrix must contain exactly 9 numbers, or 3 rows of 3 numbers separated by ';' or new lines."
+        )
+    return [_parse_float_list(row_text) for row_text in row_texts]
+
+
+def _coerce_rotation_matrix(value) -> tuple[tuple[float, float, float], ...]:
+    if isinstance(value, tuple):
+        value = list(value)
+    if not isinstance(value, list):
+        raise ValueError("The rotation matrix must be a 3x3 list, for example [[1,0,0], [0,1,0], [0,0,1]].")
+    if len(value) == 9 and all(not isinstance(item, (list, tuple)) for item in value):
+        value = [value[0:3], value[3:6], value[6:9]]
+    if len(value) != 3:
+        raise ValueError("The rotation matrix must have exactly 3 rows.")
+    rows = []
+    for row in value:
+        if isinstance(row, tuple):
+            row = list(row)
+        if not isinstance(row, list) or len(row) != 3:
+            raise ValueError("Each rotation matrix row must contain exactly 3 numbers.")
+        try:
+            rows.append(tuple(float(item) for item in row))
+        except (TypeError, ValueError) as error:
+            raise ValueError("The rotation matrix must contain only numeric values.") from error
+    return tuple(rows)
+
+
+def _format_rotation_matrix(matrix: tuple[tuple[float, float, float], ...]) -> str:
+    return "[" + ", ".join("[" + ", ".join(f"{value:.12g}" for value in row) + "]" for row in matrix) + "]"
+
+
+def _chain_setting_preview_signature(setting) -> tuple[object, ...]:
+    """
+    Return the setting fields that affect the q0 chain preview.
+    """
+    return (
+        setting.translations,
+        setting.rotations,
+        setting.child_translation,
+        setting.initial_rotation_method,
+        setting.initial_rotation_source,
+        tuple(tuple(row) for row in setting.initial_rotation_matrix),
+    )
+
+
+def _q0_initial_rotation_by_segment(workflow_draft) -> dict[str, np.ndarray]:
+    """
+    Return local initial rotations used by the q0 preview.
+    """
+    rotations = {}
+    for setting in workflow_draft.segment_settings:
+        if setting.initial_rotation_method == "identity":
+            rotations[setting.segment_name] = np.eye(3)
+        else:
+            rotations[setting.segment_name] = np.asarray(setting.initial_rotation_matrix, dtype=float).reshape(3, 3)
+    return rotations
+
+
+def _initial_rotation_matrix_from_setting(setting) -> np.ndarray:
+    """
+    Return the local RT rotation requested by a chain setting.
+    """
+    if setting.initial_rotation_method == "identity":
+        return np.eye(3)
+    return np.asarray(setting.initial_rotation_matrix, dtype=float).reshape(3, 3)
+
+
+def _apply_initial_rotation_setting_to_segment(segment, setting, workflow_draft=None) -> None:
+    """
+    Apply the requested initial rotation to a generated model segment while keeping its translation.
+    """
+    if getattr(segment, "segment_coordinate_system", None) is None:
+        return
+    if setting.initial_rotation_method == "identity" and _segment_uses_aor_axis(workflow_draft, setting.segment_name):
+        return
+    segment.segment_coordinate_system.scs.rotation_matrix = _initial_rotation_matrix_from_setting(setting)
+
+
+def _segment_uses_aor_axis(workflow_draft, segment_name: str) -> bool:
+    """
+    Return whether a segment frame is constrained by a functional AoR/SARA axis.
+    """
+    if workflow_draft is None:
+        return False
+    return any(
+        axis.segment_name == segment_name and _is_sara_direction_method(axis.method)
+        for axis in getattr(workflow_draft, "axes", ())
+    )
+
+
 def _safe_float_count(text: str) -> int:
     """
     Return the number of numeric entries, or a sentinel count when parsing fails.
@@ -10622,16 +10886,61 @@ def _export_model_to_path(model, filepath: str) -> None:
     """
     Export a model with the writer matching the file extension.
     """
-    suffix = Path(filepath).suffix.lower()
-    writers = {
-        ".biomod": model.to_biomod,
-        ".osim": model.to_osim,
-        ".urdf": model.to_urdf,
-        ".bvh": model.to_bvh,
+    export_path = Path(filepath)
+    suffix = export_path.suffix.lower()
+    writer_names = {
+        ".biomod": "to_biomod",
+        ".osim": "to_osim",
+        ".urdf": "to_urdf",
+        ".bvh": "to_bvh",
     }
-    if suffix not in writers:
+    if suffix not in writer_names:
         raise ValueError("Supported export extensions are .bioMod, .osim, .urdf, and .bvh.")
-    writers[suffix](filepath=filepath)
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    getattr(model, writer_names[suffix])(filepath=str(export_path))
+    if not export_path.exists():
+        raise RuntimeError(f"The model writer finished but did not create:\n{export_path}")
+    if export_path.stat().st_size == 0:
+        raise RuntimeError(f"The model writer created an empty file:\n{export_path}")
+
+
+def _model_export_filepath_with_extension(filepath: str, extension: str, default_stem: str) -> str:
+    """
+    Return the concrete export filepath, accepting either a filename or a selected folder.
+    """
+    export_path = Path(filepath).expanduser()
+    if export_path.exists() and export_path.is_dir():
+        export_path = export_path / f"{default_stem}{extension}"
+    else:
+        export_path = export_path.with_suffix(extension)
+    return str(export_path)
+
+
+def _model_export_extension_from_label(label: str) -> str:
+    """
+    Return the model export extension selected in the chain definition menu.
+    """
+    if ".bvh" in label:
+        return ".bvh"
+    if ".osim" in label:
+        return ".osim"
+    if ".urdf" in label:
+        return ".urdf"
+    return ".bioMod"
+
+
+def _model_export_filter_for_extension(extension: str) -> str:
+    """
+    Return a save-dialog filter with the selected model format first.
+    """
+    filters = {
+        ".biomod": "BioMod files (*.bioMod)",
+        ".bvh": "BVH files (*.bvh)",
+        ".osim": "OpenSim files (*.osim)",
+        ".urdf": "URDF files (*.urdf)",
+    }
+    selected_filter = filters.get(extension.lower(), filters[".biomod"])
+    return f"{selected_filter};;Supported models (*.bioMod *.osim *.urdf *.bvh)"
 
 
 def _c3d_generation_log(
