@@ -39,6 +39,12 @@ class Translations(Enum):
     ZYX = "zyx"
 
 
+class Sign(Enum):
+    POSITIVE = 1
+    ZERO = 0
+    NEGATIVE = -1
+
+
 class ViewAs(Enum):
     BIORBD = "biorbd"
     # OPENSIM = "opensim"  # TODO

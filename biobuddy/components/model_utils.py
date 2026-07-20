@@ -369,6 +369,13 @@ class ModelUtils:
             ligament_origins.append(ligament.insertion_parent_name)
         return ligament_origins
 
+    def get_muscle_muscle_group_name(self, muscle_name: str) -> str:
+        for mg in self.muscle_groups:
+            for muscle in mg.muscles:
+                if muscle.name == muscle_name:
+                    return mg.name
+        raise ValueError(f"Muscle {muscle_name} not found in the model")
+
     def remove_dofs(self, dofs_to_remove: list[str]):
         """
         Remove the degrees of freedom from the model
@@ -431,8 +438,8 @@ class ModelUtils:
                 child_segments = self.children_segment_names(segment.name)
                 for child_name in child_segments:
                     self.segments[child_name].parent_name = segment.parent_name
-                # Remove the segment
-                self.remove_segment(segment.name)
+                # Remove the segment (chain already fixed above)
+                self.remove_segment(segment.name, fix_kinematic_chain=False)
 
     def modify_model_static_pose(self, q_static: np.ndarray):
         from .real.rigidbody.segment_coordinate_system_real import (
