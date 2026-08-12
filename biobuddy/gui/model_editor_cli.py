@@ -21,7 +21,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--preset",
         default=None,
-        help=("Preset to select in the C3D workflow. Examples: motive_57, " "motive-57, full_body, lower_limbs."),
+        help=("Preset to select in the C3D workflow. Examples: motive_57, motive_57_isb, " "full_body, lower_limbs."),
     )
     parser.add_argument(
         "--c3d-folder",
@@ -33,6 +33,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--motive-57",
         action="store_true",
         help=("Shortcut for --new-from-c3d --preset motive_57 --c3d-folder " f"{DEFAULT_MOTIVE_57_C3D_FOLDER}."),
+    )
+    parser.add_argument(
+        "--motive-57-isb",
+        action="store_true",
+        help=("Shortcut for --new-from-c3d --preset motive_57_isb --c3d-folder " f"{DEFAULT_MOTIVE_57_C3D_FOLDER}."),
     )
     parser.add_argument(
         "--p6-motive",
@@ -52,6 +57,10 @@ def resolve_launch_options(args) -> dict[str, object]:
     if args.p6_motive:
         preset = C3dModelPreset.MOTIVE_57
         c3d_folder = DEFAULT_P6_MOTIVE_C3D_FOLDER
+        open_c3d_dialog = True
+    elif args.motive_57_isb:
+        preset = C3dModelPreset.MOTIVE_57_ISB
+        c3d_folder = DEFAULT_MOTIVE_57_C3D_FOLDER
         open_c3d_dialog = True
     elif args.motive_57:
         preset = C3dModelPreset.MOTIVE_57

@@ -35,7 +35,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--preset",
         default=C3dModelPreset.MOTIVE_57.value,
         help=(
-            "Template preset to use. Examples: motive_57, motive-57, full_body, "
+            "Template preset to use. Examples: motive_57, motive_57_isb, full_body, "
             "lower_limbs, lower_limbs_anatomical. Default: motive_57."
         ),
     )

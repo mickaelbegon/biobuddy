@@ -465,8 +465,20 @@ class SegmentSpec:
     translations: Translations = Translations.NONE
     rotations: Rotations = Rotations.NONE
     frame: LocalFrameSpec | None = None
+    joint_frame: LocalFrameSpec | None = None
+    joint_segment_name: str | None = None
     mesh_points: tuple[MarkerEndpointSpec, ...] = ()
     inertia_name: object | None = None
+
+    @property
+    def has_separate_joint_frame(self) -> bool:
+        """Return whether this anatomical segment is driven through a separate joint segment."""
+        return self.joint_frame is not None
+
+    @property
+    def resolved_joint_segment_name(self) -> str:
+        """Return the explicit or conventional name of the separate joint segment."""
+        return self.joint_segment_name or f"{self.name}Joint"
 
 
 @dataclass(frozen=True)
@@ -573,6 +585,8 @@ def required_static_markers(template: ModelTemplate) -> tuple[str, ...]:
     for segment in template.segments:
         if segment.frame is not None:
             marker_names.update(_marker_names_from_frame(segment.frame))
+        if segment.joint_frame is not None:
+            marker_names.update(_marker_names_from_frame(segment.joint_frame))
         for mesh_point in segment.mesh_points:
             marker_names.update(mesh_point.marker_names)
     return tuple(sorted(marker_names))
@@ -694,11 +708,28 @@ def build_generic_model(
     model = BiomechanicalModel()
     inertia_parameters_by_segment = {} if inertia_parameters_by_segment is None else inertia_parameters_by_segment
     for segment_spec in template.segments:
+        parent_name = segment_spec.parent_name
+        translations = segment_spec.translations
+        rotations = segment_spec.rotations
+        if segment_spec.has_separate_joint_frame:
+            joint_name = segment_spec.resolved_joint_segment_name
+            model.add_segment(
+                Segment(
+                    name=joint_name,
+                    parent_name=segment_spec.parent_name,
+                    translations=translations,
+                    rotations=rotations,
+                    segment_coordinate_system=segment_spec.joint_frame.to_scs(functional_data=functional_data),
+                )
+            )
+            parent_name = joint_name
+            translations = Translations.NONE
+            rotations = Rotations.NONE
         segment = Segment(
             name=segment_spec.name,
-            parent_name=segment_spec.parent_name,
-            translations=segment_spec.translations,
-            rotations=segment_spec.rotations,
+            parent_name=parent_name,
+            translations=translations,
+            rotations=rotations,
             segment_coordinate_system=(
                 None if segment_spec.frame is None else segment_spec.frame.to_scs(functional_data=functional_data)
             ),
@@ -830,28 +861,32 @@ def compute_frame_quality(template: ModelTemplate, data: MarkerData) -> dict[str
     """
     quality = {}
     for segment in template.segments:
-        if segment.frame is None:
-            continue
-        first_axis, second_axis = segment.frame.quality_axes()
-        first_vector = first_axis.vector(data)
-        second_vector = second_axis.vector(data)
-        first_norm = np.linalg.norm(first_vector, axis=0)
-        second_norm = np.linalg.norm(second_vector, axis=0)
-        dot = np.sum(first_vector * second_vector, axis=0)
-        denominator = first_norm * second_norm
-        cosine = np.divide(
-            dot,
-            denominator,
-            out=np.full_like(dot, np.nan, dtype=float),
-            where=denominator != 0,
-        )
-        angle = np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
-        quality[segment.name] = FrameQuality(
-            segment_name=segment.name,
-            angle_degrees=angle,
-            first_axis_norm=first_norm,
-            second_axis_norm=second_norm,
-        )
+        frames = ((segment.name, segment.frame),)
+        if segment.joint_frame is not None:
+            frames += ((segment.resolved_joint_segment_name, segment.joint_frame),)
+        for frame_name, frame in frames:
+            if frame is None:
+                continue
+            first_axis, second_axis = frame.quality_axes()
+            first_vector = first_axis.vector(data)
+            second_vector = second_axis.vector(data)
+            first_norm = np.linalg.norm(first_vector, axis=0)
+            second_norm = np.linalg.norm(second_vector, axis=0)
+            dot = np.sum(first_vector * second_vector, axis=0)
+            denominator = first_norm * second_norm
+            cosine = np.divide(
+                dot,
+                denominator,
+                out=np.full_like(dot, np.nan, dtype=float),
+                where=denominator != 0,
+            )
+            angle = np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
+            quality[frame_name] = FrameQuality(
+                segment_name=frame_name,
+                angle_degrees=angle,
+                first_axis_norm=first_norm,
+                second_axis_norm=second_norm,
+            )
     return quality
 
 
@@ -866,34 +901,38 @@ def compute_dynamic_segment_frames(template: ModelTemplate, data: MarkerData) ->
     """
     frames = {}
     for segment in template.segments:
-        if segment.frame is None:
-            continue
-        first_axis, second_axis = segment.frame.quality_axes()
-        first_axis, second_axis, third_name = _ordered_axes_and_third_name(first_axis, second_axis)
-        first_vector = first_axis.vector(data)
-        second_vector = second_axis.vector(data)
-        axis_to_keep = segment.frame.axis_to_keep
+        frame_specs = ((segment.name, segment.frame),)
+        if segment.joint_frame is not None:
+            frame_specs += ((segment.resolved_joint_segment_name, segment.joint_frame),)
+        for frame_name, frame_spec in frame_specs:
+            if frame_spec is None:
+                continue
+            first_axis, second_axis = frame_spec.quality_axes()
+            first_axis, second_axis, third_name = _ordered_axes_and_third_name(first_axis, second_axis)
+            first_vector = first_axis.vector(data)
+            second_vector = second_axis.vector(data)
+            axis_to_keep = frame_spec.axis_to_keep
 
-        first_name = first_axis.name
-        second_name = second_axis.name
-        if first_name == second_name:
-            raise ValueError(f"Segment '{segment.name}' defines two axes with the same name.")
+            first_name = first_axis.name
+            second_name = second_axis.name
+            if first_name == second_name:
+                raise ValueError(f"Frame '{frame_name}' defines two axes with the same name.")
 
-        third_vector = np.cross(first_vector, second_vector, axis=0)
-        if axis_to_keep == first_name:
-            second_vector = np.cross(third_vector, first_vector, axis=0)
-        elif axis_to_keep == second_name:
-            first_vector = np.cross(second_vector, third_vector, axis=0)
-        else:
-            raise ValueError(f"Segment '{segment.name}' axis_to_keep must be one of the two defined axes.")
+            third_vector = np.cross(first_vector, second_vector, axis=0)
+            if axis_to_keep == first_name:
+                second_vector = np.cross(third_vector, first_vector, axis=0)
+            elif axis_to_keep == second_name:
+                first_vector = np.cross(second_vector, third_vector, axis=0)
+            else:
+                raise ValueError(f"Frame '{frame_name}' axis_to_keep must be one of the two defined axes.")
 
-        rt = np.zeros((4, 4, data.nb_frames))
-        rt[:3, first_name, :] = _normalize(first_vector)
-        rt[:3, second_name, :] = _normalize(second_vector)
-        rt[:3, third_name, :] = _normalize(third_vector)
-        rt[:3, 3, :] = segment.frame.origin_endpoint().evaluate(data)
-        rt[3, 3, :] = 1.0
-        frames[segment.name] = rt
+            rt = np.zeros((4, 4, data.nb_frames))
+            rt[:3, first_name, :] = _normalize(first_vector)
+            rt[:3, second_name, :] = _normalize(second_vector)
+            rt[:3, third_name, :] = _normalize(third_vector)
+            rt[:3, 3, :] = frame_spec.origin_endpoint().evaluate(data)
+            rt[3, 3, :] = 1.0
+            frames[frame_name] = rt
     return frames
 
 

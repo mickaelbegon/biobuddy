@@ -21,6 +21,7 @@ from .lower_limb_template import (
     lower_limb_template,
 )
 from .motive_57_template import MOTIVE_57_FUNCTIONAL_C3D_FILENAMES, motive_57_template
+from .motive_57_isb_template import motive_57_isb_template
 from .model_builder import (
     AxisSpec,
     FunctionalAxisProjectionPointSpec,
@@ -371,6 +372,8 @@ def _template_for_axis_prefill(preset: C3dModelPreset) -> ModelTemplate | None:
         return full_body_model202_template(use_functional=True)
     if preset == C3dModelPreset.MOTIVE_57:
         return motive_57_template(use_functional=True)
+    if preset == C3dModelPreset.MOTIVE_57_ISB:
+        return motive_57_isb_template(use_functional=True)
     return None
 
 
@@ -384,42 +387,42 @@ def _axis_drafts_from_model_template(
         return ()
     drafts = []
     for segment in template.segments:
-        if segment.frame is None:
-            continue
-        first_axis = segment.frame.first_axis
-        second_axis = segment.frame.second_axis
-        origin_markers = _origin_marker_names_from_spec(segment.frame.origin)
-        drafts.append(
-            _axis_draft_from_axis_spec(
-                segment.name,
-                "first_axis",
-                first_axis,
-                segment.frame.axis_to_keep,
-                origin_markers=origin_markers,
-            )
-        )
-        if isinstance(second_axis, FunctionalAxisSpec):
-            drafts.append(
-                _axis_draft_from_functional_axis_spec(
-                    segment.name,
-                    "second_axis",
-                    second_axis,
-                    segment.frame.axis_to_keep,
-                    origin_markers=origin_markers,
-                )
-            )
-        else:
-            drafts.append(
-                _axis_draft_from_axis_spec(
-                    segment.name,
-                    "second_axis",
-                    second_axis,
-                    segment.frame.axis_to_keep,
-                    origin_markers=origin_markers,
-                    method="markers",
-                )
-            )
+        drafts.extend(_axis_drafts_from_frame(segment.name, segment.frame))
+        if segment.joint_frame is not None:
+            drafts.extend(_axis_drafts_from_frame(segment.resolved_joint_segment_name, segment.joint_frame))
     return tuple(drafts)
+
+
+def _axis_drafts_from_frame(segment_name: str, frame) -> tuple[C3dAxisDraft, ...]:
+    """Convert one anatomical or joint frame into its two editable axis drafts."""
+    if frame is None:
+        return ()
+    origin_markers = _origin_marker_names_from_spec(frame.origin)
+    first = _axis_draft_from_axis_spec(
+        segment_name,
+        "first_axis",
+        frame.first_axis,
+        frame.axis_to_keep,
+        origin_markers=origin_markers,
+    )
+    if isinstance(frame.second_axis, FunctionalAxisSpec):
+        second = _axis_draft_from_functional_axis_spec(
+            segment_name,
+            "second_axis",
+            frame.second_axis,
+            frame.axis_to_keep,
+            origin_markers=origin_markers,
+        )
+    else:
+        second = _axis_draft_from_axis_spec(
+            segment_name,
+            "second_axis",
+            frame.second_axis,
+            frame.axis_to_keep,
+            origin_markers=origin_markers,
+            method="markers",
+        )
+    return first, second
 
 
 def _origin_marker_names_from_spec(origin_spec) -> tuple[str, ...]:
@@ -701,7 +704,7 @@ def validate_c3d_workflow_draft(draft: C3dWorkflowDraft, data: MarkerData | None
     segment_names = {group.segment_name for group in draft.segment_marker_groups}
 
     for group in draft.segment_marker_groups:
-        if len(group.marker_names) == 0:
+        if len(group.marker_names) == 0 and group.segment_type != "joint":
             issues.append(
                 C3dDraftIssue(
                     "warning",
@@ -1626,7 +1629,7 @@ def c3d_file_roles_for_preset(preset: C3dModelPreset) -> tuple[C3dFileRole, ...]
                 "Wrist center functional trial.",
             ),
         )
-    if preset == C3dModelPreset.MOTIVE_57:
+    if preset in {C3dModelPreset.MOTIVE_57, C3dModelPreset.MOTIVE_57_ISB}:
         return (
             C3dFileRole(
                 "main",
@@ -1704,6 +1707,8 @@ def c3d_segment_marker_groups_for_preset(
         return _groups_from_model_template(upper_limb_template())
     if preset == C3dModelPreset.MOTIVE_57:
         return _groups_from_model_template(motive_57_template(use_functional=True))
+    if preset == C3dModelPreset.MOTIVE_57_ISB:
+        return _groups_from_model_template(motive_57_isb_template(use_functional=True))
     if preset == C3dModelPreset.FULL_BODY:
         return tuple(
             C3dSegmentMarkerGroup(
@@ -1790,16 +1795,31 @@ def _groups_from_model_template(
             marker_segments.setdefault(segment_name, []).append(attachment.name)
             if attachment.is_technical:
                 technical_marker_segments.setdefault(segment_name, []).append(attachment.name)
-    return tuple(
-        C3dSegmentMarkerGroup(
-            segment.name,
-            tuple(marker_segments.get(segment.name, ())),
-            "" if segment.parent_name in {"base", "root"} else segment.parent_name,
-            "anatomical",
-            tuple(technical_marker_segments.get(segment.name, ())),
+    groups = []
+    for segment in template.segments:
+        parent_name = "" if segment.parent_name in {"base", "root"} else segment.parent_name
+        if segment.has_separate_joint_frame:
+            joint_name = segment.resolved_joint_segment_name
+            groups.append(
+                C3dSegmentMarkerGroup(
+                    segment_name=joint_name,
+                    marker_names=(),
+                    parent_name=parent_name,
+                    segment_type="joint",
+                    technical_marker_names=(),
+                )
+            )
+            parent_name = joint_name
+        groups.append(
+            C3dSegmentMarkerGroup(
+                segment_name=segment.name,
+                marker_names=tuple(marker_segments.get(segment.name, ())),
+                parent_name=parent_name,
+                segment_type="anatomical",
+                technical_marker_names=tuple(technical_marker_segments.get(segment.name, ())),
+            )
         )
-        for segment in template.segments
-    )
+    return tuple(groups)
 
 
 def _expected_marker_names_for_preset(preset: C3dModelPreset) -> set[str]:
@@ -1812,6 +1832,9 @@ def _expected_marker_names_for_preset(preset: C3dModelPreset) -> set[str]:
         return set(required_static_markers(upper_limb_template()))
     if preset == C3dModelPreset.MOTIVE_57:
         template = motive_57_template(use_functional=True)
+        return set(required_static_markers(template)) | set().union(*required_functional_markers(template).values())
+    if preset == C3dModelPreset.MOTIVE_57_ISB:
+        template = motive_57_isb_template(use_functional=True)
         return set(required_static_markers(template)) | set().union(*required_functional_markers(template).values())
     if preset == C3dModelPreset.FULL_BODY:
         template = full_body_model202_template(use_functional=True)
@@ -1929,6 +1952,8 @@ def _initial_segment_settings(
         return tuple(_settings_from_model_template(upper_limb_template()))
     if preset == C3dModelPreset.MOTIVE_57:
         return tuple(_settings_from_model_template(motive_57_template(use_functional=True)))
+    if preset == C3dModelPreset.MOTIVE_57_ISB:
+        return tuple(_settings_from_model_template(motive_57_isb_template(use_functional=True)))
     if preset == C3dModelPreset.FULL_BODY:
         return tuple(
             C3dSegmentSettingsDraft(
@@ -1949,12 +1974,28 @@ def _settings_from_model_template(
 ) -> tuple[C3dSegmentSettingsDraft, ...]:
     settings = []
     for segment in template.segments:
+        if segment.has_separate_joint_frame:
+            settings.append(
+                C3dSegmentSettingsDraft(
+                    segment_name=segment.resolved_joint_segment_name,
+                    translations=("" if segment.translations.value is None else segment.translations.value),
+                    rotations=("" if segment.rotations.value is None else segment.rotations.value),
+                    child_translation=segment.translations.value is not None,
+                )
+            )
+            translations = ""
+            rotations = ""
+            child_translation = False
+        else:
+            translations = "" if segment.translations.value is None else segment.translations.value
+            rotations = "" if segment.rotations.value is None else segment.rotations.value
+            child_translation = segment.translations.value is not None
         settings.append(
             C3dSegmentSettingsDraft(
                 segment_name=segment.name,
-                translations=("" if segment.translations.value is None else segment.translations.value),
-                rotations=("" if segment.rotations.value is None else segment.rotations.value),
-                child_translation=segment.translations.value is not None,
+                translations=translations,
+                rotations=rotations,
+                child_translation=child_translation,
             )
         )
     return tuple(settings)

@@ -5228,7 +5228,11 @@ def launch_model_editor(
 
         def _export_workflow_chain_model(self) -> None:
             if self.c3d_data is None:
-                QMessageBox.critical(self, "Unable to export model", "Load a static/main C3D before exporting.")
+                QMessageBox.critical(
+                    self,
+                    "Unable to export model",
+                    "Load a static/main C3D before exporting.",
+                )
                 return
             if not self._sync_segment_settings_validation_style():
                 QMessageBox.critical(
@@ -7984,9 +7988,10 @@ def launch_model_editor(
                 static_virtual_points=_static_virtual_point_definitions_from_draft(self.workflow_draft),
                 progress_callback=progress_callback,
             ).model
+            rotation_segment_name = _rotation_segment_name_for_model(model, force_three_rotation_segment)
             self._apply_chain_settings_to_diagnostic_model(
                 model,
-                force_three_rotation_segment=force_three_rotation_segment,
+                force_three_rotation_segment=rotation_segment_name,
                 segment_setting_overrides=segment_setting_overrides,
             )
             return model
@@ -8312,6 +8317,10 @@ def launch_model_editor(
             elif preset == C3dModelPreset.MOTIVE_57:
                 self.status_label.setText(
                     "Status: Motive (57) template mapping exists; GH centers need Rab virtual markers."
+                )
+            elif preset == C3dModelPreset.MOTIVE_57_ISB:
+                self.status_label.setText(
+                    "Status: Motive (57) ISB profile; anatomical axes follow static landmarks and GH centers need Rab virtual markers."
                 )
             elif preset == C3dModelPreset.UPPER_LIMB:
                 self.status_label.setText(
@@ -9522,6 +9531,8 @@ def _c3d_preset_label(preset: C3dModelPreset) -> str:
         return "Full body"
     if preset == C3dModelPreset.MOTIVE_57:
         return "BioBuddy Motive (57)"
+    if preset == C3dModelPreset.MOTIVE_57_ISB:
+        return "BioBuddy Motive (57) ISB"
     if preset == C3dModelPreset.UPPER_LIMB:
         return "Upper-limb"
     if preset == C3dModelPreset.FROM_SCRATCH:
@@ -9545,6 +9556,9 @@ def _c3d_model_preset_from_cli_value(
         "biobuddy-motive-57": C3dModelPreset.MOTIVE_57,
         "biomech-motive-57": C3dModelPreset.MOTIVE_57,
         "biomech-motive": C3dModelPreset.MOTIVE_57,
+        "motive-57-isb": C3dModelPreset.MOTIVE_57_ISB,
+        "biobuddy-motive-57-isb": C3dModelPreset.MOTIVE_57_ISB,
+        "biomech-motive-57-isb": C3dModelPreset.MOTIVE_57_ISB,
         "lower-limbs": C3dModelPreset.LOWER_LIMBS_ANATOMICAL,
         "lower-limbs-trunk": C3dModelPreset.LOWER_LIMBS_ANATOMICAL,
         "lower-limbs-and-trunk": C3dModelPreset.LOWER_LIMBS_ANATOMICAL,
@@ -9696,7 +9710,10 @@ def _apply_initial_rotation_setting_to_segment(segment, setting, workflow_draft=
     """
     if getattr(segment, "segment_coordinate_system", None) is None:
         return
-    if setting.initial_rotation_method == "identity" and _segment_uses_aor_axis(workflow_draft, setting.segment_name):
+    if setting.initial_rotation_method == "identity" and (
+        _segment_uses_aor_axis(workflow_draft, setting.segment_name)
+        or _segment_is_anatomical_child_of_joint(workflow_draft, setting.segment_name)
+    ):
         return
     segment.segment_coordinate_system.scs.rotation_matrix = _initial_rotation_matrix_from_setting(setting)
 
@@ -9711,6 +9728,17 @@ def _segment_uses_aor_axis(workflow_draft, segment_name: str) -> bool:
         axis.segment_name == segment_name and _is_sara_direction_method(axis.method)
         for axis in getattr(workflow_draft, "axes", ())
     )
+
+
+def _segment_is_anatomical_child_of_joint(workflow_draft, segment_name: str) -> bool:
+    """Return whether a segment stores the fixed anatomical transform after a joint frame."""
+    if workflow_draft is None:
+        return False
+    groups = tuple(getattr(workflow_draft, "segment_marker_groups", ()))
+    group_by_name = {group.segment_name: group for group in groups}
+    group = group_by_name.get(segment_name)
+    parent = group_by_name.get(group.parent_name) if group is not None else None
+    return parent is not None and parent.segment_type == "joint"
 
 
 def _safe_float_count(text: str) -> int:
@@ -10421,6 +10449,10 @@ def _diagnostic_template_for_c3d_model_preset(preset: C3dModelPreset, *, use_mar
         from .motive_57_template import motive_57_template
 
         return motive_57_template(use_functional=False)
+    if preset == C3dModelPreset.MOTIVE_57_ISB:
+        from .motive_57_isb_template import motive_57_isb_template
+
+        return motive_57_isb_template(use_functional=False)
     if preset == C3dModelPreset.FULL_BODY:
         from .full_body_model202_template import full_body_model202_template
 
@@ -10471,6 +10503,7 @@ def _rotation_dof_plot_data(
     """
     Return plottable rotation DoF data for one reconstructed segment.
     """
+    segment_name = _rotation_segment_name_for_model(model, segment_name)
     rotation_dofs = _segment_rotation_dof_indices(model, segment_name)
     if len(rotation_dofs) != 3:
         return None
@@ -10592,6 +10625,7 @@ def _rotation_dof_summary_lines(model, q: np.ndarray, segment_name: str) -> list
     """
     Return compact numeric summaries for reconstructed rotation DoFs.
     """
+    segment_name = _rotation_segment_name_for_model(model, segment_name)
     rotation_dofs = _segment_rotation_dof_indices(model, segment_name)
     lines = ["", f"{segment_name} rotation DoFs from chain reconstruction"]
     if len(rotation_dofs) != 3:
@@ -10607,6 +10641,22 @@ def _rotation_dof_summary_lines(model, q: np.ndarray, segment_name: str) -> list
             f"range={np.nanmin(values):.2f}..{np.nanmax(values):.2f} deg"
         )
     return lines
+
+
+def _rotation_segment_name_for_model(model, segment_name: str) -> str:
+    """Resolve a physical segment to the separate joint segment that owns its rotational DoFs."""
+    if not segment_name:
+        return segment_name
+    segments_by_name = {segment.name: segment for segment in model.segments}
+    segment = segments_by_name.get(segment_name)
+    if segment is None:
+        return segment_name
+    if any("_rot" in name or name.lower().startswith("rot") for name in segment.dof_names):
+        return segment_name
+    parent = segments_by_name.get(segment.parent_name)
+    if parent is not None and any("_rot" in name or name.lower().startswith("rot") for name in parent.dof_names):
+        return parent.name
+    return segment_name
 
 
 def _segment_rotation_dof_indices(model, segment_name: str) -> tuple[tuple[str, int], ...]:
@@ -10998,7 +11048,7 @@ def _c3d_generation_log(
 
 
 def _c3d_assignment_log_name(preset: C3dModelPreset, assignment) -> str:
-    if preset == C3dModelPreset.MOTIVE_57 and assignment.role == "main":
+    if preset in {C3dModelPreset.MOTIVE_57, C3dModelPreset.MOTIVE_57_ISB} and assignment.role == "main":
         return assignment.source_path or "*Static.c3d"
     return assignment.source_path or assignment.generic_name
 

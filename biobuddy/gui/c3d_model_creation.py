@@ -23,6 +23,7 @@ from .motive_57_template import (
     motive_57_functional_trials,
     motive_57_template,
 )
+from .motive_57_isb_template import motive_57_isb_template
 from .upper_limb_template import (
     upper_limb_template,
     upper_limb_virtual_feature_requirements,
@@ -63,6 +64,7 @@ class C3dModelPreset(Enum):
 
     FULL_BODY = "full_body"
     MOTIVE_57 = "motive_57"
+    MOTIVE_57_ISB = "motive_57_isb"
     LOWER_LIMBS = "lower_limbs"
     LOWER_LIMBS_ANATOMICAL = "lower_limbs_anatomical"
     UPPER_LIMB = "upper_limb"
@@ -116,6 +118,7 @@ def supported_c3d_model_presets() -> tuple[C3dModelPreset, ...]:
         C3dModelPreset.FROM_SCRATCH,
         C3dModelPreset.FULL_BODY,
         C3dModelPreset.MOTIVE_57,
+        C3dModelPreset.MOTIVE_57_ISB,
         C3dModelPreset.LOWER_LIMBS,
         C3dModelPreset.LOWER_LIMBS_ANATOMICAL,
         C3dModelPreset.UPPER_LIMB,
@@ -140,6 +143,9 @@ def c3d_model_preset_from_cli_value(value: str | C3dModelPreset) -> C3dModelPres
         "biobuddy-motive-57": C3dModelPreset.MOTIVE_57,
         "biomech-motive-57": C3dModelPreset.MOTIVE_57,
         "biomech-motive": C3dModelPreset.MOTIVE_57,
+        "motive-57-isb": C3dModelPreset.MOTIVE_57_ISB,
+        "biobuddy-motive-57-isb": C3dModelPreset.MOTIVE_57_ISB,
+        "biomech-motive-57-isb": C3dModelPreset.MOTIVE_57_ISB,
         "lower-limbs": C3dModelPreset.LOWER_LIMBS_ANATOMICAL,
         "lower-limbs-anatomical": C3dModelPreset.LOWER_LIMBS_ANATOMICAL,
         "lower-limbs-functional": C3dModelPreset.LOWER_LIMBS,
@@ -158,7 +164,7 @@ def default_static_virtual_points_for_c3d_model_preset(
     """
     Return static virtual points required by a preset before model generation.
     """
-    if preset == C3dModelPreset.MOTIVE_57:
+    if preset in {C3dModelPreset.MOTIVE_57, C3dModelPreset.MOTIVE_57_ISB}:
         return (
             predictive_rab2002_shoulder_cor("LGJC", "LCAJ", "LHME", "LHLE"),
             predictive_rab2002_shoulder_cor("RGJC", "RCAJ", "RHME", "RHLE"),
@@ -176,7 +182,7 @@ def c3d_model_preset_virtual_features(
         return _lower_limb_score_virtual_features()
     if preset == C3dModelPreset.LOWER_LIMBS_ANATOMICAL:
         return ()
-    if preset == C3dModelPreset.MOTIVE_57:
+    if preset in {C3dModelPreset.MOTIVE_57, C3dModelPreset.MOTIVE_57_ISB}:
         return _motive_57_virtual_features()
     if preset == C3dModelPreset.FROM_SCRATCH:
         return ()
@@ -472,6 +478,8 @@ def template_for_c3d_model_preset(preset: C3dModelPreset) -> ModelTemplate:
         return full_body_model202_template(use_functional=True)
     if preset == C3dModelPreset.MOTIVE_57:
         return motive_57_template(use_functional=True)
+    if preset == C3dModelPreset.MOTIVE_57_ISB:
+        return motive_57_isb_template(use_functional=True)
     if preset == C3dModelPreset.UPPER_LIMB:
         return upper_limb_template()
     raise ValueError(f"Unsupported C3D model preset: {preset}.")
@@ -648,6 +656,8 @@ def _default_output_filename(preset: C3dModelPreset) -> str:
         return "full_body.bioMod"
     if preset == C3dModelPreset.MOTIVE_57:
         return "motive_57.bioMod"
+    if preset == C3dModelPreset.MOTIVE_57_ISB:
+        return "motive_57_isb.bioMod"
     if preset == C3dModelPreset.UPPER_LIMB:
         return "upper_limb.bioMod"
     if preset == C3dModelPreset.FROM_SCRATCH:

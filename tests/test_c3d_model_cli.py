@@ -26,6 +26,9 @@ from biobuddy.gui.c3d_model_creation import (
         ("motive_57", C3dModelPreset.MOTIVE_57),
         ("motive-57", C3dModelPreset.MOTIVE_57),
         ("biomech-motive-57", C3dModelPreset.MOTIVE_57),
+        ("motive_57_isb", C3dModelPreset.MOTIVE_57_ISB),
+        ("motive-57-isb", C3dModelPreset.MOTIVE_57_ISB),
+        ("biomech-motive-57-isb", C3dModelPreset.MOTIVE_57_ISB),
         ("full_body", C3dModelPreset.FULL_BODY),
         ("model202", C3dModelPreset.FULL_BODY),
         ("lower_limbs", C3dModelPreset.LOWER_LIMBS),
@@ -42,6 +45,12 @@ def test_default_static_virtual_points_for_motive_57_adds_rab_gjc_points():
     assert tuple(definition.name for definition in definitions) == ("LGJC", "RGJC")
     assert definitions[0].required_markers == ("LCAJ", "LHME", "LHLE")
     assert definitions[1].required_markers == ("RCAJ", "RHME", "RHLE")
+
+
+def test_default_static_virtual_points_for_motive_57_isb_adds_rab_gjc_points():
+    definitions = default_static_virtual_points_for_c3d_model_preset(C3dModelPreset.MOTIVE_57_ISB)
+
+    assert tuple(definition.name for definition in definitions) == ("LGJC", "RGJC")
 
 
 def test_build_c3d_model_parser_defaults_to_motive_57_data_folder():
@@ -98,6 +107,15 @@ def test_model_editor_cli_accepts_motive_57_shortcut():
     args = build_gui_arg_parser().parse_args(["--motive-57"])
 
     assert args.motive_57 is True
+    assert args.new_from_c3d is False
+    assert args.preset is None
+    assert args.c3d_folder is None
+
+
+def test_model_editor_cli_accepts_motive_57_isb_shortcut():
+    args = build_gui_arg_parser().parse_args(["--motive-57-isb"])
+
+    assert args.motive_57_isb is True
     assert args.new_from_c3d is False
     assert args.preset is None
     assert args.c3d_folder is None

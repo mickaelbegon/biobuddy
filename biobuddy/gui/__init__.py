@@ -166,6 +166,7 @@ from .motive_57_template import (
     motive_57_marker_attachments,
     motive_57_template,
 )
+from .motive_57_isb_template import motive_57_isb_template
 from .full_body_model202_template import (
     Model202SegmentSpec,
     S2mMarkerSpec,
@@ -340,6 +341,7 @@ __all__ = [
     motive_57_functional_trials.__name__,
     motive_57_marker_attachments.__name__,
     motive_57_template.__name__,
+    motive_57_isb_template.__name__,
     Model202SegmentSpec.__name__,
     S2mMarkerSpec.__name__,
     S2mSegmentSpec.__name__,

@@ -9,7 +9,9 @@ from biobuddy import (
     DictData,
 )
 from biobuddy.components.generic.rigidbody.axis import Axis
-from biobuddy.components.real.rigidbody.segment_coordinate_system_real import SegmentCoordinateSystemReal
+from biobuddy.components.real.rigidbody.segment_coordinate_system_real import (
+    SegmentCoordinateSystemReal,
+)
 from biobuddy.gui.c3d_creation_workflow import (
     C3dSegmentSettingsDraft,
     add_axis_to_draft,
@@ -68,9 +70,12 @@ from biobuddy.gui.model_editor import (
     _model_export_filter_for_extension,
     _parse_rotation_matrix_text,
     _q0_initial_rotation_by_segment,
+    _rotation_segment_name_for_model,
     _unassigned_marker_names,
 )
 from biobuddy.gui.lower_limb_template import lower_limb_template
+from biobuddy.gui.model_builder import build_generic_model
+from biobuddy.gui.motive_57_isb_template import motive_57_isb_template
 from biobuddy.model_modifiers.functional_frame_selection import (
     FunctionalFrameSelectionOptions,
     functional_frame_selection_report,
@@ -89,7 +94,12 @@ def test_parse_rotation_matrix_text_accepts_common_3x3_formats():
 
 
 def test_parse_rotation_matrix_text_rejects_invalid_shapes_and_values():
-    for text in ("", "[[1, 0], [0, 1]]", "1 2 3 4", "[[1, 0, 'x'], [0, 1, 0], [0, 0, 1]]"):
+    for text in (
+        "",
+        "[[1, 0], [0, 1]]",
+        "1 2 3 4",
+        "[[1, 0, 'x'], [0, 1, 0], [0, 0, 1]]",
+    ):
         with pytest.raises(ValueError):
             _parse_rotation_matrix_text(text)
 
@@ -168,8 +178,40 @@ def test_identity_initial_rotation_preserves_exported_segment_rt_rotation_for_ao
 
     _apply_initial_rotation_setting_to_segment(segment, setting, draft)
 
-    np.testing.assert_allclose(segment.segment_coordinate_system.scs.rotation_matrix.rotation_matrix, original_rotation)
+    np.testing.assert_allclose(
+        segment.segment_coordinate_system.scs.rotation_matrix.rotation_matrix,
+        original_rotation,
+    )
     np.testing.assert_allclose(segment.segment_coordinate_system.scs.translation, translation)
+
+
+def test_identity_initial_rotation_preserves_fixed_anatomical_frame_after_joint_segment():
+    original_rotation = np.array(((0.0, -1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)))
+    translation = np.array([1.0, 2.0, 3.0])
+    segment = SimpleNamespace(
+        segment_coordinate_system=SegmentCoordinateSystemReal(
+            scs=RotoTransMatrix.from_rotation_matrix_and_translation(original_rotation, translation),
+            is_scs_local=True,
+        )
+    )
+    setting = C3dSegmentSettingsDraft(segment_name="LShank", initial_rotation_method="identity")
+    draft = c3d_workflow_draft(C3dModelPreset.MOTIVE_57_ISB)
+
+    _apply_initial_rotation_setting_to_segment(segment, setting, draft)
+
+    np.testing.assert_allclose(
+        segment.segment_coordinate_system.scs.rotation_matrix.rotation_matrix,
+        original_rotation,
+    )
+    np.testing.assert_allclose(segment.segment_coordinate_system.scs.translation, translation)
+
+
+def test_reconstruction_resolves_physical_lower_limb_segment_to_joint_dofs():
+    model = build_generic_model(motive_57_isb_template())
+
+    assert _rotation_segment_name_for_model(model, "LShank") == "LKneeJoint"
+    assert _rotation_segment_name_for_model(model, "RFoot") == "RAnkleJoint"
+    assert _rotation_segment_name_for_model(model, "Thorax") == "Thorax"
 
 
 def test_load_model_supports_bvh(tmp_path):

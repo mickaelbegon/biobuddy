@@ -329,6 +329,7 @@ def test_c3d_model_creation_presets_are_explicit_about_supported_generation():
         C3dModelPreset.FROM_SCRATCH,
         C3dModelPreset.FULL_BODY,
         C3dModelPreset.MOTIVE_57,
+        C3dModelPreset.MOTIVE_57_ISB,
         C3dModelPreset.LOWER_LIMBS,
         C3dModelPreset.LOWER_LIMBS_ANATOMICAL,
         C3dModelPreset.UPPER_LIMB,
@@ -343,6 +344,9 @@ def test_c3d_model_creation_presets_are_explicit_about_supported_generation():
     motive_57_template = template_for_c3d_model_preset(C3dModelPreset.MOTIVE_57)
     assert motive_57_template.name == "BioBuddy Motive (57) from calibration C3D (SCoRE/SARA)"
     assert required_functional_markers(motive_57_template) != {}
+    motive_57_isb_template = template_for_c3d_model_preset(C3dModelPreset.MOTIVE_57_ISB)
+    assert motive_57_isb_template.name == "BioBuddy Motive (57) ISB from calibration C3D (SCoRE/SARA)"
+    assert required_functional_markers(motive_57_isb_template) != {}
     with pytest.raises(NotImplementedError, match="Template-free"):
         template_for_c3d_model_preset(C3dModelPreset.FROM_SCRATCH)
 
