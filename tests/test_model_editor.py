@@ -206,11 +206,14 @@ def test_identity_initial_rotation_preserves_fixed_anatomical_frame_after_joint_
     np.testing.assert_allclose(segment.segment_coordinate_system.scs.translation, translation)
 
 
-def test_reconstruction_resolves_physical_lower_limb_segment_to_joint_dofs():
+def test_reconstruction_resolves_physical_segment_to_joint_dofs():
     model = build_generic_model(motive_57_isb_template())
 
     assert _rotation_segment_name_for_model(model, "LShank") == "LKneeJoint"
     assert _rotation_segment_name_for_model(model, "RFoot") == "RAnkleJoint"
+    assert _rotation_segment_name_for_model(model, "LUpperArm") == "LShoulderJoint"
+    assert _rotation_segment_name_for_model(model, "RForearm") == "RElbowJoint"
+    assert _rotation_segment_name_for_model(model, "LHand") == "LWristJoint"
     assert _rotation_segment_name_for_model(model, "Thorax") == "Thorax"
 
 

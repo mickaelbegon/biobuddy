@@ -25,9 +25,10 @@ def motive_57_isb_template(use_functional: bool = True) -> ModelTemplate:
     """
     Return the ISB-oriented Motive (57) template.
 
-    This first ISB profile separates functional joint-center estimation from
-    anatomical segment orientation: SCoRE/SARA may locate a joint center, but
-    the local axes are reconstructed from the static anatomical landmarks.
+    This ISB profile separates joint-coordinate systems from anatomical
+    segment orientation. SCoRE/SARA may locate a lower-limb joint center, but
+    the physical segment frames remain reconstructed from static landmarks.
+    The upper limb follows the same joint/anatomical-frame separation.
     """
     return ModelTemplate(
         name=(
@@ -82,12 +83,7 @@ def _thorax_segment() -> SegmentSpec:
         name="Thorax",
         parent_name="Pelvis",
         rotations=Rotations.ZXY,
-        frame=LocalFrameSpec(
-            origin=_p("SJN"),
-            first_axis=AxisSpec.from_markers(Axis.Name.Y, ("SXS", "TV7"), ("SJN", "CV7")),
-            second_axis=AxisSpec.from_markers(Axis.Name.X, ("TV7", "CV7"), ("SXS", "SJN")),
-            axis_to_keep=Axis.Name.Y,
-        ),
+        frame=_thorax_frame(_p("SJN")),
         mesh_points=(_p("SXS"), _p("SJN"), _p("CV7"), _p("TV7"), _p("SXS")),
     )
 
@@ -215,14 +211,13 @@ def _upper_arm_segment(side: str) -> SegmentSpec:
     return SegmentSpec(
         name=f"{side}UpperArm",
         parent_name="Thorax",
-        # ISB thoracohumeral/GH reporting sequence. The markers support humerus option 1.
+        # No scapular triad is available, so this is the ISB thoracohumeral
+        # reporting sequence rather than a true scapulohumeral GH sequence.
         rotations=Rotations.YXY,
-        frame=LocalFrameSpec(
-            origin=shoulder_center,
-            first_axis=AxisSpec(Axis.Name.Y, elbow_center, shoulder_center),
-            second_axis=_femoral_or_humeral_axis(side, "HME", "HLE"),
-            axis_to_keep=Axis.Name.Y,
-        ),
+        joint_segment_name=f"{side}ShoulderJoint",
+        joint_frame=_thorax_frame(shoulder_center),
+        # Humerus option 1: GH origin, proximal +Y and epicondylar +Z.
+        frame=_humerus_frame(side, shoulder_center),
         mesh_points=(
             shoulder_center,
             _p(f"{side}UA"),
@@ -237,17 +232,16 @@ def _upper_arm_segment(side: str) -> SegmentSpec:
 def _forearm_segment(side: str) -> SegmentSpec:
     elbow_center = _p(f"{side}HLE", f"{side}HME")
     wrist_center = _p(f"{side}USP", f"{side}RSP")
+    ulnar_styloid = _p(f"{side}USP")
     return SegmentSpec(
         name=f"{side}Forearm",
         parent_name=f"{side}UpperArm",
+        # ISB elbow JCS: humeral Z, floating X, forearm Y.
         rotations=Rotations.ZXY,
-        frame=LocalFrameSpec(
-            # The joint origin is EJC; +Y and +Z follow the ISB forearm orientation.
-            origin=elbow_center,
-            first_axis=AxisSpec(Axis.Name.Y, wrist_center, elbow_center),
-            second_axis=_forearm_axis(side),
-            axis_to_keep=Axis.Name.Y,
-        ),
+        joint_segment_name=f"{side}ElbowJoint",
+        joint_frame=_humerus_frame(side, elbow_center),
+        # ISB forearm: US origin, proximal +Y, rightward +Z.
+        frame=_forearm_frame(side, ulnar_styloid),
         mesh_points=(
             elbow_center,
             _p(f"{side}USP"),
@@ -263,11 +257,15 @@ def _hand_segment(side: str) -> SegmentSpec:
     return SegmentSpec(
         name=f"{side}Hand",
         parent_name=f"{side}Forearm",
+        # ISB global wrist JCS: forearm Z, floating X, metacarpal Y.
         rotations=Rotations.ZXY,
+        joint_segment_name=f"{side}WristJoint",
+        joint_frame=_forearm_frame(side, wrist_center),
         frame=LocalFrameSpec(
+            # HM2 is the available proxy for the recommended third metacarpal.
             origin=wrist_center,
             first_axis=AxisSpec.from_markers(Axis.Name.Y, f"{side}HM2", (f"{side}USP", f"{side}RSP")),
-            second_axis=_hand_axis(side),
+            second_axis=_styloid_axis(side),
             axis_to_keep=Axis.Name.Y,
         ),
         mesh_points=(wrist_center, _p(f"{side}HM2")),
@@ -362,13 +360,37 @@ def _femoral_or_humeral_axis(side: str, medial_suffix: str, lateral_suffix: str)
     return AxisSpec.from_markers(Axis.Name.Z, f"{side}{lateral_suffix}", f"{side}{medial_suffix}")
 
 
-def _forearm_axis(side: str) -> AxisSpec:
-    if side == "R":
-        return AxisSpec.from_markers(Axis.Name.Z, ("RHME", "RUSP"), ("RHLE", "RRSP"))
-    return AxisSpec.from_markers(Axis.Name.Z, ("LHLE", "LRSP"), ("LHME", "LUSP"))
+def _thorax_frame(origin: MarkerEndpointSpec) -> LocalFrameSpec:
+    return LocalFrameSpec(
+        origin=origin,
+        first_axis=AxisSpec.from_markers(Axis.Name.Y, ("SXS", "TV7"), ("SJN", "CV7")),
+        second_axis=AxisSpec.from_markers(Axis.Name.X, ("TV7", "CV7"), ("SXS", "SJN")),
+        axis_to_keep=Axis.Name.Y,
+    )
 
 
-def _hand_axis(side: str) -> AxisSpec:
+def _humerus_frame(side: str, origin: MarkerEndpointSpec) -> LocalFrameSpec:
+    shoulder_center = _p(f"{side}GJC")
+    elbow_center = _p(f"{side}HLE", f"{side}HME")
+    return LocalFrameSpec(
+        origin=origin,
+        first_axis=AxisSpec(Axis.Name.Y, elbow_center, shoulder_center),
+        second_axis=_femoral_or_humeral_axis(side, "HME", "HLE"),
+        axis_to_keep=Axis.Name.Y,
+    )
+
+
+def _forearm_frame(side: str, origin: MarkerEndpointSpec) -> LocalFrameSpec:
+    elbow_center = _p(f"{side}HLE", f"{side}HME")
+    return LocalFrameSpec(
+        origin=origin,
+        first_axis=AxisSpec(Axis.Name.Y, _p(f"{side}USP"), elbow_center),
+        second_axis=_styloid_axis(side),
+        axis_to_keep=Axis.Name.Y,
+    )
+
+
+def _styloid_axis(side: str) -> AxisSpec:
     if side == "R":
         return AxisSpec.from_markers(Axis.Name.Z, "RUSP", "RRSP")
     return AxisSpec.from_markers(Axis.Name.Z, "LRSP", "LUSP")
