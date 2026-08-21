@@ -129,7 +129,7 @@ model.add_segment(
             axis_to_keep=Axis.Name.Z,
         ),
         mesh=Mesh(("BOTTOM_HEAD", "TOP_HEAD", "HEAD_Z", "HEAD_XZ", "BOTTOM_HEAD")),
-        inertia_parameters=de_leva[SegmentName.HEAD],
+        inertia_parameters=de_leva[DeLevaSegmentName.HEAD],
     )
 )
 model.segments["HEAD"].add_marker(Marker("BOTTOM_HEAD"))
@@ -178,7 +178,7 @@ de_leva.from_static(static=C3dData(c3d_filepath))
 
 Once you have set your table, you can extract the inertial parameters from one segment like this:
 ```python3
-head_inertia_parameters = de_leva[SegmentName.HEAD]
+head_inertia_parameters = de_leva[DeLevaSegmentName.HEAD]
 ```
 
 or you can define a whole body model from a `DeLevaTable` like this:
