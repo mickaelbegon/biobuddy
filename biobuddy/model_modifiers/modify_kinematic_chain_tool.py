@@ -432,7 +432,7 @@ class ChangeFirstSegment:
         for segment in segments_to_invert:
 
             # Remove them from the model
-            modified_model.remove_segment(segment.name)
+            modified_model.remove_segment(segment.name, fix_kinematic_chain=False)
 
             modified_translations, modified_rotations, modified_dof_names, modified_q_ranges, modified_qdot_ranges = (
                 self.get_modified_dofs(original_model, current_parent)
@@ -501,7 +501,7 @@ class ChangeFirstSegment:
         for segment in remaining_segments:
 
             # Remove them from the beginning of the model
-            modified_model.remove_segment(segment.name)
+            modified_model.remove_segment(segment.name, fix_kinematic_chain=False)
 
             # And readd them at the end
             modified_model.add_segment(segment)

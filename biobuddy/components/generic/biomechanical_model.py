@@ -37,7 +37,7 @@ class BiomechanicalModel(ModelUtils):
             )
         self.segments._append(segment)
 
-    def remove_segment(self, segment_name: str):
+    def remove_segment(self, segment_name: str, fix_kinematic_chain: bool = True):
         """
         Remove a segment from the model
 
@@ -45,7 +45,16 @@ class BiomechanicalModel(ModelUtils):
         ----------
         segment_name
             The name of the segment to remove
+        fix_kinematic_chain
+            If True, children of the removed segment are reattached to its parent so the
+            kinematic chain stays intact. Set to False when the caller manages re-parenting
+            itself (e.g. MergeSegmentsTool, which adds a replacement segment afterwards).
         """
+        if fix_kinematic_chain:
+            parent_name = self.segments[segment_name].parent_name
+            for segment in self.segments:
+                if segment.parent_name == segment_name:
+                    segment.parent_name = parent_name
         self.segments._remove(segment_name)
 
     def add_muscle_group(self, muscle_group: MuscleGroup):

@@ -583,8 +583,8 @@ class MergeSegmentsTool:
             second_segment = deepcopy(self.merged_model.segments[merge_task.second_segment_name])
 
             # Remove them from the segments
-            self.merged_model.remove_segment(merge_task.first_segment_name)
-            self.merged_model.remove_segment(merge_task.second_segment_name)
+            self.merged_model.remove_segment(merge_task.first_segment_name, fix_kinematic_chain=False)
+            self.merged_model.remove_segment(merge_task.second_segment_name, fix_kinematic_chain=False)
 
             merged_parent_name = self.get_merged_parent(first_segment, second_segment, merge_task.merged_origin_name)
             merged_translations, merged_rotations, merged_dof_names, merged_q_range, merged_qdot_range = (

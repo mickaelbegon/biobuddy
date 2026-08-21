@@ -560,6 +560,59 @@ def create_simple_model():
     return model
 
 
+def create_muscle(
+    name: str,
+    origin_pos: np.ndarray,
+    insertion_pos: np.ndarray,
+    group_name: str,
+    optimal_length: float = 0.1,
+    maximal_force: float = 100.0,
+    tendon_slack_length: float = 0.05,
+    pennation_angle: float = 0.0,
+    maximal_velocity: float = 10.0,
+    maximal_excitation: float = 1.0,
+) -> MuscleReal:
+    return MuscleReal(
+        name=name,
+        muscle_type=MuscleType.HILL,
+        state_type=MuscleStateType.DEGROOTE,
+        muscle_group=group_name,
+        origin_position=ViaPointReal(name=f"origin_{name}", parent_name="seg_origin", position=origin_pos),
+        insertion_position=ViaPointReal(name=f"insertion_{name}", parent_name="seg_insertion", position=insertion_pos),
+        optimal_length=optimal_length,
+        maximal_force=maximal_force,
+        tendon_slack_length=tendon_slack_length,
+        pennation_angle=pennation_angle,
+        maximal_velocity=maximal_velocity,
+        maximal_excitation=maximal_excitation,
+    )
+
+
+def create_model_with_two_muscles(
+    m1_origin=None,
+    m1_insert=None,
+    m2_origin=None,
+    m2_insert=None,
+    m1_kw: dict = None,
+    m2_kw: dict = None,
+) -> BiomechanicalModelReal:
+    pos = np.array([[0.0], [0.0], [0.0]])
+    m1_origin = m1_origin if m1_origin is not None else pos
+    m1_insert = m1_insert if m1_insert is not None else pos + 1
+    m2_origin = m2_origin if m2_origin is not None else pos + 0.1
+    m2_insert = m2_insert if m2_insert is not None else pos + 1.1
+
+    model = BiomechanicalModelReal()
+    model.add_segment(SegmentReal(name="seg_origin"))
+    model.add_segment(SegmentReal(name="seg_insertion"))
+
+    group = MuscleGroupReal(name="grp", origin_parent_name="seg_origin", insertion_parent_name="seg_insertion")
+    group.add_muscle(create_muscle("m1", m1_origin, m1_insert, "grp", **(m1_kw or {})))
+    group.add_muscle(create_muscle("m2", m2_origin, m2_insert, "grp", **(m2_kw or {})))
+    model.add_muscle_group(group)
+    return model
+
+
 class MockEmptyC3dData(C3dData):
     def __init__(self):
 
