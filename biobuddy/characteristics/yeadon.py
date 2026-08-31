@@ -187,8 +187,6 @@ YEADON_MEASUREMENT_SPECS = tuple(_measurement_spec(name) for name in YEADON_MEAS
 class YeadonTable:
     def __init__(
         self,
-        measurements: Mapping[str, float] | str | Path | None = None,
-        configuration: Mapping[str, float] | str | Path | None = None,
         symmetric: bool = True,
         density_set: YeadonDensitySet | str = YeadonDensitySet.DEMPSTER,
         total_mass: float | None = None,
@@ -198,10 +196,6 @@ class YeadonTable:
 
         Parameters
         ----------
-        measurements
-            Either a mapping with Yeadon's 95 measurement names in meters, or a path to a Yeadon measurement file.
-        configuration
-            Optional Yeadon configuration mapping or file. If omitted, the neutral configuration is used.
         symmetric
             If true, Yeadon averages left/right limb measurements before computing inertia parameters.
         density_set
@@ -209,29 +203,19 @@ class YeadonTable:
         total_mass
             Optional measured total mass in kilograms. When provided, Yeadon's density model is scaled to this mass.
         """
-        self.measurements = None
-        self.configuration = None
         self.symmetric = symmetric
         self.density_set = density_set.value if isinstance(density_set, YeadonDensitySet) else density_set
         self.total_mass = total_mass
+
+        # The following attributes will be set by from_measurements
         self.human = None
         self.inertial_table: dict[YeadonSegmentName, InertiaParametersReal] = {}
-        if measurements is not None:
-            self.from_measurement(
-                measurements=measurements,
-                configuration=configuration,
-                symmetric=symmetric,
-                density_set=density_set,
-                total_mass=total_mass,
-            )
 
-    def from_measurement(
+
+    def from_measurements(
         self,
         measurements: Mapping[str, float] | str | Path,
         configuration: Mapping[str, float] | str | Path | None = None,
-        symmetric: bool = True,
-        density_set: YeadonDensitySet | str = YeadonDensitySet.DEMPSTER,
-        total_mass: float | None = None,
     ) -> None:
         """
         Compute the Yeadon inertial table from anthropometric measurements.
@@ -242,55 +226,26 @@ class YeadonTable:
             Either a mapping with Yeadon's 95 measurement names in meters, or a path to a Yeadon measurement file.
         configuration
             Optional Yeadon configuration mapping or file. If omitted, the neutral configuration is used.
-        symmetric
-            If true, Yeadon averages left/right limb measurements before computing inertia parameters.
-        density_set
-            One of Chandler, Clauser, or Dempster density sets.
-        total_mass
-            Optional measured total mass in kilograms. When provided, Yeadon's density model is scaled to this mass.
         """
         yeadon = _import_yeadon()
-        density_set = density_set.value if isinstance(density_set, YeadonDensitySet) else density_set
         measurements = str(measurements) if isinstance(measurements, Path) else measurements
         configuration = str(configuration) if isinstance(configuration, Path) else configuration
 
         self.measurements = measurements
         self.configuration = configuration
-        self.symmetric = symmetric
-        self.density_set = density_set
-        self.total_mass = total_mass
         self.human = yeadon.Human(
             measurements,
             CFG=configuration,
-            symmetric=symmetric,
-            density_set=density_set,
+            symmetric=self.symmetric,
+            density_set=self.density_set,
         )
-        if total_mass is not None:
-            self.human.scale_human_by_mass(total_mass)
+        if self.total_mass is not None:
+            self.human.scale_human_by_mass(self.total_mass)
 
         self.inertial_table = {
             segment_name: self._inertia_parameters_from_segment(self._yeadon_segment(segment_name))
             for segment_name in YeadonSegmentName
         }
-
-    def from_measurements(
-        self,
-        measurements: Mapping[str, float] | str | Path,
-        configuration: Mapping[str, float] | str | Path | None = None,
-        symmetric: bool = True,
-        density_set: YeadonDensitySet | str = YeadonDensitySet.DEMPSTER,
-        total_mass: float | None = None,
-    ) -> None:
-        """
-        Alias for :meth:`from_measurement`.
-        """
-        self.from_measurement(
-            measurements=measurements,
-            configuration=configuration,
-            symmetric=symmetric,
-            density_set=density_set,
-            total_mass=total_mass,
-        )
 
     def from_file(
         self,
@@ -303,12 +258,9 @@ class YeadonTable:
         """
         Compute the Yeadon inertial table from a Yeadon measurement text file.
         """
-        self.from_measurement(
+        self.from_measurements(
             measurements=filepath,
             configuration=configuration,
-            symmetric=symmetric,
-            density_set=density_set,
-            total_mass=total_mass,
         )
 
     def to_file(self, filepath: str | Path) -> None:
