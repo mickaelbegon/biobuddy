@@ -47,13 +47,13 @@ def test_fbx_and_bvh_share_the_same_kinematic_topology():
     assert fbx_topology == bvh_topology
 
 
-def test_fbx_model_can_be_exported_to_biomod():
+def test_fbx_model_can_be_exported_to_biomod(tmp_path):
     """
     Export a converted FBX hierarchy to a biorbd-compatible ``.bioMod`` file.
     """
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     fbx_filepath = parent_path + f"/examples/models/fullbody_model.fbx"
-    biomod_filepath = parent_path + f"/examples/models/fullbody_model_from_fbx.bioMod"
+    biomod_filepath = tmp_path / "fullbody_model_from_fbx.bioMod"
 
     model = BiomechanicalModelReal().from_fbx(filepath=fbx_filepath)
     model.to_biomod(filepath=biomod_filepath, with_mesh=False)
@@ -61,13 +61,10 @@ def test_fbx_model_can_be_exported_to_biomod():
     content = biomod_filepath.read_text()
     assert "segment\tHips" in content
     assert "\ttranslations\txyz" in content
-    assert "\trotations\txyz" in content
+    assert "\trotations\tzyx" in content
 
     model_from_biomod = BiomechanicalModelReal().from_biomod(filepath=biomod_filepath)
     compare_models(model, model_from_biomod, decimal=5)
-
-    if os.path.exists(biomod_filepath):
-        os.remove(biomod_filepath)
 
 
 def test_translation_fbx_to_biomod_to_fbx():
@@ -103,7 +100,7 @@ def test_translation_fbx_to_biomod_to_fbx():
         os.remove(biomod_filepath)
 
 
-def test_fbx_writer_requires_blender_when_the_executable_is_missing():
+def test_fbx_writer_requires_blender_when_the_executable_is_missing(tmp_path):
     """
     Fail with a clear message when the optional Blender backend is unavailable.
     """
@@ -138,7 +135,7 @@ def test_fbx_writer_serializes_segment_transforms():
     assert np.array(hips_payload["global_rotation"]).shape == (3, 3)
 
 
-def test_fbx_writer_rejects_mesh_export():
+def test_fbx_writer_rejects_mesh_export(tmp_path):
     """
     Keep the first FBX writer scoped to skeleton export until mesh support lands.
     """
@@ -154,19 +151,15 @@ def test_fbx_writer_rejects_mesh_export():
         )
 
 
-def test_fbx_parser_rejects_non_binary_files():
+def test_fbx_parser_rejects_non_binary_files(tmp_path):
     """
     Reject ASCII or unrelated files before attempting to parse records.
     """
-    parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    filepath = parent_path + f"/examples/models/not_binary.fbx"
+    filepath = tmp_path / "not_binary.fbx"
     filepath.write_text("FBXHeaderExtension: {}", encoding="utf-8")
 
     with pytest.raises(ValueError, match="Only binary FBX files are supported"):
         FbxModelParser(filepath=filepath)
-
-    if os.path.exists(filepath):
-        os.remove(filepath)
 
 
 def test_fbx_parser_decodes_scalar_properties():

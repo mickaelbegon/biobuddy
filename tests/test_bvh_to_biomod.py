@@ -112,7 +112,8 @@ def test_bvh_model_uses_native_rotation_channel_order():
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     filepath = parent_path + f"/examples/models/fullbody_model.bvh"
 
-    parser = BvhModelParser(filepath=filepath).to_q()
+    parser = BvhModelParser(filepath=filepath)
+    animation = parser.to_q()
     model = BiomechanicalModelReal().from_bvh(filepath=filepath)
 
     assert parser.root.channels == [
@@ -124,15 +125,15 @@ def test_bvh_model_uses_native_rotation_channel_order():
         "Zrotation",
     ]
     assert model.segments["Hips"].rotations == Rotations.XYZ
-    assert model.dof_names[:6] == parser.to_q().dof_names[:6]
+    assert model.dof_names[:6] == animation.dof_names[:6]
 
 
-def test_bvh_root_offset_is_preserved_in_model_and_biomod():
+def test_bvh_root_offset_is_preserved_in_model_and_biomod(tmp_path):
     """Preserve the BVH root offset on the exported root joint segment."""
 
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     filepath = parent_path + f"/examples/models/fullbody_model.bvh"
-    biomod_filepath = parent_path + "/examples/models/fullbody_model_root_offset.bioMod"
+    biomod_filepath = tmp_path / "fullbody_model_root_offset.bioMod"
 
     model = BiomechanicalModelReal().from_bvh(filepath=filepath)
     hips_segment = model.segments["Hips"]
@@ -150,15 +151,11 @@ def test_bvh_root_offset_is_preserved_in_model_and_biomod():
     assert "960.822000" in content
     assert "40.459200" in content
 
-    if os.path.exists(biomod_filepath):
-        os.remove(biomod_filepath)
 
-
-def test_bvh_parser_rejects_motion_rows_with_wrong_channel_count():
+def test_bvh_parser_rejects_motion_rows_with_wrong_channel_count(tmp_path):
     """Reject BVH motion data when the sample width does not match the hierarchy channels."""
 
-    parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    filepath = parent_path + f"/examples/models/bad_motion.bvh"
+    filepath = tmp_path / "bad_motion.bvh"
     filepath.write_text("""HIERARCHY
 ROOT root
 {
@@ -184,29 +181,21 @@ Frame Time: 0.0333333
     with pytest.raises(ValueError, match="Each BVH motion row must contain 9 channel values."):
         BvhModelParser(filepath=filepath)
 
-    if os.path.exists(filepath):
-        os.remove(filepath)
 
-
-def test_bvh_parser_rejects_files_without_hierarchy():
+def test_bvh_parser_rejects_files_without_hierarchy(tmp_path):
     """Reject files that do not start with a BVH hierarchy block."""
 
-    parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    filepath = parent_path + f"/examples/models/bad_header.bvh"
+    filepath = tmp_path / "bad_header.bvh"
     filepath.write_text("MOTION\nFrames: 0\nFrame Time: 0.0333333\n")
 
     with pytest.raises(ValueError, match="A BVH file must start with a HIERARCHY block."):
         BvhModelParser(filepath=filepath)
 
-    if os.path.exists(filepath):
-        os.remove(filepath)
 
-
-def test_bvh_parser_rejects_invalid_joint_channel_declaration():
+def test_bvh_parser_rejects_invalid_joint_channel_declaration(tmp_path):
     """Reject joints whose declared channel count does not match the provided channels."""
 
-    parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    filepath = parent_path + f"/examples/models/bad_channels.bvh"
+    filepath = tmp_path / "bad_channels.bvh"
     filepath.write_text("""HIERARCHY
 ROOT root
 {
@@ -218,15 +207,11 @@ ROOT root
     with pytest.raises(ValueError, match="Joint root declares 6 channels but provides 5."):
         BvhModelParser(filepath=filepath)
 
-    if os.path.exists(filepath):
-        os.remove(filepath)
 
-
-def test_bvh_parser_accepts_hierarchy_without_motion_block():
+def test_bvh_parser_accepts_hierarchy_without_motion_block(tmp_path):
     """Allow loading a pure BVH hierarchy even when no motion samples are provided."""
 
-    parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    filepath = parent_path + f"/examples/models/hierarchy_only.bvh"
+    filepath = tmp_path / "hierarchy_only.bvh"
     filepath.write_text("""HIERARCHY
 ROOT root
 {
@@ -243,15 +228,11 @@ ROOT root
     assert parser.frame_time is None
     assert parser.motion_data is None
 
-    if os.path.exists(filepath):
-        os.remove(filepath)
 
-
-def test_bvh_parser_rejects_invalid_end_site_block():
+def test_bvh_parser_rejects_invalid_end_site_block(tmp_path):
     """Reject malformed BVH end sites."""
 
-    parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    filepath = parent_path + f"/examples/models/bad_end_site.bvh"
+    filepath = tmp_path / "bad_end_site.bvh"
     filepath.write_text("""HIERARCHY
 ROOT root
 {
@@ -267,15 +248,11 @@ ROOT root
     with pytest.raises(ValueError, match="Expected an OFFSET line inside End Site."):
         BvhModelParser(filepath=filepath)
 
-    if os.path.exists(filepath):
-        os.remove(filepath)
 
-
-def test_bvh_writer_exports_a_minimal_root_hierarchy():
+def test_bvh_writer_exports_a_minimal_root_hierarchy(tmp_path):
     """Export a minimal root-only model to BVH."""
 
-    parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    filepath = parent_path + f"/examples/models/minimal.bvh"
+    filepath = tmp_path / "minimal.bvh"
     model = BiomechanicalModelReal()
     model.add_segment(SegmentReal(name="root_segment"))
 
@@ -285,9 +262,6 @@ def test_bvh_writer_exports_a_minimal_root_hierarchy():
     assert "ROOT root" in content
     assert "CHANNELS 0" in content
     assert "Frames: 1" in content
-
-    if os.path.exists(filepath):
-        os.remove(filepath)
 
 
 def test_bvh_writer_rejects_unsupported_model_features():
