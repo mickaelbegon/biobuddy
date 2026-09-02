@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from biobuddy import BiomechanicalModelReal
+from biobuddy import BiomechanicalModelReal, Kinematics
 from biobuddy.model_parser.bvh import BvhModelParser
 from biobuddy.model_parser.fbx import FbxModelParser
 from biobuddy.model_parser.fbx.fbx_model_parser import _FbxSkinCluster
@@ -68,7 +68,7 @@ def test_fbx_parser_maps_animation_to_biorbd_q():
     parent_path = Path(__file__).resolve().parent.parent
     filepath = parent_path / "examples" / "models" / "fullbody_model.fbx"
 
-    animation = FbxModelParser(filepath=str(filepath)).to_q()
+    animation = Kinematics().from_fbx(filepath=str(filepath))
 
     assert animation.q.shape == (165, 1977)
     assert animation.time.shape == (1977,)
@@ -138,8 +138,8 @@ def test_fbx_and_bvh_animation_reconstruct_the_same_joint_positions():
 
     model_from_fbx = BiomechanicalModelReal().from_fbx(filepath=str(fbx_filepath))
     model_from_bvh = BiomechanicalModelReal().from_bvh(filepath=str(bvh_filepath))
-    animation_from_fbx = FbxModelParser(filepath=str(fbx_filepath)).to_q()
-    animation_from_bvh = BvhModelParser(filepath=str(bvh_filepath)).to_q()
+    animation_from_fbx = Kinematics().from_fbx(filepath=str(fbx_filepath))
+    animation_from_bvh = Kinematics().from_bvh(filepath=str(bvh_filepath))
 
     frame_indices = np.asarray([0, 250, 500, 1000, 1500, 1976], dtype=int)
     fbx_kinematics = model_from_fbx.forward_kinematics(animation_from_fbx.q[:, frame_indices])
@@ -234,6 +234,38 @@ def test_fbx_visual_mesh_is_written_in_biomod(tmp_path: Path):
     content = biomod_filepath.read_text()
     assert "\tmeshfile\t" in content
     assert "segment_meshes/hips.ply" in content.replace("\\", "/")
+
+
+def test_fbx_visual_meshes_are_reused_unless_overwrite_is_requested(tmp_path: Path):
+    """Preserve existing generated meshes unless the caller requests replacement."""
+
+    parent_path = Path(__file__).resolve().parent.parent
+    fbx_filepath = parent_path / "examples" / "models" / "fullbody_model.fbx"
+    mesh_output_dir = tmp_path / "segment_meshes"
+
+    BiomechanicalModelReal().from_fbx(
+        filepath=str(fbx_filepath),
+        split_meshes_per_segment=True,
+        mesh_output_dir=str(mesh_output_dir),
+    )
+    hips_mesh_filepath = mesh_output_dir / "hips.ply"
+    hips_mesh_filepath.write_text("preserved mesh", encoding="utf-8")
+
+    reused_model = BiomechanicalModelReal().from_fbx(
+        filepath=str(fbx_filepath),
+        split_meshes_per_segment=True,
+        mesh_output_dir=str(mesh_output_dir),
+    )
+    assert hips_mesh_filepath.read_text(encoding="utf-8") == "preserved mesh"
+    assert reused_model.segments["Hips"].mesh_file is not None
+
+    BiomechanicalModelReal().from_fbx(
+        filepath=str(fbx_filepath),
+        split_meshes_per_segment=True,
+        mesh_output_dir=str(mesh_output_dir),
+        overwrite_meshes=True,
+    )
+    assert hips_mesh_filepath.read_text(encoding="utf-8").startswith("ply\n")
 
 
 def test_fbx_package_export_creates_a_portable_biomod_bundle(tmp_path: Path):

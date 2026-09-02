@@ -11,6 +11,7 @@ from biobuddy import (
     RangeOfMotion,
     Ranges,
     BvhModelParser,
+    Kinematics,
     Translations,
     Rotations,
     RotoTransMatrix,
@@ -76,7 +77,7 @@ def test_bvh_parser_maps_motion_to_biorbd_q():
     parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     filepath = parent_path + f"/examples/models/fullbody_model.bvh"
 
-    animation = BvhModelParser(filepath=filepath).to_q()
+    animation = Kinematics().from_bvh(filepath=filepath)
 
     assert animation.q.shape == (165, 1977)
     assert animation.time.shape == (1977,)
@@ -113,7 +114,7 @@ def test_bvh_model_uses_native_rotation_channel_order():
     filepath = parent_path + f"/examples/models/fullbody_model.bvh"
 
     parser = BvhModelParser(filepath=filepath)
-    animation = parser.to_q()
+    animation = Kinematics().from_bvh(filepath=filepath)
     model = BiomechanicalModelReal().from_bvh(filepath=filepath)
 
     assert parser.root.channels == [

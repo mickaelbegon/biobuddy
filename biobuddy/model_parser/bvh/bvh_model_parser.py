@@ -9,7 +9,7 @@ from ...components.real.rigidbody.segment_coordinate_system_real import (
 from ...components.real.rigidbody.segment_real import SegmentReal
 from ...utils.enums import Rotations, Translations
 from ..abstract_model_parser import AbstractModelParser
-from ..parsed_animation import ParsedAnimation
+from ...utils.kinematics import Kinematics
 
 
 @dataclass
@@ -281,13 +281,13 @@ class BvhModelParser(AbstractModelParser):
             dof_names.extend(self._q_dof_names(child))
         return dof_names
 
-    def to_q(self) -> ParsedAnimation:
+    def to_kinematics(self) -> Kinematics:
         """
         Convert the BVH motion block into biorbd-compatible generalized coordinates.
 
         Returns
         -------
-        ParsedAnimation
+        Kinematics
             The extracted generalized coordinates. Rotational DoFs are converted
             from degrees to radians to match biorbd conventions.
         """
@@ -307,7 +307,7 @@ class BvhModelParser(AbstractModelParser):
                 q[dof_index, :] = np.deg2rad(q[dof_index, :])
 
         time = np.arange(self.frame_count, dtype=float) * self.frame_time
-        return ParsedAnimation(q=q, time=time, dof_names=target_dof_names)
+        return Kinematics(q=q, time=time, dof_names=target_dof_names)
 
     def to_real(self) -> BiomechanicalModelReal:
         """

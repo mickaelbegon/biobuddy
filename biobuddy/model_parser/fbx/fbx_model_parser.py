@@ -14,7 +14,7 @@ from ...components.real.rigidbody.segment_coordinate_system_real import (
 from ...components.real.rigidbody.segment_real import SegmentReal
 from ...utils.enums import Rotations, Translations
 from ..abstract_model_parser import AbstractModelParser
-from ..parsed_animation import ParsedAnimation
+from ...utils.kinematics import Kinematics
 
 
 @dataclass
@@ -149,6 +149,7 @@ class FbxModelParser(AbstractModelParser):
         filepath: str,
         split_meshes_per_segment: bool = False,
         mesh_output_dir: str = None,
+        overwrite_meshes: bool = False,
     ):
         """
         Load the FBX skeleton hierarchy from a file.
@@ -163,10 +164,14 @@ class FbxModelParser(AbstractModelParser):
             The directory where the generated per-segment mesh files should be written.
             If ``None`` and ``split_meshes_per_segment`` is ``True``, a ``<fbx_stem>_meshes``
             directory is created next to the FBX file.
+        overwrite_meshes
+            Whether existing generated mesh files should be replaced. By default,
+            existing files are preserved and attached to the imported model.
         """
         super().__init__(filepath)
         self.split_meshes_per_segment = split_meshes_per_segment
         self.mesh_output_dir = mesh_output_dir
+        self.overwrite_meshes = overwrite_meshes
         self.version: int | None = None
         self._top_level_records: list[_FbxNodeRecord] = []
         self.skeleton_nodes: dict[int, _FbxSkeletonNode] = {}
@@ -1006,11 +1011,12 @@ class FbxModelParser(AbstractModelParser):
 
             mesh_filename = f"{segment_name.lower()}.ply"
             mesh_filepath = output_directory / mesh_filename
-            self._write_ascii_ply(
-                filepath=mesh_filepath,
-                vertices=segment_vertices_local,
-                faces=segment_faces_local,
-            )
+            if self.overwrite_meshes or not mesh_filepath.exists():
+                self._write_ascii_ply(
+                    filepath=mesh_filepath,
+                    vertices=segment_vertices_local,
+                    faces=segment_faces_local,
+                )
             model.segments[segment_name].mesh_file = MeshFileReal(
                 mesh_file_name=mesh_filename,
                 mesh_file_directory=str(output_directory),
@@ -1067,13 +1073,13 @@ class FbxModelParser(AbstractModelParser):
         for child_id in node.children_ids:
             self._append_node(model=model, node_id=child_id, parent_name=node.name, is_root=False)
 
-    def to_q(self) -> ParsedAnimation:
+    def to_kinematics(self) -> Kinematics:
         """
         Convert the FBX animation curves into biorbd-compatible generalized coordinates.
 
         Returns
         -------
-        ParsedAnimation
+        Kinematics
             The extracted generalized coordinates. Rotational DoFs are converted
             from degrees to radians to match biorbd conventions.
         """
@@ -1117,7 +1123,7 @@ class FbxModelParser(AbstractModelParser):
             if property_name == "Lcl Rotation":
                 q[dof_index, :] = np.deg2rad(q[dof_index, :])
 
-        return ParsedAnimation(q=q, time=time, dof_names=dof_names)
+        return Kinematics(q=q, time=time, dof_names=dof_names)
 
     def animation_diagnostics(self, tolerance: float = 1e-12) -> FbxAnimationDiagnostics:
         """
@@ -1143,7 +1149,7 @@ class FbxModelParser(AbstractModelParser):
 
         missing_dof_names = [dof_name for dof_name in dof_names if dof_name not in mapped_dof_names]
 
-        animation = self.to_q()
+        animation = self.to_kinematics()
         zero_dof_names = []
         constant_dof_names = []
         for dof_index, dof_name in enumerate(animation.dof_names):
